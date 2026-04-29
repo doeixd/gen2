@@ -1,0 +1,479 @@
+-- Core Kernel Module
+-- Defines the generation context, plugin contract, targets, refs, diagnostics, artifacts, contracts, actors, and config.
+-- This module is the foundation; it does not import other modules to avoid circular dependencies.
+-- Cross-references use String identifiers where type precision from other modules is needed.
+
+given {
+    context: GenContext
+}
+
+entity GenContext {
+    plugins: List<Plugin>
+    targets: List<Target>
+    refs: List<Ref>
+    diagnostics: List<Diagnostic>
+    artifacts: List<Artifact>
+    config: Config
+    defaults: List<DefaultInstance>
+    status: idle | checking | generating | ready | failed
+}
+
+-- Plugin with full contract
+
+entity Plugin {
+    id: String
+    namespace: String
+    helpers: List<Helper>
+    required_plugins: List<Plugin>
+    setup: PluginSetup?
+    contributions: PluginContributions
+    status: registered | active | failed
+}
+
+entity PluginSetup {
+    setup_fn: String
+    context: PluginContext
+}
+
+entity PluginContext {
+    core_constructors: List<String>
+    registered_refs: List<Ref>
+    registered_metadata: List<MetadataNamespace>
+    runtime_registry: List<String>
+    target_registry: List<String>
+    store_registry: List<String>
+    operation_registry: List<String>
+    diagnostic_factory: String
+    artifact_factory: String
+    requirement_helpers: List<String>
+}
+
+entity PluginContributions {
+    helpers: List<Helper>
+    targets: List<Target>
+    runtimes: List<String>
+    stores: List<String>
+    operations: List<String>
+    metadata_namespaces: List<MetadataNamespace>
+    diagnostic_definitions: List<DiagnosticDefinition>
+    checks: List<CheckHook>
+    codegen_hooks: List<CodegenHook>
+    artifact_transforms: List<ArtifactTransform>
+}
+
+entity Helper {
+    name: String
+    namespace: String
+    available_in: GenContext?
+}
+
+entity MetadataNamespace {
+    name: String
+    key_type: String
+    value_type: String
+}
+
+entity DiagnosticDefinition {
+    code: String
+    severity: error | warning | info
+    message_template: String
+}
+
+entity CheckHook {
+    name: String
+    target_kind: String
+    check_fn: String
+}
+
+entity CodegenHook {
+    name: String
+    target_kind: String
+    generate_fn: String
+}
+
+entity ArtifactTransform {
+    name: String
+    transform_fn: String
+}
+
+-- Targets
+
+entity Target {
+    name: String
+    plugin_id: String
+    accepts_inputs: List<String>
+    inputs: List<TargetInput>
+    check_result: CheckResult?
+    generate_result: GenerateResult?
+}
+
+entity TargetInput {
+    name: String
+    kind: String
+}
+
+-- Refs
+
+entity Ref {
+    kind: String
+    owner: RefOwner
+    name: String
+    value_type: String
+    value: String?
+    metadata: List<MetadataEntry>
+    status: String?
+}
+
+entity RefOwner {
+    kind: String
+    name: String
+}
+
+entity MetadataEntry {
+    namespace: String
+    key: String
+    value: String
+}
+
+-- Diagnostics and artifacts
+
+entity Diagnostic {
+    severity: error | warning | info
+    code: String
+    message: String
+    path: DiagnosticPath?
+    refs: List<Ref>
+    suggestion: String?
+}
+
+entity DiagnosticPath {
+    segments: List<String>
+}
+
+entity Artifact {
+    path: String
+    content: String
+    kind: source | test | schema | migration | config | asset | directory | package_dep | runtime_command
+    language: String?
+    diagnostics: List<Diagnostic>
+    status: String?
+}
+
+entity CheckResult {
+    status: ok | has_errors | has_warnings
+    diagnostics: List<Diagnostic>
+}
+
+entity GenerateResult {
+    artifacts: List<Artifact>
+    diagnostics: List<Diagnostic>
+    dependencies: List<PackageDependency>?
+    status: success | failed
+}
+
+entity PackageDependency {
+    name: String
+    version: String?
+    dev: Boolean
+}
+
+-- Contracts
+
+entity Contract {
+    name: String
+    operations: List<ContractOperation>
+    invariants: List<ContractInvariant>
+}
+
+entity ContractOperation {
+    name: String
+    input_type: String
+    output_type: String
+}
+
+entity ContractInvariant {
+    name: String
+    description: String
+    expression: String?
+}
+
+-- Actors
+
+entity Actor {
+    name: String
+    identified_by: String
+    within: String?
+    context_type: String?
+}
+
+-- Config and defaults
+
+entity Config {
+    entries: List<ConfigEntry>
+}
+
+entity ConfigEntry {
+    name: String
+    entry_type: String
+    default_value: String?
+    expression_default: String?
+    config_reference: String?
+}
+
+entity DefaultInstance {
+    entity_name: String
+    name: String
+    values: Map<String, String>
+}
+
+-- Policy action (used across modules)
+
+value PolicyAction {
+    action: String
+    policy_name: String
+}
+
+-- Invariants
+
+invariant NoDuplicateNamespaces {
+    for p in Plugins:
+        for q in Plugins where q != p:
+            not (p.namespace = q.namespace)
+}
+
+invariant AllDependenciesSatisfied {
+    for p in Plugins:
+        for dep in p.required_plugins:
+            dep in Plugins
+}
+
+-- DiagnosticCodeNamespaced removed: substring check not expressible in standard Allium.
+
+invariant CheckResultConsistent {
+    for r in Targets where r.check_result != null:
+        r.check_result.status = ok implies r.check_result.diagnostics.all(d => not (d.severity = error))
+}
+
+invariant PluginContributionsUnique {
+    for p in Plugins:
+        for t in p.contributions.targets:
+            for u in p.contributions.targets where u != t:
+                not (t.name = u.name)
+}
+
+-- Two plugins must not contribute targets with the same name. Codegen would
+-- not know which plugin owns a target named "drizzle" if both registered it.
+invariant TargetNamesUniqueAcrossPlugins {
+    for p in Plugins:
+        for q in Plugins where q != p:
+            for t in p.contributions.targets:
+                for u in q.contributions.targets:
+                    not (t.name = u.name)
+}
+
+invariant ContractOperationsUnique {
+    for c in Contracts:
+        for o in c.operations:
+            for p in c.operations where p != o:
+                not (o.name = p.name)
+}
+
+invariant ConfigEntriesUnique {
+    for c in Configs:
+        for e in c.entries:
+            for f in c.entries where f != e:
+                not (e.name = f.name)
+}
+
+-- Rules
+
+-- Ordered by id to fire once per unordered pair.
+rule PluginNamespaceConflict {
+    when: p: Plugin, q: Plugin where p.id < q.id and p.namespace = q.namespace
+    ensures: Diagnostic.created(
+        severity: error,
+        code: "core:duplicate-namespace",
+        message: "Duplicate plugin namespace: " ++ p.namespace,
+        refs: [p, q]
+    )
+}
+
+rule PluginMissingDependency {
+    when: p: Plugin where p.required_plugins.count > 0
+    for dep in p.required_plugins:
+        requires: dep not in Plugins
+        ensures: Diagnostic.created(
+            severity: error,
+            code: "core:plugin-missing-dependency",
+            message: "Plugin " ++ p.id ++ " requires missing plugin " ++ dep.id,
+            refs: [p]
+        )
+}
+
+rule HelperAvailableWhenRegistered {
+    when: p: Plugin where p.status = active
+    for h in p.helpers:
+        ensures: h.available_in = context
+}
+
+rule TargetPluginDependencyMissing {
+    when: t: Target
+    requires: not Plugins.any(p => p.id = t.plugin_id)
+    ensures: Diagnostic.created(
+        severity: error,
+        code: "core:target-plugin-missing",
+        message: "Target " ++ t.name ++ " references missing plugin " ++ t.plugin_id,
+        refs: [t]
+    )
+}
+
+rule FailOnError {
+    when: result: GenerateResult where result.diagnostics.any(d => d.severity = error)
+    ensures: result.status = failed
+}
+
+-- Ordered by id to fire once per unordered pair.
+rule DuplicatePluginHelperNamespace {
+    when: p: Plugin, q: Plugin where p.id < q.id
+    for h in p.helpers:
+        requires: q.helpers.any(gh => gh.namespace = h.namespace)
+        ensures: Diagnostic.created(
+            severity: error,
+            code: "core:duplicate-helper-namespace",
+            message: "Duplicate helper namespace " ++ h.namespace ++ " between plugins " ++ p.id ++ " and " ++ q.id,
+            refs: [p, q]
+        )
+}
+
+rule ActorWithinRequiresContextType {
+    when: a: Actor where a.within != null
+    requires: a.context_type = null
+    ensures: Diagnostic.created(
+        severity: error,
+        code: "core:actor-missing-context-type",
+        message: "Actor " ++ a.name ++ " uses within: but does not declare context_type",
+        refs: [a]
+    )
+}
+
+-- Surfaces
+
+surface PluginAPI {
+    facing developer: PluginAuthor
+
+    exposes:
+        Plugins
+        Targets
+        Refs
+        Diagnostics
+        Contracts
+        MetadataNamespaces
+
+    provides:
+        RegisterPlugin(plugin: Plugin)
+            when not Plugins.any(p => p.namespace = plugin.namespace)
+
+        ActivatePlugin(plugin: Plugin)
+            when plugin in Plugins and plugin.status = registered
+
+        DefineHelper(plugin: Plugin, helper: Helper)
+            when plugin in Plugins
+
+        DefineMetadataNamespace(plugin: Plugin, namespace: MetadataNamespace)
+            when plugin in Plugins
+
+        DefineTarget(plugin: Plugin, target: Target)
+            when plugin in Plugins and target.plugin_id = plugin.id
+
+        DefineContract(contract: Contract)
+            when not Contracts.any(c => c.name = contract.name)
+
+        DefineActor(actor: Actor)
+            when not Actors.any(a => a.name = actor.name)
+
+    related:
+        CheckSurface
+            when context.status = checking
+
+        GenerateSurface
+            when context.status = generating
+}
+
+surface CheckSurface {
+    facing developer: DomainModeler
+    facing tool: GenCLI
+
+    exposes:
+        Refs
+        Diagnostics
+        Config
+        Defaults
+
+    provides:
+        Check()
+            when context.status = idle or context.status = ready
+
+        InspectRef(ref: Ref)
+            when ref in Refs
+}
+
+surface GenerateSurface {
+    facing developer: DomainModeler
+    facing tool: GenCLI
+
+    exposes:
+        Artifacts
+        Diagnostics
+
+    provides:
+        Generate(targets: List<Target>)
+            when context.status = ready
+
+        DryRun(targets: List<Target>)
+            when context.status = ready
+    }
+}
+
+surface TargetContract {
+    facing code: TargetAdapter
+
+    context target: Target
+
+    exposes:
+        target.name
+        target.accepts_inputs
+        target.plugin_id
+
+    provides:
+        AcceptInput(input: TargetInput)
+            when input.kind in target.accepts_inputs
+
+        GenerateArtifacts(input: TargetInput)
+            when target.check_result != null and target.check_result.status = ok
+    }
+}
+
+surface ConfigSurface {
+    facing developer: DomainModeler
+
+    exposes:
+        Config
+        ConfigEntries
+        DefaultInstances
+
+    provides:
+        DefineConfigEntry(name: String, entry_type: String, default_value: String?)
+            when not Config.entries.any(e => e.name = name)
+
+        DefineDefaultInstance(entity_name: String, name: String, values: Map<String, String>)
+            when not DefaultInstances.any(d => d.entity_name = entity_name and d.name = name)
+
+        ReferenceConfig(entry: ConfigEntry)
+            when entry in Config.entries
+    }
+}
+
+config {
+    max_plugins: Integer = 50
+    default_runtime: String = "node20"
+}

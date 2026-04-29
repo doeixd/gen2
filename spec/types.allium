@@ -1,0 +1,344 @@
+-- Types and Representations Module
+
+use "./core.allium" as core
+
+given {
+    context: core/GenContext
+}
+
+-- Representation primitives
+
+entity Representation {
+    name: String
+    kind: RepresentationKind
+    byte_width: Integer?
+    signedness: signed | unsigned?
+    floating_point_format: String?
+    text_encoding: utf8 | utf16 | ascii?
+    length_prefix: String?
+    fixed: Boolean
+    endianness: little | big | native?
+    compare: CompareSemantics?
+    aggregate: AggregateSemantics?
+    metadata: List<core/MetadataEntry>
+}
+
+value RepresentationKind {
+    kind: u8 | u16 | u32 | u64 | u128 | i8 | i16 | i32 | i64 | i128 | f32 | f64 | bool | text | fixed_string | bytes | fixed_bytes | optional | array | set | map | struct | tagged | document
+    inner: List<Representation>?
+    variant_tag: String?
+    struct_fields: List<StructFieldRepr>?
+    variant_map: Map<String, Representation>?
+}
+
+value StructFieldRepr {
+    name: String
+    repr: Representation
+}
+
+value CompareSemantics {
+    total_ordering: Boolean
+    nulls: first | last
+}
+
+value AggregateSemantics {
+    sum_supported: Boolean
+    avg_supported: Boolean
+    min_supported: Boolean
+    max_supported: Boolean
+}
+
+-- Semantic types (ergonomic layer)
+
+entity SemanticType {
+    name: String
+    kind: String
+    ts_type_name: String
+    storage_repr: Representation
+    wire_repr: Representation?
+    has_serializer: Boolean
+    has_deserializer: Boolean
+    server_only: Boolean
+    traits: List<Trait>
+    enum_values: List<String>?
+    aggregate_on: semantic | storage?
+    -- TS inference notes: entity value types, field names/types, nullability, optionality, defaults
+    -- inferred at compile time via const generics
+}
+
+-- Value types (not entities)
+
+entity Struct {
+    name: String
+    fields: List<StructField>
+}
+
+entity StructField {
+    name: String
+    field_type: SemanticType
+}
+
+entity Tagged {
+    name: String
+    tag_field: String
+    variants: Map<String, Struct>
+}
+
+-- Expression and operation types
+
+-- A lightweight expression descriptor used inside types.allium for places that
+-- need to embed an expression without depending on expression.allium (which
+-- would create a circular import). Trait validation, default values, and
+-- serializer encode/decode functions store expressions here; the full
+-- expression algebra (with AST, operation references, etc.) lives in
+-- expression/Expr. The fields here mirror expression/Expr so that codegen can
+-- "lift" a types/Expression into an expression/Expr by name lookup in the
+-- expression registry, but the agent should NOT build two parallel expression
+-- engines: types/Expression is metadata only and is resolved against
+-- expression/Expr at compile time.
+entity Expression {
+    kind: schema | query | mutation | client | server
+    value_type: SemanticType
+    contains_opaque_js: Boolean
+    requirements: List<Requirement>
+    effects: List<Effect>
+    -- Optional name lookup into expression/Exprs. When set, this Expression is a
+    -- handle that resolves to a full expression/Expr by name.
+    expr_name: String?
+}
+
+-- Lightweight AST node used to embed static operation implementations in types.
+-- Distinct from expression/ExprAstNode (which carries full type/operation metadata)
+-- because types.allium cannot import expression.allium without a circular dependency.
+-- An implementation written as static_ast carries its body here.
+entity ImplementationAst {
+    kind: String
+    children: List<ImplementationAst>
+    ref: core/Ref?
+    literal: String?
+}
+
+-- Unified operation entity. Replaces the separate UnaryOp/BinaryOp/ComparisonOp/
+-- AggregateOp entities that previously lived in expression.allium. The kind tag
+-- selects which type fields apply:
+--   unary       => input_type, output_type
+--   binary      => left_type, right_type, output_type
+--   comparison  => operand_type, output_type (boolean)
+--   aggregate   => input_type, output_type, requires_numeric, requires_orderable
+--   reducer     => input_type, output_type (combine op for reducers/monoids)
+--   predicate   => input_type, output_type (boolean)
+--   effect      => input_type, output_type, plus non-empty effects
+-- FieldOp and EntityOp remain in expression.allium because they reference
+-- entity/Field and entity/Entity, which would create a circular import here.
+entity Operation {
+    name: String
+    kind: unary | binary | comparison | aggregate | reducer | predicate | effect
+    input_type: SemanticType?
+    left_type: SemanticType?
+    right_type: SemanticType?
+    operand_type: SemanticType?
+    output_type: SemanticType
+    requires_numeric: Boolean
+    requires_orderable: Boolean
+    capabilities: List<Capability>
+    laws: List<Law>
+    effects: List<Effect>
+    implementations: List<Implementation>
+}
+
+entity Trait {
+    name: String
+    applies_to: String?
+    validate_expression: Expression?
+    error_message: String?
+    storage_expression: Expression?
+    queryable: Boolean
+}
+
+entity Capability {
+    kind: String
+    -- Known values: pure, deterministic, reversible, partial, total, async, effectful,
+    -- transactional, idempotent_effect, cacheable, client_safe, server_only, network,
+    -- filesystem, crypto, web_crypto, dom, fetch, timers, json, transactions, row_locks,
+    -- foreign_keys, joins, subqueries, aggregates, window_functions, recursive_ctes,
+    -- jsonb, full_text_search, extensions, queues, workers, streams, kv_store,
+    -- conditional_writes, atomic_increments, analytics, columnar, append_only, ttl
+}
+
+entity Law {
+    kind: String
+    -- Known values: associative, commutative, idempotent, identity, inverse, distributive
+    assurance: claim | tested | proven
+    test_artifact: String?
+    proof_artifact: String?
+}
+
+entity Effect {
+    kind: String
+    -- Known values: network, email, db_read, db_write, fs_read, fs_write, crypto,
+    -- clock, random, queue, payment, cache_read, cache_write
+}
+
+entity Implementation {
+    runtime: String
+    body: ImplementationBody
+}
+
+value ImplementationBody {
+    kind: static_ast | opaque_js
+    ast: ImplementationAst?
+    opaque_fn: String?
+}
+
+entity TraitApplication {
+    trait: Trait
+    target: core/Ref
+    target_type: SemanticType
+}
+
+entity Requirement {
+    kind: String
+}
+
+entity Serializer {
+    semantic_type: SemanticType
+    wire_type: SemanticType
+    encode: Expression
+    decode: Expression
+}
+
+entity Runtime {
+    name: String
+    capabilities: List<String>
+    supported_operations: List<String>
+}
+
+-- Invariants
+
+invariant RepresentationPrecision {
+    for r in Representations where r.kind.kind in {u8, u16, u32, u64, u128, i8, i16, i32, i64, i128, f32, f64}:
+        r.byte_width != null
+}
+
+invariant SchemaExpressionStaticity {
+    for e in Expressions where e.kind = schema:
+        not e.contains_opaque_js
+}
+
+invariant TypeNameUnique {
+    for t in SemanticTypes:
+        for u in SemanticTypes where u != t:
+            not (t.name = u.name)
+}
+
+invariant StructFieldNamesUnique {
+    for s in Structs:
+        for f in s.fields:
+            for g in s.fields where g != f:
+                not (f.name = g.name)
+}
+
+invariant TaggedVariantsUnique {
+    for t in Taggeds:
+        for v in t.variants:
+            for w in t.variants where w != v:
+                not (v.name = w.name)
+}
+
+-- Operation kind/field consistency. Each kind requires specific fields to be set.
+invariant OperationKindFieldsConsistent {
+    for op in Operations:
+        if op.kind = unary or op.kind = aggregate or op.kind = reducer or op.kind = predicate or op.kind = effect:
+            op.input_type != null
+        if op.kind = binary:
+            op.left_type != null and op.right_type != null
+        if op.kind = comparison:
+            op.operand_type != null
+}
+
+invariant PredicateOperationOutputBoolean {
+    for op in Operations where op.kind = predicate or op.kind = comparison:
+        op.output_type.name = "boolean"
+}
+
+invariant EffectOperationHasEffects {
+    for op in Operations where op.kind = effect:
+        op.effects.count > 0
+}
+
+-- Every implementation must target a known runtime.
+invariant ImplementationRuntimeRegistered {
+    for op in Operations:
+        for impl in op.implementations:
+            Runtimes.any(r => r.name = impl.runtime)
+}
+
+-- Operations must not declare duplicate implementations for the same runtime.
+invariant ImplementationRuntimesUnique {
+    for op in Operations:
+        for impl in op.implementations:
+            for other in op.implementations where other != impl:
+                not (impl.runtime = other.runtime)
+}
+
+-- Rules
+
+rule InvalidTraitApplication {
+    when: ta: TraitApplication where ta.trait.applies_to != null
+    requires: ta.target_type.name != ta.trait.applies_to
+    ensures: core/Diagnostic.created(
+        severity: error,
+        code: "types:invalid-trait",
+        message: "Trait " ++ ta.trait.name ++ " cannot be applied to type " ++ ta.target_type.name,
+        refs: [ta.target]
+    )
+}
+
+rule VagueRepresentationForTarget {
+    when: r: Representation where r.byte_width = null and r.kind.kind in {u8, u16, u32, u64, u128, i8, i16, i32, i64, i128, f32, f64}
+    for target in core/Targets:
+        requires: target.name in {"spacetimedb", "protobuf", "capnp"}
+        ensures: core/Diagnostic.created(
+            severity: error,
+            code: "types:vague-representation",
+            message: "Target " ++ target.name ++ " requires precise physical layout but representation " ++ r.name ++ " is vague",
+            refs: [r, target]
+        )
+}
+
+-- Surfaces
+
+surface TypeDefinitionSurface {
+    facing developer: DomainModeler
+
+    exposes:
+        SemanticTypes
+        Representations
+        Operations
+        Traits
+        Structs
+        Taggeds
+
+    provides:
+        DefineSemanticType(name: String, storage: Representation)
+            when not SemanticTypes.any(t => t.name = name)
+
+        DefineRepresentation(name: String, kind: RepresentationKind)
+            when not Representations.any(r => r.name = name)
+
+        DefineStruct(name: String, fields: List<StructField>)
+            when not Structs.any(s => s.name = name)
+
+        DefineTagged(name: String, tag_field: String, variants: Map<String, Struct>)
+            when not Taggeds.any(t => t.name = name)
+
+        DefineTrait(name: String, applies_to: String?)
+            when not Traits.any(t => t.name = name)
+
+        AttachTrait(target: SemanticType, trait: Trait)
+            when trait.applies_to = null or target.name = trait.applies_to
+
+        DefineOperation(name: String, input: SemanticType, output: SemanticType)
+            when not Operations.any(o => o.name = name)
+    }
+}

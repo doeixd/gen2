@@ -1,0 +1,7238 @@
+https://github.com/tim-smart/effect-atom
+https://github.com/doeixd/effect-atom-jsx
+@effect-atom/atom
+A reactive state management library for Effect.
+
+Installation
+If you are using React:
+
+pnpm add @effect-atom/atom-react
+Creating a Counter with Atom
+Let's create a simple Counter component, which will increment a number when you click a button.
+
+We will use Atom.make to create our Atom, which is a reactive state container.
+
+We can then use the useAtomValue & useAtomSet hooks to read and update the value of the Atom.
+
+import { Atom, useAtomValue, useAtomSet } from "@effect-atom/atom-react"
+
+const countAtom = Atom.make(0).pipe(
+  // By default, the Atom will be reset when no longer used.
+  // This is useful for cleaning up resources when the component unmounts.
+  //
+  // If you want to keep the value, you can use `Atom.keepAlive`.
+  //
+  Atom.keepAlive,
+)
+
+function App() {
+  return (
+    <div>
+      <Counter />
+      <br />
+      <CounterButton />
+    </div>
+  )
+}
+
+function Counter() {
+  const count = useAtomValue(countAtom)
+  return <h1>{count}</h1>
+}
+
+function CounterButton() {
+  const setCount = useAtomSet(countAtom)
+  return (
+    <button onClick={() => setCount((count) => count + 1)}>Increment</button>
+  )
+}
+Derived State
+You can create derived state from an Atom in a couple of ways.
+
+import { Atom } from "@effect-atom/atom-react"
+
+const countAtom = Atom.make(0)
+
+// You can use the `get` function to get the value of another Atom.
+//
+// The type of `get` is `Atom.Context`, which also has a bunch of other methods
+// on it to manage Atoms.
+//
+const doubleCountAtom = Atom.make((get) => get(countAtom) * 2)
+
+// You can also use the `Atom.map` function to create a derived Atom.
+const tripleCountAtom = Atom.map(countAtom, (count) => count * 3)
+Working with Effects
+You can also pass effects to the Atom.make function.
+
+When working with effectful Atoms, you will get back a Result type.
+
+You can see all the ways to work with Result here: https://tim-smart.github.io/effect-atom/atom/Result.ts.html
+
+import { Atom, Result } from "@effect-atom/atom-react"
+import { Effect } from "effect"
+
+//        ┌─── Atom.Atom<Result.Result<number>>
+//        ▼
+const countAtom = Atom.make(Effect.succeed(0))
+
+// You can also pass a function to get access to the `Atom.Context`
+//
+// `get.result` can be used in `Effect`s to get the value of an `Atom.Atom<Result.Result>`.
+//
+//             ┌─── Atom.Atom<Result.Result<number>>
+//             ▼
+const resultWithContextAtom = Atom.make(
+  Effect.fnUntraced(function* (get: Atom.Context) {
+    const count = yield* get.result(countAtom)
+    return count + 1
+  }),
+)
+Working with scoped Effects
+All Atoms that use effects are provided with a Scope, so you can add finalizers that will be run when the Atom is no longer used.
+
+import { Atom } from "@effect-atom/atom-react"
+import { Effect } from "effect"
+
+const resultAtom = Atom.make(
+  Effect.gen(function* () {
+    // Add a finalizer to the `Scope` for this Atom
+    // It will run when the Atom is rebuilt or no longer needed
+    yield* Effect.addFinalizer(() => Effect.log("finalizer"))
+    return "hello"
+  }),
+)
+Working with Effect Services / Layers
+import { Atom } from "@effect-atom/atom-react"
+import { Effect } from "effect"
+
+class Users extends Effect.Service<Users>()("app/Users", {
+  effect: Effect.gen(function* () {
+    const getAll = Effect.succeed([
+      { id: "1", name: "Alice" },
+      { id: "2", name: "Bob" },
+      { id: "3", name: "Charlie" },
+    ])
+    return { getAll } as const
+  }),
+}) {}
+
+// Create a `AtomRuntime` from a `Layer`.
+//
+//         ┌─── Atom.AtomRuntime<Users>
+//         ▼
+const runtimeAtom = Atom.runtime(Users.Default)
+
+// You can then use the `AtomRuntime` to make Atoms that use the services from the `Layer`.
+const usersAtom = runtimeAtom.atom(
+  Effect.gen(function* () {
+    const users = yield* Users
+    return yield* users.getAll
+  }),
+)
+Adding global Layers to AtomRuntimes
+This is useful for setting up Tracers, Loggers, ConfigProviders, etc.
+
+import { Atom } from "@effect-atom/atom-react"
+import { ConfigProvider, Layer } from "effect"
+
+Atom.runtime.addGlobalLayer(
+  Layer.setConfigProvider(ConfigProvider.fromJson(import.meta.env)),
+)
+Working with Streams
+import { Atom, Result, useAtom } from "@effect-atom/atom-react"
+import { Cause, Schedule, Stream } from "effect"
+
+// This will be a simple Atom that emits a incrementing number every second.
+//
+// Atom.make will give back the latest value of a `Stream` as a `Result`.
+//
+//        ┌─── Atom.Atom<Result.Result<number>>
+//        ▼
+const countAtom = Atom.make(Stream.fromSchedule(Schedule.spaced(1000)))
+
+// You can use `Atom.pull` to create a specialized Atom that will pull from a `Stream`
+// one chunk at a time.
+//
+// This is useful for infinite scrolling or paginated data.
+//
+// With a `AtomRuntime`, you can use `runtimeAtom.pull` to create a pull Atom.
+//
+//        ┌─── Atom.Writable<Atom.PullResult<number>, void>
+//        ▼
+const countPullAtom = Atom.pull(Stream.make(1, 2, 3, 4, 5))
+
+// Here is a component that uses `countPullAtom` to display the numbers in a list.
+//
+// You can use `useAtom` to both read the value of an Atom and gain access to the
+// setter function.
+//
+// Each time the setter function is called, it will pull a new chunk of data
+// from the `Stream`, and append it to the list.
+function CountPullAtomComponent() {
+  const [result, pull] = useAtom(countPullAtom)
+
+  return Result.builder(result)
+    .onInitial(() => <div>Loading...</div>)
+    .onFailure((cause) => <div>Error: {Cause.pretty(cause)}</div>)
+    .onSuccess(({ items }, { waiting }) => (
+      <div>
+        <ul>
+          {items.map((item) => (
+            <li key={item}>{item}</li>
+          ))}
+        </ul>
+        <button onClick={() => pull()}>Load more</button>
+        {waiting ? <p>Loading more...</p> : <p>Loaded chunk</p>}
+      </div>
+    ))
+    .render()
+}
+Working with sets of Atoms
+import { Atom } from "@effect-atom/atom-react"
+import { Effect } from "effect"
+
+class Users extends Effect.Service<Users>()("app/Users", {
+  effect: Effect.gen(function* () {
+    const findById = (id: string) => Effect.succeed({ id, name: "John Doe" })
+    return { findById } as const
+  }),
+}) {}
+
+// Create a `AtomRuntime` from a `Layer`
+const runtimeAtom = Atom.runtime(Users.Default)
+
+// Atoms work by reference, so we need to use `Atom.family` to dynamically create a
+// set of Atoms from a key.
+//
+// `Atom.family` will ensure that we get a stable reference to the Atom for each key.
+//
+//       ┌─── (arg: string) => Atom.Atom<Result<{ id: string; name: string; }>>
+//       ▼
+const userAtom = Atom.family((id: string) =>
+  runtimeAtom.atom(
+    Effect.gen(function* () {
+      const users = yield* Users
+      return yield* users.findById(id)
+    }),
+  ),
+)
+Working with functions
+import { Atom, useAtomSet } from "@effect-atom/atom-react"
+import { Effect, Exit } from "effect"
+
+// Create a simple `Atom.fn` that logs a number
+const logAtom = Atom.fn(
+  Effect.fnUntraced(function* (arg: number) {
+    yield* Effect.log("got arg", arg)
+  }),
+)
+
+function LogComponent() {
+  // To call the `Atom.fn`, we need to use the `useAtomSet` hook
+  const logNumber = useAtomSet(logAtom)
+  return <button onClick={() => logNumber(42)}>Log 42</button>
+}
+
+// You can also use it with `Atom.runtime`
+class Users extends Effect.Service<Users>()("app/Users", {
+  effect: Effect.gen(function* () {
+    const create = (name: string) => Effect.succeed({ id: 1, name })
+
+    return { create } as const
+  }),
+}) {}
+
+const runtimeAtom = Atom.runtime(Users.Default)
+
+// Here we are using `runtimeAtom.fn` to create a function from the `Users.create`
+// method.
+const createUserAtom = runtimeAtom.fn(
+  Effect.fnUntraced(function* (name: string) {
+    const users = yield* Users
+    return yield* users.create(name)
+  }),
+)
+
+function CreateUserComponent() {
+  // If your function returns a `Result`, you can use the useAtomSet hook with `mode: "promiseExit"`
+  const createUser = useAtomSet(createUserAtom, { mode: "promiseExit" })
+  return (
+    <button
+      onClick={async () => {
+        const exit = await createUser("John")
+        if (Exit.isSuccess(exit)) {
+          console.log(exit.value)
+        }
+      }}
+    >
+      Create user
+    </button>
+  )
+}
+Wrapping an event listener
+import { Atom } from "@effect-atom/atom-react"
+
+// This is a simple Atom that will emit the current scroll position of the
+// window.
+const scrollYAtom: Atom.Atom<number> = Atom.make((get) => {
+  // The handler will use `get.setSelf` to update the value of itself
+  const onScroll = () => {
+    get.setSelf(window.scrollY)
+  }
+  // We need to use `get.addFinalizer` to remove the event listener when the
+  // Atom is no longer used.
+  window.addEventListener("scroll", onScroll)
+  get.addFinalizer(() => window.removeEventListener("scroll", onScroll))
+
+  // Return the current scroll position
+  return window.scrollY
+})
+Integration with search params
+import { Atom } from "@effect-atom/atom-react"
+import { Option, Schema } from "effect"
+
+// Create an Atom that reads and writes to the URL search parameters.
+//
+//          ┌─── Atom.Writable<string>
+//          ▼
+const simpleParamAtom = Atom.searchParam("paramName")
+
+// You can also use a schema to further parse the value
+//
+//          ┌─── Atom.Writable<Option<number>>
+//          ▼
+const numberParamAtom = Atom.searchParam("paramName", {
+  schema: Schema.NumberFromString,
+})
+Integration with local storage
+import { Atom } from "@effect-atom/atom-react"
+import { BrowserKeyValueStore } from "@effect/platform-browser"
+import { Schema } from "effect"
+
+const runtime = Atom.runtime(BrowserKeyValueStore.layerLocalStorage)
+
+// Create an Atom that reads and writes to `localStorage`.
+//
+// It uses `Schema` to define the type of the value stored.
+//
+//       ┌─── Atom.Writable<boolean, boolean>
+//       ▼
+const flagAtom = Atom.kvs({
+  runtime: runtime,
+  key: "flag",
+  schema: Schema.Boolean,
+  defaultValue: () => false,
+})
+Integration with Reactivity from @effect/experimental
+Reactivity is an Effect service that allows you make queries reactive when mutations happen.
+
+You can use an Atom.runtime to hook into the Reactivity service and trigger Atom refreshes when mutations happen.
+
+import { Atom } from "@effect-atom/atom-react"
+import { Effect, Layer } from "effect"
+import { Reactivity } from "@effect/experimental"
+
+const runtimeAtom = Atom.runtime(Layer.empty)
+
+let i = 0
+
+//      ┌─── Atom.Atom<number>
+//      ▼
+const count = Atom.make(() => i++).pipe(
+  // Refresh when the "counter" key changes
+  Atom.withReactivity(["counter"]),
+  // Or refresh when "counter" or "counter:1" or "counter:2" changes
+  Atom.withReactivity({
+    counter: [1, 2],
+  }),
+)
+
+const someMutation = runtimeAtom.fn(
+  Effect.fn(function* () {
+    yield* Effect.log("Mutating the counter")
+  }),
+  // Invalidate the "counter" key when the Effect is finished
+  { reactivityKeys: ["counter"] },
+)
+
+const someMutationManual = runtimeAtom.fn(
+  Effect.fn(function* () {
+    yield* Effect.log("Mutating the counter again")
+    // You can also manually invalidate the "counter" key
+    yield* Reactivity.invalidate(["counter"])
+  }),
+)
+@effect/rpc integration
+You can use the AtomRpc module to create an RPC client with integration with effect-atom. It offers apis for both queries and mutations.
+
+import {
+  AtomRpc,
+  Result,
+  useAtomSet,
+  useAtomValue
+} from "@effect-atom/atom-react"
+import { Effect, Layer, Schema } from "effect"
+import { BrowserSocket } from "@effect/platform-browser"
+import { Rpc, RpcClient, RpcGroup, RpcSerialization } from "@effect/rpc"
+
+// Define the RPCs
+class Rpcs extends RpcGroup.make(
+  Rpc.make("increment"),
+  Rpc.make("count", {
+    success: Schema.Number
+  })
+) {}
+
+// Use `AtomRpc.Tag` to create a special `Context.Tag` that builds the RPC client
+class CountClient extends AtomRpc.Tag<CountClient>()("CountClient", {
+  group: Rpcs,
+  // Provide a `Layer` that provides the RpcClient.Protocol
+  protocol: RpcClient.layerProtocolSocket({
+    retryTransientErrors: true
+  }).pipe(
+    Layer.provide(BrowserSocket.layerWebSocket("ws://localhost:3000/rpc")),
+    Layer.provide(RpcSerialization.layerJson)
+  )
+}) {}
+
+function SomeComponent() {
+  // Use `CountClient.query` for readonly queries
+  const count = useAtomValue(CountClient.query("count", void 0, {
+    // You can also register reactivity keys, which can be used to invalidate
+    // the query
+    reactivityKeys: ["count"]
+  }))
+
+  // Use `CountClient.mutation` for mutations
+  const increment = useAtomSet(CountClient.mutation("increment"))
+
+  return (
+    <div>
+      <p>Count: {Result.getOrElse(count, () => 0)}</p>
+      <button
+        onClick={() =>
+          increment({
+            payload: void 0,
+            // Mutations can also have reactivity keys, which will invalidate
+            // the query when the mutation is done.
+            reactivityKeys: ["count"]
+          })}
+      >
+        Increment
+      </button>
+    </div>
+  )
+}
+
+// Or you can define custom atoms using the `CountClient.runtime`
+const incrementAtom = CountClient.runtime.fn(Effect.fnUntraced(function*() {
+  const client = yield* CountClient // Use the Tag to access the client
+  yield* client("increment", void 0)
+}))
+
+// Or use it in your Effect services
+class MyService extends Effect.Service<MyService>()("MyService", {
+  dependencies: [CountClient.layer], // Add the `CountClient` as a dependency
+  scoped: Effect.gen(function*() {
+    const client = yield* CountClient // Use the Tag to access the client
+    const useClient = () => client("increment", void 0)
+    return { useClient } as const
+  })
+}) {}
+HttpApi integration
+You can use the AtomHttpApi module to create an HTTP API client with integration with effect-atom. It offers apis for both queries and mutations.
+
+import {
+  AtomHttpApi,
+  Result,
+  useAtomSet,
+  useAtomValue
+} from "@effect-atom/atom-react"
+import {
+  FetchHttpClient,
+  HttpApi,
+  HttpApiEndpoint,
+  HttpApiGroup
+} from "@effect/platform"
+import { Effect, Schema } from "effect"
+
+// Define your api
+class Api extends HttpApi.make("api").add(
+  HttpApiGroup.make("counter").add(
+    HttpApiEndpoint.get("count", "/count").addSuccess(Schema.Number)
+  ).add(
+    HttpApiEndpoint.post("increment", "/increment")
+  )
+) {}
+
+// Use `AtomHttpApi.Tag` to create a special `Context.Tag` that builds the client
+class CountClient extends AtomHttpApi.Tag<CountClient>()("CountClient", {
+  api: Api,
+  // Provide a Layer that provides the HttpClient
+  httpClient: FetchHttpClient.layer,
+  baseUrl: "http://localhost:3000"
+}) {}
+
+function SomeComponent() {
+  // Use `CountClient.query` for readonly queries
+  const count = useAtomValue(CountClient.query("counter", "count", {
+    // You can register reactivity keys, which can be used to invalidate
+    // the query
+    reactivityKeys: ["count"]
+  }))
+
+  // Use `CountClient.mutation` for mutations
+  const increment = useAtomSet(CountClient.mutation("counter", "increment"))
+
+  return (
+    <div>
+      <p>Count: {Result.getOrElse(count, () => 0)}</p>
+      <button
+        onClick={() =>
+          increment({
+            payload: void 0,
+            // Mutations can also have reactivity keys, which will invalidate
+            // the query when the mutation is done.
+            reactivityKeys: ["count"]
+          })}
+      >
+        Increment
+      </button>
+    </div>
+  )
+}
+
+// Or you can define custom atoms using the `CountClient.runtime`
+const incrementAtom = CountClient.runtime.fn(Effect.fnUntraced(function*() {
+  const client = yield* CountClient // Use the Tag to access the client
+  yield* client.counter.increment()
+}))
+
+// Or use it in your Effect services
+class MyService extends Effect.Service<MyService>()("MyService", {
+  dependencies: [CountClient.layer], // Add the `CountClient` as a dependency
+  scoped: Effect.gen(function*() {
+    const client = yield* CountClient // Use the Tag to access the client
+    const useClient = () => client.counter.increment()
+    return { useClient } as const
+  })
+}) {}
+
+Yes — there are good ideas here, but I would **not** make atoms the core domain primitive.
+
+I’d take the *concepts* from `@effect-atom/atom`, especially:
+
+```txt
+Atom = reactive value container
+Atom.family = stable keyed registry of reactive values
+Atom.runtime = scoped runtime with services/layers
+Atom.fn = callable effectful function
+Result = async loading/error/success state
+Reactivity keys = explicit invalidation registry
+Scoped effects = lifecycle cleanup/finalizers
+```
+
+Those map very well onto our generated UI/client layer. The docs show atoms as reactive containers, derived atoms, effectful atoms returning `Result`, scoped cleanup via `Scope`, runtime/layer-backed atoms, `Atom.family` for stable keyed atoms, `Atom.fn` for effectful callable functions, and explicit reactivity keys for invalidating queries after mutations. 
+
+## My take
+
+We should add an optional standard package:
+
+```txt
+@gen/reactivity
+```
+
+or maybe:
+
+```txt
+@gen/client-state
+```
+
+It should **interpret our static getters, mutators, functions, and patches into reactive client resources**.
+
+It should not replace:
+
+```txt
+Entity
+Field
+Mapping
+Func
+Query
+Action
+Patch
+Runtime
+Store
+```
+
+Instead, it should sit on top of them.
+
+---
+
+# 1. Add a reactive resource layer
+
+Our system already has:
+
+```ts
+const getUserFunc = gen.func.query(...)
+const createUserFunc = gen.func.action(...)
+```
+
+The reactivity package should generate reactive resources from those functions:
+
+```ts
+const userResource = gen.reactivity.query(getUserFunc, {
+  key: ({ id }) => gen.key(User, id),
+})
+
+const createUserMutation = gen.reactivity.mutation(createUserFunc, {
+  invalidates: ({ result }) => [
+    gen.key.collection(User),
+    gen.key.entity(User, result.id),
+  ],
+})
+```
+
+This can compile to:
+
+```txt
+effect-atom atoms
+TanStack Query hooks
+Vue composables
+Svelte stores
+Solid resources
+custom runtime cache
+```
+
+So the primitive is not “Atom” specifically. The primitive is:
+
+```txt
+ReactiveResource
+ReactiveMutation
+InvalidationKey
+ReactiveRegistry
+```
+
+`effect-atom` becomes one target/backend.
+
+---
+
+# 2. Manual reactivity keys are worth stealing
+
+This is very useful:
+
+```ts
+Atom.withReactivity(["counter"])
+```
+
+and mutations invalidating keys afterward. The uploaded docs show queries registering reactivity keys and mutations invalidating those keys either automatically through mutation options or manually through `Reactivity.invalidate`. 
+
+We should have this in our design.
+
+Something like:
+
+```ts
+const listUsersFunc = gen.func.query({
+  name: "listUsers",
+  input: gen.object({
+    search: gen.optional(gen.string()),
+  }),
+  returns: gen.array(UserSummary),
+  body: ...,
+
+  reactivity: {
+    reads: ({ search }) => [
+      gen.key.collection(User),
+      gen.key.query(listUsersFunc, { search }),
+    ],
+  },
+})
+```
+
+Then:
+
+```ts
+const createUserFunc = gen.func.action({
+  name: "createUser",
+  input: ...,
+  returns: UserDetail,
+  body: ...,
+
+  reactivity: {
+    invalidates: ({ result }) => [
+      gen.key.collection(User),
+      gen.key.entity(User, result.id),
+    ],
+  },
+})
+```
+
+This should be part of the standard API/client package, not core kernel.
+
+The key insight: **not all invalidation can be inferred**. We should infer what we can from action bodies, but users need an escape hatch:
+
+```ts
+reactivity: {
+  invalidates: [
+    gen.key.collection(User),
+    gen.key.custom("dashboard:stats"),
+  ],
+}
+```
+
+or inside an action:
+
+```ts
+body: gen.action(({ id }) =>
+  gen.action.seq(
+    gen.action.update(User).where(...),
+    gen.reactivity.invalidate([
+      gen.key.entity(User, id),
+      gen.key.collection(User),
+    ])
+  )
+)
+```
+
+---
+
+# 3. Add typed key registries
+
+`Atom.family` is especially relevant. It creates stable atom references for dynamic keys. The docs emphasize that atoms work by reference, so `Atom.family` ensures a stable reference for each key. 
+
+We want the same idea, but generalized:
+
+```ts
+const userKey = gen.key.family("user", {
+  input: gen.object({
+    id: User.fields.id.type,
+  }),
+})
+
+const userListKey = gen.key.family("users.list", {
+  input: gen.object({
+    search: gen.optional(gen.string()),
+    role: gen.optional(User.fields.role.type),
+  }),
+})
+```
+
+Then:
+
+```ts
+const getUserFunc = gen.func.query({
+  name: "getUser",
+  input: gen.object({ id: User.fields.id.type }),
+  returns: UserDetail,
+  body: ...,
+  cacheKey: ({ id }) => userKey({ id }),
+})
+```
+
+Generated targets can map this to:
+
+```txt
+Atom.family
+TanStack Query queryKey
+SWR key
+VueUse ref key
+Solid resource key
+custom registry key
+```
+
+This should be a first-class primitive:
+
+```txt
+KeyFamily<Input>
+ReactiveKey<Input>
+ReactiveRegistry
+```
+
+This lets us get stable reactive identities without hardcoding one client state library.
+
+---
+
+# 4. Atoms are great as a target, not the universal model
+
+I would not put `Atom.make` into core, because then the whole system starts to look like `effect-atom`.
+
+Instead:
+
+```ts
+gen.effectAtom.query(getUserFunc)
+gen.effectAtom.mutation(createUserFunc)
+gen.effectAtom.family(getUserFunc)
+```
+
+or:
+
+```ts
+await gen.generate([
+  gen.effectAtom.resources([getUserFunc, listUsersFunc, createUserFunc]),
+])
+```
+
+Generated code might be:
+
+```ts
+const userAtom = Atom.family((id: string) =>
+  runtimeAtom.atom(
+    Effect.gen(function* () {
+      const client = yield* ApiClient
+      return yield* client.getUser({ id })
+    })
+  ).pipe(
+    Atom.withReactivity([["user", id]])
+  )
+)
+```
+
+And the mutation:
+
+```ts
+const createUserAtom = runtimeAtom.fn(
+  Effect.fn(function* (input: CreateUserInput) {
+    const client = yield* ApiClient
+    const user = yield* client.createUser(input)
+    yield* Reactivity.invalidate([
+      ["users"],
+      ["user", user.id],
+    ])
+    return user
+  })
+)
+```
+
+That is directly inspired by the uploaded atom/reactivity examples, but our source of truth remains `gen.func.query` and `gen.func.action`.
+
+---
+
+# 5. Result states should be part of generated client resources
+
+Effect atoms wrap effectful atoms in `Result`, so UI code handles initial/loading/failure/success explicitly. The docs show `Result.builder(...).onInitial(...).onFailure(...).onSuccess(...)`. 
+
+We should model query state generically:
+
+```ts
+type ResourceState<T, E> =
+  | { status: "initial" }
+  | { status: "loading"; previous?: T }
+  | { status: "success"; value: T }
+  | { status: "failure"; error: E; previous?: T }
+```
+
+Then each target maps it:
+
+```txt
+effect-atom -> Result.Result<T, E>
+TanStack Query -> UseQueryResult<T, E>
+Vue -> Ref<ResourceState<T, E>>
+Svelte -> readable<ResourceState<T, E>>
+```
+
+This helps generated forms and UI be precise about loading/error/success.
+
+---
+
+# 6. Scoped lifecycle belongs in UI behavior/resource layer
+
+The docs show effectful atoms get a `Scope`, finalizers run when atoms rebuild or are no longer needed, and event listeners can be cleaned up with `get.addFinalizer`. 
+
+That maps very well to our AF-UI-inspired `Behavior` model.
+
+Example:
+
+```ts
+const scrollY = gen.ui.behaviorResource({
+  name: "scrollY",
+  returns: gen.int(),
+  body: gen.action.scoped(({ scope }) =>
+    gen.action.seq(
+      gen.platform.window.addEventListener("scroll", ...),
+      scope.addFinalizer(...)
+    )
+  ),
+})
+```
+
+But again, the primitive should be general:
+
+```txt
+ScopedResource
+Finalizer
+LifecycleRequirement
+```
+
+Then an effect-atom target compiles it to `Atom.make(... get.addFinalizer ...)`.
+
+A React target might compile it to `useEffect`.
+
+A native target might compile it to platform lifecycle subscriptions.
+
+---
+
+# 7. Runtime/layer-backed atoms map to our runtime/service design
+
+`Atom.runtime(Users.Default)` creates an atom runtime from an Effect Layer, and then atoms/functions can use services from that layer. 
+
+This fits our earlier runtime/service model:
+
+```ts
+const clientRuntime = gen.runtime.client({
+  services: [ApiClient, AuthClient, Router, Toast],
+})
+```
+
+Then:
+
+```ts
+const userResource = gen.reactivity.query(getUserFunc, {
+  runtime: clientRuntime,
+})
+```
+
+For `effect-atom`, this can generate:
+
+```ts
+const runtimeAtom = Atom.runtime(AppClientLayer)
+```
+
+For other targets, it can generate provider/context setup.
+
+So add a client runtime concept:
+
+```txt
+ClientRuntime
+ServiceLayer
+ReactiveRuntime
+```
+
+This should live in `@gen/reactivity` / `@gen/client`, not kernel core, but it uses core `Runtime`, `Requirement`, and `Effect`.
+
+---
+
+# 8. Function atoms are analogous to generated mutation functions
+
+`Atom.fn` is a callable effectful atom. The docs use it for logging and creating users. 
+
+That maps almost one-to-one to:
+
+```ts
+gen.func.action(...)
+```
+
+So targets can generate:
+
+```ts
+const createUserAtom = runtimeAtom.fn(...)
+```
+
+from:
+
+```ts
+const createUserFunc = gen.func.action(...)
+```
+
+This reinforces that `gen.func.action` is the right source of truth.
+
+---
+
+# 9. Streams and pull atoms suggest paginated/infinite resources
+
+The docs include stream atoms and `Atom.pull` for pulling chunks, useful for infinite scrolling/paginated data. 
+
+We should model this:
+
+```ts
+const listUsersFunc = gen.func.query({
+  name: "listUsers",
+  input: gen.object({
+    cursor: gen.optional(User.fields.id.type),
+    limit: gen.optional(gen.int()),
+  }),
+  returns: gen.page(UserSummary, {
+    cursor: User.fields.id,
+  }),
+  body: ...
+})
+```
+
+Then:
+
+```ts
+const usersInfinite = gen.reactivity.infiniteQuery(listUsersFunc, {
+  getNextCursor: result => result.nextCursor,
+})
+```
+
+Effect-atom target:
+
+```txt
+Atom.pull(...)
+```
+
+TanStack target:
+
+```txt
+useInfiniteQuery(...)
+```
+
+Svelte target:
+
+```txt
+custom store with pull()
+```
+
+So the primitive should be:
+
+```txt
+Page<T>
+PullResource<T>
+InfiniteResource<T>
+```
+
+---
+
+# 10. Search params and local storage are store adapters
+
+The docs show atoms backed by URL search params and local storage, with schema parsing. 
+
+This fits our store model beautifully.
+
+We can model URL params and local storage as client stores:
+
+```ts
+const clientStores = clientStorage({
+  stores: {
+    searchParams: urlSearchParams(),
+    local: localStorage(),
+    session: sessionStorage(),
+  },
+})
+```
+
+Then mappings:
+
+```ts
+const UserListState = gen.entity("UserListState", {
+  search: gen.string().nullable(),
+  role: gen.optional(User.fields.role.type),
+})
+
+const UserListStateMap = gen.mapping.mapping(UserListState, [
+  gen.mapping.mapField(UserListState.fields.search, {
+    read: gen.client.searchParams.param("search"),
+    write: gen.client.searchParams.param("search"),
+  }),
+])
+```
+
+This can generate atoms like `Atom.searchParam(...)` or `Atom.kvs(...)`.
+
+This is a strong idea to include: **client state stores are stores too**, not special one-off hooks.
+
+---
+
+# What I would add to the spec
+
+I’d add a standard package:
+
+```txt
+@gen/reactivity
+```
+
+with primitives:
+
+```txt
+ReactiveKey
+KeyFamily<Input>
+ReactiveRegistry
+ReactiveResource<T, E>
+ReactiveMutation<I, O, E>
+ResourceState<T, E>
+InvalidationPlan
+RefreshPlan
+ReactiveRuntime
+ScopedResource
+PullResource
+```
+
+And a target package:
+
+```txt
+@gen/effect-atom
+```
+
+that generates:
+
+```txt
+Atom.make
+Atom.map
+Atom.family
+Atom.fn
+Atom.runtime
+Atom.withReactivity
+Atom.pull
+Atom.searchParam
+Atom.kvs
+AtomRpc / AtomHttpApi integrations
+```
+
+I’d also allow other targets:
+
+```txt
+@gen/tanstack-query
+@gen/swr
+@gen/vue-query
+@gen/svelte-stores
+@gen/solid-resources
+```
+
+Same source of truth, different reactive backend.
+
+---
+
+# How it fits with existing primitives
+
+The relationship should be:
+
+```txt
+gen.func.query
+  -> can become reactive query resource
+
+gen.func.action
+  -> can become reactive mutation resource
+
+gen.func.patch
+  -> can become optimistic client patch
+
+gen.key.family
+  -> stable reactive/cache identity
+
+gen.reactivity.invalidates
+  -> manual and inferred cache invalidation
+
+gen.runtime.client
+  -> provides service/layer runtime
+
+gen.ui.Behavior
+  -> can subscribe to reactive resources
+
+gen.forms.fromFunc
+  -> can use mutation resource and Result state
+```
+
+Example:
+
+```ts
+const getUserFunc = gen.func.query({
+  name: "getUser",
+  input: gen.object({ id: User.fields.id.type }),
+  returns: UserDetail,
+  body: ...,
+  key: ({ id }) => gen.key.entity(User, id),
+})
+
+const createUserFunc = gen.func.action({
+  name: "createUser",
+  input: CreateUserInput,
+  returns: UserDetail,
+  body: ...,
+  invalidates: ({ result }) => [
+    gen.key.collection(User),
+    gen.key.entity(User, result.id),
+  ],
+  optimistic: ...
+})
+```
+
+Generated for effect-atom:
+
+```ts
+const getUserAtom = Atom.family((id: UserId) =>
+  runtime.atom(...).pipe(
+    Atom.withReactivity([["User", id]])
+  )
+)
+
+const createUserAtom = runtime.fn(..., {
+  reactivityKeys: ["User:list"]
+})
+```
+
+Generated for React Query:
+
+```ts
+export const useGetUser = (input) =>
+  useQuery({
+    queryKey: userKey(input),
+    queryFn: () => client.getUser(input),
+  })
+
+export const useCreateUser = () =>
+  useMutation({
+    mutationFn: client.createUser,
+    onSuccess: (user) => {
+      queryClient.invalidateQueries(userListKey())
+      queryClient.invalidateQueries(userKey({ id: user.id }))
+    },
+  })
+```
+
+Same source, different target.
+
+---
+
+# Should we include manual reactivity?
+
+Yes. Absolutely.
+
+But I’d phrase it as:
+
+```txt
+The system should infer invalidation where possible, but manual reactivity keys are necessary and first-class.
+```
+
+Because some dependencies are not visible from static action bodies:
+
+```txt
+dashboard aggregates
+external services
+search indexes
+derived server views
+analytics stores
+permissions depending on membership changes
+feature flags
+local storage
+URL search params
+```
+
+Manual invalidation is not a hack. It is an honest boundary.
+
+---
+
+# Should we include registries?
+
+Yes, but as typed registries:
+
+```ts
+const keys = gen.reactivity.registry({
+  user: gen.key.family({ id: User.fields.id.type }),
+  users: gen.key.family({
+    search: gen.optional(gen.string()),
+    role: gen.optional(User.fields.role.type),
+  }),
+  dashboardStats: gen.key.unit(),
+})
+```
+
+Then:
+
+```ts
+key: ({ id }) => keys.user({ id })
+
+invalidates: [
+  keys.users.any(),
+  keys.dashboardStats(),
+]
+```
+
+This is better than raw strings like `"counter"`.
+
+But raw custom keys can exist as escape hatches:
+
+```ts
+gen.key.custom("legacy-dashboard")
+```
+
+---
+
+# Should atoms themselves be standard?
+
+I would not make atoms a standard core abstraction. I’d make them one implementation target.
+
+Recommended split:
+
+```txt
+@gen/reactivity
+  abstract reactive/cache/resource model
+
+@gen/effect-atom
+  Effect Atom implementation target
+
+@gen/tanstack-query
+  TanStack Query implementation target
+```
+
+This keeps us flexible.
+
+---
+
+# Summary
+
+Yes, integrate these ideas:
+
+```txt
+1. Add typed reactive keys / key families.
+2. Add a reactivity registry.
+3. Let query functions declare keys they read.
+4. Let action functions declare keys they invalidate.
+5. Infer invalidation where possible, but support manual invalidation.
+6. Add reactive resources generated from query funcs.
+7. Add reactive mutations generated from action funcs.
+8. Add Result-like resource states as a generic concept.
+9. Add scoped resource/lifecycle cleanup for UI behaviors and subscriptions.
+10. Treat URL search params, local storage, and client stores as store adapters.
+11. Support paginated/pull/infinite resources.
+12. Make `effect-atom` a target package, not the core abstraction.
+```
+
+The most important design rule:
+
+```txt
+gen.func.query/action remains the source of truth.
+Reactivity is an interpretation layer.
+Atoms are one possible generated runtime.
+```
+
+That gives us the good parts of `@effect-atom/atom` without coupling the whole library to it.
+
+Yes — and I think that is the clean version.
+
+The reactivity model should be **expressed using the same typed static expression/function system**, not as a separate ad hoc runtime API.
+
+So instead of raw string keys like:
+
+```ts
+reactivityKeys: ["users", "count"]
+```
+
+we define **typed key expressions**:
+
+```ts
+const userKey = gen.key.family("user", {
+  input: gen.object({
+    id: User.fields.id.type,
+  }),
+})
+
+const usersListKey = gen.key.family("users.list", {
+  input: gen.object({
+    search: gen.optional(gen.string()),
+    role: gen.optional(User.fields.role.type),
+  }),
+})
+```
+
+Then getters and mutators use static functions/expressions to declare what they read and invalidate.
+
+```ts
+const getUserFunc = gen.func.query({
+  name: "getUser",
+
+  input: gen.object({
+    id: User.fields.id.type,
+  }),
+
+  returns: UserDetail,
+
+  key: gen.func.expr({
+    name: "getUserKey",
+    input: gen.object({ id: User.fields.id.type }),
+    returns: userKey.type,
+    body: gen.expr(({ id }) => userKey({ id })),
+  }),
+
+  body: gen.query(({ id }) =>
+    gen.query.from(User)
+      .where(gen.op.eq(User.fields.id, id))
+      .select(UserDetail)
+  ),
+})
+```
+
+That key is not a runtime string. It is a typed static expression node.
+
+For a list:
+
+```ts
+const listUsersFunc = gen.func.query({
+  name: "listUsers",
+
+  input: gen.object({
+    search: gen.optional(gen.string()),
+    role: gen.optional(User.fields.role.type),
+  }),
+
+  returns: gen.array(UserSummary),
+
+  key: gen.func.expr({
+    name: "listUsersKey",
+    input: gen.object({
+      search: gen.optional(gen.string()),
+      role: gen.optional(User.fields.role.type),
+    }),
+    returns: usersListKey.type,
+    body: gen.expr(({ search, role }) =>
+      usersListKey({ search, role })
+    ),
+  }),
+
+  body: gen.query(({ search, role }) =>
+    gen.query.from(User)
+      .where(gen.op.and(
+        gen.op.whenSome(search, s =>
+          gen.op.contains(User.fields.displayName, s)
+        ),
+        gen.op.whenSome(role, r =>
+          gen.op.eq(User.fields.role, r)
+        ),
+      ))
+      .select(UserSummary)
+  ),
+})
+```
+
+Then mutations can invalidate using static expressions too:
+
+```ts
+const createUserFunc = gen.func.action({
+  name: "createUser",
+
+  input: gen.object({
+    email: User.fields.email.type,
+    displayName: User.fields.displayName.type,
+    role: User.fields.role.type,
+  }),
+
+  returns: UserDetail,
+
+  body: gen.action(({ email, displayName, role }) =>
+    gen.action.insert(User, {
+      [User.fields.email]: normalizeEmail.call({ email }),
+      [User.fields.displayName]: displayName,
+      [User.fields.role]: role,
+    }).returning(UserDetail)
+  ),
+
+  invalidates: gen.func.expr({
+    name: "createUserInvalidates",
+    input: gen.object({
+      result: UserDetail,
+    }),
+    returns: gen.array(gen.key.any()),
+    body: gen.expr(({ result }) => [
+      usersListKey.any(),
+      userKey({ id: result.id }),
+    ]),
+  }),
+})
+```
+
+That lets the compiler generate:
+
+```txt
+Effect Atom Reactivity.invalidate(...)
+TanStack Query invalidateQueries(...)
+SWR mutate(...)
+Vue Query invalidation
+Svelte store refresh
+custom registry invalidation
+```
+
+from the same typed invalidation expression.
+
+## The important abstraction
+
+I’d add this to the spec:
+
+```txt
+Reactive keys are static values.
+Reactive key families are typed functions.
+Invalidation plans are static expressions.
+Refresh plans are static expressions or actions.
+Reactive resources are interpretations of query/action functions.
+```
+
+Conceptually:
+
+```ts
+type KeyFamily<Name, Input> = StaticFunction<Input, ReactiveKey<Name, Input>>
+
+type ReactiveKey<Name, Payload> = {
+  kind: "reactiveKey"
+  name: Name
+  payload: Payload
+}
+
+type InvalidationPlan<Input> =
+  StaticFunction<Input, ReactiveKey.Any[]>
+```
+
+## Better example: inferred + manual invalidation
+
+We can infer some invalidations from the action body:
+
+```ts
+gen.action.insert(User, ...)
+```
+
+probably invalidates:
+
+```ts
+gen.key.collection(User)
+```
+
+and the inserted entity key:
+
+```ts
+gen.key.entity(User, result.id)
+```
+
+But the user can add manual invalidation with static expressions:
+
+```ts
+const createUserFunc = gen.func.action({
+  name: "createUser",
+  input: CreateUserInput,
+  returns: UserDetail,
+  body: ...,
+
+  reactivity: gen.reactivity.plan({
+    infer: true,
+
+    invalidates: gen.expr(({ result }) => [
+      gen.key.collection(User),
+      gen.key.entity(User, result.id),
+      dashboardStatsKey(),
+      auditFeedKey.any(),
+    ]),
+  }),
+})
+```
+
+Manual keys are still typed, not raw strings.
+
+## Parameterized invalidation
+
+Sometimes you want to invalidate all variants of a query:
+
+```ts
+usersListKey.any()
+```
+
+Sometimes only a specific one:
+
+```ts
+usersListKey({ search: gen.none(), role: gen.some("admin") })
+```
+
+Sometimes a prefix/group:
+
+```ts
+usersListKey.match({
+  role: "admin",
+})
+```
+
+So key families should support:
+
+```ts
+userKey({ id })
+userKey.any()
+
+usersListKey({ search, role })
+usersListKey.any()
+usersListKey.match({ role })
+```
+
+All should be static key expressions.
+
+## Reactivity inside action bodies
+
+We can also allow explicit invalidation as an action node:
+
+```ts
+const updateUserFunc = gen.func.action({
+  name: "updateUser",
+
+  input: gen.object({
+    id: User.fields.id.type,
+    displayName: User.fields.displayName.type,
+  }),
+
+  returns: UserDetail,
+
+  body: gen.action(({ id, displayName }) =>
+    gen.action.seq(
+      gen.action.update(User)
+        .where(gen.op.eq(User.fields.id, id))
+        .set(User.fields.displayName, displayName)
+        .returning(UserDetail),
+
+      gen.reactivity.invalidate([
+        gen.key.entity(User, id),
+        gen.key.collection(User),
+      ])
+    )
+  ),
+})
+```
+
+This is still static and analyzable because `gen.reactivity.invalidate(...)` is an `Action` node.
+
+Targets can compile it to:
+
+```ts
+yield* Reactivity.invalidate([...])
+```
+
+for Effect, or:
+
+```ts
+queryClient.invalidateQueries(...)
+```
+
+for TanStack Query.
+
+## Reactive resources as functions
+
+The query function can be wrapped as a reactive function:
+
+```ts
+const getUserResource = gen.reactivity.resource(getUserFunc, {
+  key: gen.expr(({ id }) => userKey({ id })),
+  state: gen.reactivity.resultState(),
+})
+```
+
+or the key can live directly on the query function:
+
+```ts
+const getUserFunc = gen.func.query({
+  name: "getUser",
+  input: ...,
+  returns: ...,
+  key: gen.expr(({ id }) => userKey({ id })),
+  body: ...
+})
+```
+
+Then a target can generate effect-atom code:
+
+```ts
+const getUserAtom = Atom.family((id: UserId) =>
+  runtime.atom(
+    Effect.gen(function* () {
+      const client = yield* ApiClient
+      return yield* client.getUser({ id })
+    })
+  ).pipe(
+    Atom.withReactivity([["user", id]])
+  )
+)
+```
+
+But that code is just one interpretation. The source is the typed static key expression.
+
+## Derived atoms/resources are also expressions
+
+Effect-atom has derived atoms:
+
+```ts
+const doubleCountAtom = Atom.make((get) => get(countAtom) * 2)
+```
+
+In our model, that should be a derived reactive resource:
+
+```ts
+const userDisplayLabel = gen.reactivity.derive({
+  name: "userDisplayLabel",
+
+  input: gen.object({
+    user: getUserFunc.output,
+  }),
+
+  returns: gen.string(),
+
+  deps: gen.expr(({ user }) => [
+    userKey({ id: user.id }),
+  ]),
+
+  body: gen.expr(({ user }) =>
+    gen.op.concat(user.displayName, gen.literal(" <"), user.email, gen.literal(">"))
+  ),
+})
+```
+
+Or more directly:
+
+```ts
+const selectedUserLabel = gen.func.expr({
+  name: "selectedUserLabel",
+  input: gen.object({
+    user: UserDetail,
+  }),
+  returns: gen.string(),
+  body: gen.expr(({ user }) =>
+    gen.op.concat(user.displayName, gen.literal(" <"), user.email, gen.literal(">"))
+  ),
+})
+```
+
+A reactivity target can compile this into an Atom.map, selector, computed ref, memo, etc.
+
+## Streams and pull resources
+
+Streams and infinite queries can also be static:
+
+```ts
+const streamNotificationsFunc = gen.func.stream({
+  name: "streamNotifications",
+
+  input: gen.object({
+    userId: User.fields.id.type,
+  }),
+
+  yields: Notification,
+
+  key: gen.expr(({ userId }) =>
+    notificationStreamKey({ userId })
+  ),
+
+  body: gen.stream(({ userId }) =>
+    gen.stream.fromQuery(
+      gen.query.from(Notification)
+        .where(gen.op.eq(Notification.fields.userId, userId))
+        .orderBy(gen.order.desc(Notification.fields.createdAt))
+    )
+  ),
+})
+```
+
+Pull/infinite:
+
+```ts
+const listUsersPageFunc = gen.func.query({
+  name: "listUsersPage",
+
+  input: gen.object({
+    cursor: gen.optional(User.fields.id.type),
+    limit: gen.optional(gen.int()),
+  }),
+
+  returns: gen.page(UserSummary, {
+    cursor: User.fields.id,
+  }),
+
+  key: gen.expr(({ cursor, limit }) =>
+    usersPageKey({ cursor, limit })
+  ),
+
+  body: ...
+})
+```
+
+Targets:
+
+```txt
+effect-atom -> Atom.pull
+TanStack Query -> useInfiniteQuery
+Svelte -> readable store with pull()
+```
+
+## URL/search params/local storage as key-backed stores
+
+Effect-atom has `Atom.searchParam` and `Atom.kvs`. In our model those should be client stores with typed mappings:
+
+```ts
+const SearchState = gen.entity("UserSearchState", {
+  search: gen.optional(gen.string()),
+  role: gen.optional(User.fields.role.type),
+})
+
+const SearchStateMap = gen.mapping.mapping(SearchState, [
+  gen.mapping.mapField(SearchState.fields.search, {
+    read: gen.client.searchParams.param("search"),
+    write: gen.client.searchParams.param("search"),
+  }),
+  gen.mapping.mapField(SearchState.fields.role, {
+    read: gen.client.searchParams.param("role", {
+      schema: User.fields.role.type,
+    }),
+    write: gen.client.searchParams.param("role"),
+  }),
+])
+```
+
+Then a reactivity target can compile to search-param atoms or equivalent.
+
+Again, all transforms/parsing should use static expressions/schemas.
+
+## What should go in the spec
+
+I’d add a section like:
+
+```txt
+Reactive expressions and key functions
+
+- Reactive keys are typed values.
+- Key families are static functions from typed input to keys.
+- Query functions may declare key expressions.
+- Action functions may declare invalidation expressions.
+- Invalidation may be inferred from action bodies but can be manually specified.
+- Derived resources are static functions over resource states.
+- Reactive resources compile to target-specific primitives: atoms, query hooks, stores, signals, resources.
+```
+
+With primitives:
+
+```ts
+gen.key.family(...)
+gen.key.entity(...)
+gen.key.collection(...)
+gen.key.custom(...)
+
+gen.reactivity.resource(...)
+gen.reactivity.mutation(...)
+gen.reactivity.invalidate(...)
+gen.reactivity.derive(...)
+gen.reactivity.registry(...)
+gen.reactivity.resultState()
+gen.reactivity.pull(...)
+gen.reactivity.stream(...)
+```
+
+## Should it be core?
+
+I’d split it:
+
+Core should include enough to support it:
+
+```txt
+StaticFunction
+StaticNode
+Requirement
+Effect
+Ref
+Artifact
+Target
+```
+
+A standard package should define:
+
+```txt
+@gen/reactivity
+  ReactiveKey
+  KeyFamily
+  ReactiveRegistry
+  ResourceState
+  ReactiveResource
+  ReactiveMutation
+  InvalidationPlan
+  PullResource
+  StreamResource
+```
+
+Targets implement:
+
+```txt
+@gen/effect-atom
+@gen/tanstack-query
+@gen/swr
+@gen/vue-query
+@gen/svelte-store
+@gen/solid-resource
+```
+
+## The clean rule
+
+```txt
+All reactive behavior that should be generated, analyzed, invalidated, tested, or ported must be represented as static functions/actions/expressions.
+```
+
+So yes:
+
+```txt
+query key = Expr<Input, Key>
+invalidates = Expr<Input/Output, Key[]>
+derived resource = Func<ResourceInput, Expr<Output>>
+mutation = Func<Input, Action<Output>>
+optimistic update = Func<Input, Patch>
+stream = Func<Input, Stream<Output>>
+```
+
+That integrates manual reactivity and atom-style registries directly into the typed static expression system without making atoms the core abstraction.
+
+
+
+effect-atom-jsx api: 
+API Reference
+Namespace Modules
+Each module is available as a namespace import and as a deep import:
+
+// Namespace import
+import { Atom, AtomRef, Registry, Result, Hydration } from "effect-atom-jsx";
+import { AtomSchema, AtomLogger, AtomRpc, AtomHttpApi } from "effect-atom-jsx";
+
+// Deep imports
+import * as Atom from "effect-atom-jsx/Atom";
+import * as AtomSchema from "effect-atom-jsx/AtomSchema";
+Module	Key Exports
+Atom	make, readable, writable, family, map, withFallback, projection, projectionAsync, withReactivity, invalidateReactivity, keepAlive, runtime, fn, pull, Stream.* (advanced OOO helpers), searchParam, kvs, batch, get, set, update, modify, refresh, subscribe, fromStream, fromQueue, query
+AtomRef	make, collection
+Registry	make (returns instance with get, set, update, modify, mount, refresh, subscribe, reset, dispose)
+Result	initial, success, failure, isInitial, isSuccess, isFailure, isWaiting, fromAsyncResult, toAsyncResult, map, flatMap, match, all
+Hydration	dehydrate, hydrate, toValues
+AtomSchema	make, makeInitial, path, HtmlInput
+AtomLogger	traced, tracedWritable, logGet, logSet, snapshot
+AtomRpc	Tag() factory with query, mutation, refresh
+AtomHttpApi	Tag() factory with grouped query, mutation, refresh
+Effect Integration
+import {
+  atomEffect, queryEffect, defineQuery,
+  queryEffectStrict, defineQueryStrict, createQueryKey, invalidate, refresh,
+  isPending, latest,
+  createOptimistic, mutationEffect,
+  mutationEffectStrict,
+  useService, useServices, createMount, mount,
+  layerContext,
+  scopedRoot, scopedRootEffect,
+  scopedQuery, scopedQueryEffect,
+  scopedMutation, scopedMutationEffect,
+  signal, computed,
+} from "effect-atom-jsx";
+Reactive Core
+import {
+  createSignal, createEffect, createMemo, createRoot,
+  createContext, useContext,
+  onCleanup, onMount,
+  untrack, sample, batch,
+  mergeProps, splitProps,
+  getOwner, runWithOwner,
+} from "effect-atom-jsx";
+
+Yes — that is exactly the architecture I’d aim for.
+
+The static reactive data becomes a **portable dependency/invalidation/interaction graph**. Generators can interpret that graph into different runtime systems.
+
+Think of the source model as:
+
+```txt
+Static functions
+  query/action/patch/stream/expr
+
+Reactive keys
+  entity keys, collection keys, custom keys, parameterized key families
+
+Reactivity plans
+  reads, invalidates, refreshes, derives, patches, reconciles, rolls back
+
+Runtime boundaries
+  client/server/db/worker/edge/native/TUI
+
+Artifacts
+  hooks, atoms, stores, RPC clients, cache policies, visualizations, tests
+```
+
+Then different generators can compile the same model into different outputs.
+
+## State management
+
+A React Query generator could emit:
+
+```ts
+useGetUser(...)
+useListUsers(...)
+useCreateUser(...)
+queryClient.invalidateQueries(...)
+```
+
+An Effect Atom generator could emit:
+
+```ts
+Atom.family(...)
+Atom.fn(...)
+Atom.withReactivity(...)
+Reactivity.invalidate(...)
+```
+
+A Svelte generator could emit stores. A Vue generator could emit composables. A Solid generator could emit resources/signals.
+
+The source of truth would still be:
+
+```ts
+const getUser = gen.func.query({
+  input: gen.object({ id: User.fields.id.type }),
+  returns: UserDetail,
+  key: gen.expr(({ id }) => key.user({ id })),
+  body: ...
+})
+
+const createUser = gen.func.action({
+  input: CreateUserInput,
+  returns: UserDetail,
+  body: ...,
+  invalidates: gen.expr(({ result }) => [
+    key.users.any(),
+    key.user({ id: result.id }),
+  ]),
+})
+```
+
+## Optimistic UI
+
+Because optimistic plans are also static patches, a generator can emit rollback/reconcile logic.
+
+```ts
+const createPost = gen.func.action({
+  input: CreatePostInput,
+  returns: PostDetail,
+
+  body: ...,
+
+  optimistic: gen.patch(({ title, body, authorId }) =>
+    gen.optimistic.insert(listPosts, {
+      id: gen.optimistic.tempId(Post.fields.id),
+      title,
+      body,
+      authorId,
+    })
+  ),
+
+  reconcile: gen.expr(({ optimistic, result }) =>
+    gen.optimistic.replaceTempId(optimistic.id, result.id)
+  ),
+
+  rollback: gen.optimistic.inverse(),
+})
+```
+
+Generators can produce:
+
+```txt
+TanStack Query onMutate/onError/onSuccess
+Effect Atom mutation + invalidation
+Apollo/urql cache updates
+Svelte/Vue/Solid store patches
+offline queue patches
+test cases for rollback/reconciliation
+```
+
+This is much stronger than “generate hooks,” because the optimistic semantics are declared once.
+
+## Cross-boundary communication
+
+Static functions can compile into client/server protocols.
+
+The same action:
+
+```ts
+createUserFunc
+```
+
+can generate:
+
+```txt
+server route handler
+client SDK method
+RPC procedure
+WebSocket mutation
+typed HTTP endpoint
+OpenAPI operation
+Effect RPC group
+offline command envelope
+queue message
+```
+
+The boundary generator knows:
+
+```txt
+input type
+output type
+error type
+effects
+runtime requirements
+auth requirements
+reactivity invalidations
+optimistic patch
+serialization format
+```
+
+So it can create the whole client/server contract.
+
+For example:
+
+```ts
+gen.hono.routes(UserResource)
+gen.rpc.group([getUser, createUser])
+gen.reactQuery.hooks([getUser, createUser])
+gen.effectAtom.resources([getUser, createUser])
+```
+
+all consume the same static function graph.
+
+## Visualization
+
+Yes — this becomes very visualizable.
+
+Because keys, queries, actions, invalidations, and patches are static data, a generator can render graphs like:
+
+```txt
+createUser
+  writes User
+  emits UserCreated
+  invalidates users.list.*
+  invalidates user.{id}
+  updates optimistic listUsers
+  requires server runtime
+  requires primary store transaction
+```
+
+Or dependency graph:
+
+```txt
+UserCreateForm
+  submits createUser
+  uses mutation state createUser
+  displays errors EmailAlreadyExists -> email
+  invalidates listUsers
+  updates optimistic User table
+```
+
+Or runtime boundary graph:
+
+```txt
+Browser
+  UserCreateForm
+  useCreateUser
+  optimistic patch
+
+Server
+  createUser route
+  auth check
+  validation
+  insert User
+  emit event
+
+Database
+  users table insert
+
+Reactive layer
+  invalidate users.list
+  invalidate user.{id}
+```
+
+This could generate docs, diagrams, debugging dashboards, devtools, test plans, and impact analysis.
+
+## The right abstraction
+
+I’d call this something like:
+
+```txt
+Reactive Graph
+```
+
+or:
+
+```txt
+Application Dataflow Graph
+```
+
+It is built from:
+
+```txt
+Func nodes
+  query/action/expr/patch/stream
+
+Key nodes
+  entity/collection/custom/key family
+
+Resource nodes
+  query resource, mutation resource, stream resource
+
+Boundary nodes
+  client/server/db/worker/store/platform
+
+Edges
+  reads
+  writes
+  invalidates
+  derives
+  patches
+  reconciles
+  rolls back
+  emits
+  subscribes
+  requires
+```
+
+Then generators interpret it.
+
+## This should be a standard package, not kernel core
+
+Core should provide the static-node machinery.
+
+```txt
+StaticFunction
+StaticNode
+Expr
+Action
+Patch
+Requirement
+Effect
+Ref
+Artifact
+Target
+```
+
+Then `@gen/reactivity` defines:
+
+```txt
+ReactiveKey
+KeyFamily
+ReactiveResource
+ReactiveMutation
+InvalidationPlan
+OptimisticPlan
+ResourceState
+ReactiveGraph
+```
+
+Then targets compile it:
+
+```txt
+@gen/effect-atom
+@gen/tanstack-query
+@gen/swr
+@gen/vue-query
+@gen/svelte-store
+@gen/solid-resource
+@gen/rpc
+@gen/devtools
+@gen/visualizer
+```
+
+## The powerful part
+
+Once you represent reactivity statically, the library can answer questions before runtime:
+
+```txt
+Which queries are stale after this mutation?
+Can this optimistic patch be rolled back?
+Does this action cross a client/server boundary?
+Can this query run on the edge?
+Which UI components depend on this key?
+Which generated forms can produce this error?
+Which resource needs a loading/error state?
+Can this stream be resumed?
+Can this mutation work offline?
+```
+
+That is the real value.
+
+## So the answer is yes
+
+Generators can use the same static reactive model to generate:
+
+```txt
+state management
+query/mutation hooks
+atoms/signals/stores
+optimistic updates
+rollback/reconciliation
+cache invalidation
+RPC/HTTP/WebSocket clients
+server routes
+offline queues
+stream subscriptions
+cross-boundary serialization
+devtools
+dependency visualizations
+test plans
+docs
+```
+
+The key is: **do not generate these from framework-specific code. Generate them from typed static functions, keys, actions, patches, and runtime boundaries.**
+
+
+Yes — exactly. A lot of the reactivity graph should be **derived automatically** from the schema + mappings + relations + operation/action bodies + laws.
+
+Manual reactivity should be the **override/escape hatch**, not the primary authoring burden.
+
+The compiler already knows a lot:
+
+```txt
+Entity fields
+Relations
+Mappings
+Computed field dependencies
+Queries/getters
+Mutators/actions
+Events
+Operation laws
+Runtime effects
+Store boundaries
+Optimistic patch plans
+```
+
+From that, it can derive a conservative reactivity graph.
+
+## What can be derived automatically
+
+### 1. Entity and collection invalidation
+
+If an action inserts `User`, the compiler can infer:
+
+```txt
+writes: User
+invalidates:
+  User collection queries
+  any projections that include User
+  any relation collections involving User
+```
+
+Example:
+
+```ts
+const createUser = gen.func.action({
+  name: "createUser",
+  body: gen.action(({ email }) =>
+    gen.action.insert(User, {
+      [User.fields.email]: email,
+    }).returning(UserDetail)
+  ),
+})
+```
+
+Inferred:
+
+```txt
+writes User
+invalidates key.collection(User)
+invalidates listUsers queries
+creates key.entity(User, result.id)
+```
+
+### 2. Entity instance invalidation
+
+If an action updates by ID:
+
+```ts
+gen.action.update(User)
+  .where(gen.op.eq(User.fields.id, id))
+  .set(User.fields.displayName, displayName)
+```
+
+The compiler can infer:
+
+```txt
+writes User.displayName
+target entity key: User:{id}
+invalidates:
+  key.entity(User, id)
+  queries selecting User.displayName
+  projections containing User.displayName
+```
+
+It does not need the user to manually say “invalidate getUser.”
+
+### 3. Derived/computed fields
+
+If `User.displayName` is mapped from `firstName + lastName`:
+
+```ts
+mapField(User.fields.displayName, {
+  read: FullName.to({
+    first: users.columns.firstName,
+    last: users.columns.lastName,
+  }),
+})
+```
+
+then a write to either underlying column can invalidate:
+
+```txt
+User.displayName
+UserSummary
+UserDetail
+any query selecting displayName
+any UI resource depending on displayName
+```
+
+This is a major reason to make mappings static expressions.
+
+### 4. Relationship invalidation
+
+If `Post.authorId` changes, the compiler can infer affected relation keys:
+
+```txt
+Post.author
+User.posts
+```
+
+So an update like:
+
+```ts
+gen.action.update(Post)
+  .set(Post.fields.authorId, newAuthorId)
+```
+
+can invalidate:
+
+```txt
+key.entity(Post, postId)
+key.relation(PostAuthor, { postId })
+key.relation(UserPosts, { userId: oldAuthorId })
+key.relation(UserPosts, { userId: newAuthorId })
+```
+
+There is one caveat: sometimes the old relation value must be read before writing to know `oldAuthorId`. The planner can detect that and generate a pre-read if needed, or conservatively invalidate broader keys.
+
+### 5. Aggregate invalidation
+
+If `User.postCount` depends on:
+
+```ts
+count(Post.id).where(Post.authorId === User.id)
+```
+
+then inserts/deletes/author changes for `Post` can invalidate:
+
+```txt
+User.postCount for affected author
+UserSummary if it includes postCount
+dashboard aggregates using postCount
+```
+
+This is where static query expressions are extremely valuable.
+
+The compiler can build dependency edges:
+
+```txt
+Post insert/delete -> User.postCount
+Post.authorId update -> User.postCount(oldAuthor), User.postCount(newAuthor)
+```
+
+### 6. Query key invalidation
+
+A getter has a query body:
+
+```ts
+const listUsers = gen.func.query({
+  body: gen.query(({ role }) =>
+    gen.query.from(User)
+      .where(gen.op.eq(User.fields.role, role))
+      .select(UserSummary)
+  ),
+})
+```
+
+The compiler knows this query reads:
+
+```txt
+User.role
+UserSummary fields
+```
+
+If an action updates `User.role`, the compiler knows `listUsers` may be affected.
+
+If the update changes a user from `"admin"` to `"user"`, the exact affected keys are:
+
+```txt
+listUsers({ role: "admin" })
+listUsers({ role: "user" })
+```
+
+If the old value is unknown, it can invalidate:
+
+```txt
+listUsers.any()
+```
+
+That’s conservative but correct.
+
+### 7. Laws can improve invalidation and optimistic updates
+
+Operation laws help determine whether updates can be patched locally.
+
+If an action does:
+
+```ts
+increment(User.fields.score, amount)
+```
+
+and `add` is associative/commutative with identity `0`, then optimistic patching can be:
+
+```txt
+score = score + amount
+```
+
+without needing a full refetch.
+
+If an operation is idempotent, repeated invalidation/refresh can be coalesced.
+
+If an operation is reversible, rollback can be generated:
+
+```txt
+apply: score + amount
+rollback: score - amount
+```
+
+So laws are not just academic; they make generated optimistic UI and incremental updates safer.
+
+## What should remain manual
+
+Even with a strong static model, manual keys are still needed for boundaries the compiler cannot see.
+
+Examples:
+
+```txt
+external analytics dashboard
+search indexes
+third-party services
+custom server-side caches
+feature flags
+permissions affected by external identity provider
+raw SQL or opaque JS
+non-static side effects
+cross-service data dependencies
+```
+
+So manual reactivity should exist:
+
+```ts
+reactivity: {
+  invalidates: gen.expr(({ result }) => [
+    dashboardStatsKey(),
+    searchIndexKey(User),
+  ]),
+}
+```
+
+But it should supplement the inferred graph:
+
+```ts
+reactivity: {
+  infer: true,
+  invalidates: ...
+}
+```
+
+or suppress it deliberately:
+
+```ts
+reactivity: {
+  infer: false,
+  invalidates: ...
+}
+```
+
+## The compiler should derive a dependency graph
+
+I’d model this as a compiler pass:
+
+```txt
+1. Collect reads from query functions.
+2. Collect writes from action functions.
+3. Expand field dependencies through mappings.
+4. Expand relation dependencies through graph edges.
+5. Expand aggregate dependencies through query expressions.
+6. Expand event/reducer/view dependencies.
+7. Apply operation laws for patch/rollback/coalescing.
+8. Respect store/runtime boundaries.
+9. Produce reactivity graph.
+10. Let user refine with manual keys.
+```
+
+The graph could contain edges like:
+
+```txt
+Action createPost
+  writes Post.title, Post.body, Post.authorId
+  creates Post:{id}
+  invalidates Post.collection
+  invalidates User.posts:{authorId}
+  invalidates User.postCount:{authorId}
+  invalidates listPosts.*
+  invalidates getUser:{authorId} if projection includes postCount/posts
+```
+
+## This means manual reactivity is optional most of the time
+
+A well-defined action should be enough:
+
+```ts
+const createPost = gen.func.action({
+  input: gen.object({
+    title: Post.fields.title.type,
+    body: Post.fields.body.type,
+    authorId: Post.fields.authorId.type,
+  }),
+
+  body: gen.action(({ title, body, authorId }) =>
+    gen.action.insert(Post, {
+      [Post.fields.title]: title,
+      [Post.fields.body]: body,
+      [Post.fields.authorId]: authorId,
+    }).returning(PostDetail)
+  ),
+})
+```
+
+The compiler can infer:
+
+```txt
+Post collection invalidated
+PostDetail for returned id created
+User.posts for authorId invalidated
+User.postCount for authorId invalidated
+queries reading Post or User.postCount invalidated
+```
+
+Then the user only adds manual invalidation for external concerns:
+
+```ts
+reactivity: {
+  alsoInvalidates: gen.expr(({ result }) => [
+    searchIndexKey(Post),
+    dashboardStatsKey(),
+  ]),
+}
+```
+
+## Conservative correctness first
+
+The compiler should favor correctness over minimal invalidation.
+
+Three levels:
+
+```txt
+precise
+  invalidate exact key/entity/relation when old/new values known
+
+bounded
+  invalidate a family/match, e.g. listUsers.match({ role })
+
+broad
+  invalidate listUsers.any() or key.collection(User)
+```
+
+Example: update user role.
+
+If old role is known:
+
+```txt
+invalidate listUsers({ role: oldRole })
+invalidate listUsers({ role: newRole })
+```
+
+If not known:
+
+```txt
+invalidate listUsers.any()
+```
+
+This is fine. Users can opt into pre-read plans for precision:
+
+```ts
+reactivity: {
+  precision: "preReadOldValues",
+}
+```
+
+or choose broader invalidation:
+
+```ts
+reactivity: {
+  precision: "conservative",
+}
+```
+
+## The reactivity graph can power multiple outputs
+
+Once derived, generators can use it for:
+
+```txt
+TanStack Query invalidation
+Effect Atom reactivity keys
+SWR mutate keys
+Vue/Svelte/Solid resources
+optimistic patches
+devtools
+dependency diagrams
+cache policies
+test generation
+server-side subscriptions
+event routing
+materialized view refresh
+search index sync
+```
+
+So yes: derive once, interpret many ways.
+
+## The design I’d write into the spec
+
+```txt
+Reactivity is primarily derived, not manually authored.
+
+The compiler derives read/write/invalidation edges from:
+  static query functions
+  static action functions
+  field mappings
+  relation graph
+  projection definitions
+  aggregate expressions
+  event/reducer/view definitions
+  operation laws
+  runtime/store boundaries
+
+Manual reactivity keys are supported as refinements for dependencies that are opaque,
+external, intentionally broad, or not statically visible.
+```
+
+API shape:
+
+```ts
+const createPost = gen.func.action({
+  name: "createPost",
+  input: CreatePostInput,
+  returns: PostDetail,
+  body: ...,
+
+  reactivity: gen.reactivity.derive({
+    infer: true,
+    precision: "conservative",
+    alsoInvalidates: gen.expr(({ result }) => [
+      searchIndexKey(Post),
+      dashboardStatsKey(),
+    ]),
+  }),
+})
+```
+
+Getter:
+
+```ts
+const listPosts = gen.func.query({
+  name: "listPosts",
+  input: ListPostsInput,
+  returns: gen.array(PostSummary),
+  body: ...,
+
+  key: gen.reactivity.keyFromQuery(),
+})
+```
+
+Or explicit key if desired:
+
+```ts
+key: gen.expr(({ authorId }) =>
+  postListKey({ authorId })
+)
+```
+
+## Final take
+
+Yes — the schema and operations should give us enough to derive most of the reactivity graph automatically.
+
+The strongest model is:
+
+```txt
+Static schema + mappings + relations + funcs/actions
+  -> compiler derives dependency/reactivity graph
+  -> user optionally refines with manual keys
+  -> generators emit state management, invalidation, optimistic UI, subscriptions, diagrams, and tests
+```
+
+Manual reactivity is still necessary, but it should feel like:
+
+```txt
+“the compiler can’t see this external dependency, so I’ll annotate it”
+```
+
+not:
+
+```txt
+“I must manually maintain every invalidation key forever.”
+```
+
+
+Yes — **Datomic-style rules are a very good fit**, and I think they should exist as an optional-but-important standard package.
+
+They should not replace schemas, mappings, relations, operations, or reactivity. They should sit **above them** as a declarative inference/query layer.
+
+The shape becomes:
+
+```txt
+schema + relations + mappings + operations
+  -> facts / predicates / rules
+  -> derived views / queries / constraints
+  -> reactivity graph / IVM / subscriptions / generated code
+```
+
+The key idea: rules can make implicit dependencies explicit. That can help generate manual reactivity, incremental view maintenance, subscriptions, authorization predicates, derived relations, and materialized views.
+
+## What Datomic-style rules would add
+
+A Datomic-style rule is a named logical predicate:
+
+```clojure
+[(ancestor ?a ?b)
+ [?a :person/parent ?b]]
+
+[(ancestor ?a ?b)
+ [?a :person/parent ?x]
+ (ancestor ?x ?b)]
+```
+
+In our TypeScript-style DSL, that might look like:
+
+```ts
+const Ancestor = gen.rules.rule("Ancestor", {
+  input: {
+    ancestor: Person,
+    descendant: Person,
+  },
+
+  body: ({ ancestor, descendant }) =>
+    gen.rules.or(
+      gen.rules.fact(Parent, {
+        parent: ancestor,
+        child: descendant,
+      }),
+
+      gen.rules.exists(({ middle }) =>
+        gen.rules.and(
+          gen.rules.fact(Parent, {
+            parent: ancestor,
+            child: middle,
+          }),
+          Ancestor({ ancestor: middle, descendant })
+        )
+      )
+    ),
+})
+```
+
+That rule is static, typed, analyzable, and dependency-traceable.
+
+It tells the compiler:
+
+```txt
+Ancestor depends on Parent.
+Changing Parent may affect Ancestor.
+Any view/query/policy depending on Ancestor should refresh when Parent changes.
+```
+
+That is exactly the kind of information needed for derived reactivity and IVM.
+
+## Should we have it?
+
+I’d say **yes, but as `@gen/rules`, not kernel core**.
+
+Core should provide:
+
+```txt
+StaticFunction
+Expr
+Query
+Action
+Ref
+Requirement
+Effect
+Runtime
+Artifact
+```
+
+`@gen/rules` should provide:
+
+```txt
+Rule
+Predicate
+Fact pattern
+Logic variable
+Unification
+Recursive rule support
+Negation with safety rules
+Stratification checks
+Datalog-like query compilation
+Dependency extraction
+Delta/incremental maintenance metadata
+```
+
+Then optional targets can interpret it:
+
+```txt
+@gen/sql-rules
+@gen/datomic
+@gen/spacetimedb
+@gen/datafrog
+@gen/ivm
+@gen/devtools
+@gen/reactivity
+```
+
+## How rules help derive reactivity
+
+Suppose we define:
+
+```ts
+const UserPostCount = gen.rules.view("UserPostCount", {
+  input: {
+    user: User,
+  },
+
+  returns: gen.object({
+    count: gen.int(),
+  }),
+
+  body: ({ user }) =>
+    gen.rules.aggregate.count(Post, {
+      where: gen.op.eq(Post.fields.authorId, user.id),
+    }),
+})
+```
+
+Or a more relational rule:
+
+```ts
+const PostByAuthor = gen.rules.rule("PostByAuthor", {
+  input: {
+    user: User,
+    post: Post,
+  },
+
+  body: ({ user, post }) =>
+    gen.rules.fact(Post, {
+      id: post.id,
+      authorId: user.id,
+    }),
+})
+```
+
+Then if this action runs:
+
+```ts
+const createPost = gen.func.action({
+  name: "createPost",
+  input: CreatePostInput,
+  returns: PostDetail,
+
+  body: gen.action(({ title, authorId }) =>
+    gen.action.insert(Post, {
+      [Post.fields.title]: title,
+      [Post.fields.authorId]: authorId,
+    }).returning(PostDetail)
+  ),
+})
+```
+
+The compiler can infer:
+
+```txt
+createPost inserts Post.
+PostByAuthor depends on Post.authorId.
+UserPostCount depends on Post.authorId.
+Therefore:
+  invalidate PostByAuthor for authorId
+  invalidate UserPostCount for authorId
+  invalidate queries/views/resources using those rules
+```
+
+This is better than manually writing:
+
+```ts
+invalidates: [
+  userPostCountKey({ userId: authorId }),
+  userPostsKey({ userId: authorId }),
+]
+```
+
+The rule system can generate those dependencies.
+
+## Rules can generate IVM
+
+Rules are especially useful for IVM because they express dependencies in a way that can be delta-maintained.
+
+For example:
+
+```ts
+const ActiveUserPosts = gen.rules.view("ActiveUserPosts", {
+  input: {
+    user: User,
+  },
+
+  returns: Post,
+
+  body: ({ user, post }) =>
+    gen.rules.and(
+      gen.rules.fact(Post, {
+        id: post.id,
+        authorId: user.id,
+      }),
+      gen.rules.fact(User, {
+        id: user.id,
+        status: "active",
+      })
+    ),
+})
+```
+
+The compiler can derive:
+
+```txt
+View ActiveUserPosts depends on:
+  Post.authorId
+  User.status
+
+Delta rules:
+  On Post insert/update/delete -> update ActiveUserPosts for affected author
+  On User status change -> update ActiveUserPosts for affected user
+```
+
+That can generate:
+
+```txt
+SQL materialized view refresh logic
+incremental server cache invalidation
+Effect Atom reactivity keys
+TanStack Query invalidation
+event processors
+stream processors
+subscription invalidation
+search index updates
+devtool dependency graphs
+```
+
+The atom/reactivity docs you uploaded had explicit reactivity keys that refresh queries after mutations; rules give us a way to derive many of those keys automatically instead of maintaining them manually. 
+
+## Rules can express manual reactivity as facts
+
+Manual reactivity could become declarative facts/rules too.
+
+Instead of:
+
+```ts
+reactivity: {
+  alsoInvalidates: [dashboardStatsKey()]
+}
+```
+
+you could write:
+
+```ts
+const DashboardStatsDependsOnUser = gen.rules.dependsOn("DashboardStatsDependsOnUser", {
+  source: DashboardStats,
+  reads: [User],
+})
+```
+
+Or:
+
+```ts
+gen.reactivity.rule("DashboardStatsInvalidation", {
+  when: gen.rules.changed(User),
+  invalidate: dashboardStatsKey(),
+})
+```
+
+A more typed version:
+
+```ts
+const DashboardStatsInvalidation = gen.rules.rule("DashboardStatsInvalidation", {
+  input: {
+    change: gen.change(User),
+  },
+
+  body: ({ change }) =>
+    gen.rules.invalidate(dashboardStatsKey())
+})
+```
+
+So yes: **manual reactivity can be expressed as rules**. That gives users a structured, analyzable escape hatch instead of raw string keys.
+
+## Rules + operations/laws
+
+Rules become even more powerful when combined with operation laws.
+
+Example: a counter view.
+
+```ts
+const UserPostCount = gen.rules.reducer("UserPostCount", {
+  key: Post.fields.authorId,
+  value: gen.int(),
+
+  onInsert: Post,
+  reduce: gen.ops.addInt,
+  identity: 0,
+})
+```
+
+If `addInt` is associative and has identity `0`, the system knows it can:
+
+```txt
+incrementally update count
+batch deltas
+parallelize updates
+rollback insert with subtraction if inverse exists
+generate optimistic update count += 1
+```
+
+So laws help determine whether a rule/view can be maintained incrementally and whether optimistic UI can be derived safely.
+
+Example:
+
+```ts
+const createPost = gen.func.action({
+  body: insert(Post),
+  optimistic: gen.optimistic.derive(),
+})
+```
+
+The compiler can derive:
+
+```txt
+Post list: insert optimistic post
+User.postCount: +1 for author
+Dashboard post count: +1
+Rollback: remove optimistic post and -1 count
+```
+
+Only if the relevant operations are known to be reversible or have a rollback plan.
+
+## Rules + relations
+
+Relations are already rules in disguise.
+
+A normal relation:
+
+```ts
+const PostAuthor = gen.rel.manyToOne(...)
+```
+
+could compile into a rule:
+
+```ts
+PostAuthor(post, user) :-
+  Post(post),
+  User(user),
+  post.authorId = user.id.
+```
+
+So the relation graph can feed the rule graph automatically.
+
+This means users do not need to duplicate common relationships as rules. But `@gen/rules` can expose relations as predicates:
+
+```ts
+gen.rules.rel(PostAuthor, {
+  post,
+  user,
+})
+```
+
+Then advanced queries can compose them:
+
+```ts
+const PostsByActiveAuthors = gen.rules.view("PostsByActiveAuthors", {
+  body: ({ post, user }) =>
+    gen.rules.and(
+      gen.rules.rel(PostAuthor, { post, user }),
+      gen.rules.eq(user.status, "active")
+    ),
+})
+```
+
+## Rules + permissions
+
+Authorization can be rule-based too.
+
+```ts
+const CanEditPost = gen.rules.rule("CanEditPost", {
+  input: {
+    actor: User,
+    post: Post,
+  },
+
+  body: ({ actor, post }) =>
+    gen.rules.or(
+      gen.rules.eq(actor.role, "admin"),
+      gen.rules.rel(PostAuthor, {
+        post,
+        user: actor,
+      })
+    ),
+})
+```
+
+Then:
+
+```ts
+const updatePost = gen.func.action({
+  auth: CanEditPost({ actor: gen.auth.currentUser(), post: gen.input.post }),
+  body: ...
+})
+```
+
+Targets can compile this to:
+
+```txt
+server predicate
+SQL WHERE clause, where possible
+policy docs
+test cases
+diagnostics if not translatable
+```
+
+## Important constraints
+
+Datalog/rules can get dangerous if too unrestricted. We need constraints.
+
+I’d support a safe subset first:
+
+```txt
+typed predicates
+positive rules
+safe variables: every output variable must be bound
+stratified negation only
+controlled recursion
+no arbitrary JS
+aggregates with explicit grouping
+termination checks where possible
+store/runtime capability checks
+```
+
+Avoid making this a full Prolog engine in v1.
+
+The rule compiler should be able to say:
+
+```txt
+This rule cannot be compiled to SQL.
+This recursive rule requires a runtime that supports recursion/fixpoint.
+This negation is unsafe.
+This aggregate cannot be incrementally maintained.
+This rule depends on an opaque effect and cannot produce static reactivity.
+```
+
+## Possible API shape
+
+### Rule
+
+```ts
+const IsPostAuthor = gen.rules.rule("IsPostAuthor", {
+  input: {
+    user: User,
+    post: Post,
+  },
+
+  body: ({ user, post }) =>
+    gen.rules.and(
+      gen.rules.fact(Post, {
+        id: post.id,
+        authorId: user.id,
+      }),
+      gen.rules.fact(User, {
+        id: user.id,
+      })
+    ),
+})
+```
+
+### Derived relation
+
+```ts
+const UserCanEditPost = gen.rules.rule("UserCanEditPost", {
+  input: {
+    user: User,
+    post: Post,
+  },
+
+  body: ({ user, post }) =>
+    gen.rules.or(
+      gen.rules.eq(user.role, "admin"),
+      IsPostAuthor({ user, post })
+    ),
+})
+```
+
+### View
+
+```ts
+const ActivePosts = gen.rules.view("ActivePosts", {
+  returns: PostSummary,
+
+  body: ({ post, author }) =>
+    gen.rules.and(
+      gen.rules.rel(PostAuthor, { post, user: author }),
+      gen.rules.eq(author.status, "active")
+    ),
+
+  select: ({ post, author }) => ({
+    id: post.id,
+    title: post.title,
+    authorName: author.displayName,
+  }),
+})
+```
+
+### Incremental view
+
+```ts
+const UserPostCount = gen.rules.ivm("UserPostCount", {
+  key: User.fields.id,
+  value: gen.int(),
+
+  body: ({ user }) =>
+    gen.rules.aggregate.count(Post, {
+      where: gen.op.eq(Post.fields.authorId, user.id),
+    }),
+
+  maintenance: gen.ivm.derive(),
+})
+```
+
+### Reactivity derivation
+
+```ts
+const createPost = gen.func.action({
+  name: "createPost",
+  body: insert(Post),
+  reactivity: gen.reactivity.derive({
+    from: [BlogRules],
+    infer: true,
+  }),
+})
+```
+
+Or globally:
+
+```ts
+const BlogReactivity = gen.reactivity.graph({
+  deriveFrom: [
+    BlogGraph,
+    BlogMappings,
+    BlogRules,
+    BlogFuncs,
+  ],
+})
+```
+
+## Should rules generate manual reactivity?
+
+Yes, but I would say:
+
+```txt
+Rules should generate derived reactivity, not merely manual reactivity.
+```
+
+Manual reactivity is for when the compiler cannot see the dependency. Rules are a way to make that dependency visible.
+
+So instead of:
+
+```ts
+alsoInvalidates: [dashboardStatsKey()]
+```
+
+users can define:
+
+```ts
+const DashboardStats = gen.rules.view(...)
+```
+
+Then the compiler knows what it depends on.
+
+For truly external things, manual keys still exist.
+
+## Should rules generate IVM?
+
+Yes, where the target supports it.
+
+Rules can generate:
+
+```txt
+materialized views
+incremental materialized views
+server cache refresh
+client invalidation
+event-sourced projections
+search index sync
+subscription fanout
+derived atoms/resources
+```
+
+But not every rule is incrementally maintainable. The system should classify:
+
+```txt
+fully incremental
+incremental with pre-read
+incremental with broad invalidation
+requires full recompute
+not maintainable on target
+```
+
+## How this fits into the architecture
+
+I’d add:
+
+```txt
+@gen/rules
+  typed Datalog-like rules
+  predicates
+  logic variables
+  derived relations
+  rule-based policies
+  rule-based dependencies
+  rule dependency graph
+
+@gen/ivm
+  incremental maintenance planner
+  delta rules
+  materialized view targets
+  refresh policies
+
+@gen/reactivity
+  key graph + invalidation graph
+  derives from mappings, relations, funcs, rules, IVM plans
+```
+
+Core remains:
+
+```txt
+StaticNode
+StaticFunction
+Expr
+Query
+Action
+Ref
+Requirement
+Runtime
+Artifact
+Target
+```
+
+Rules are standard/official, not kernel core.
+
+## The best mental model
+
+```txt
+Schema tells us what exists.
+Mappings tell us where data comes from.
+Relations tell us how entities connect.
+Operations tell us what changes.
+Rules tell us what follows.
+Reactivity tells us what must refresh.
+IVM tells us what can update incrementally.
+Generators turn this into code.
+```
+
+That is a very strong architecture.
+
+## Final take
+
+Yes: **Datomic-style rules should be supported**, probably as `@gen/rules`.
+
+They can help derive:
+
+```txt
+reactivity graphs
+manual invalidation equivalents
+authorization predicates
+derived relations
+materialized views
+incremental view maintenance
+subscriptions
+optimistic patch effects
+search index dependencies
+tests and diagrams
+```
+
+But they should be typed, static, analyzable, and constrained. Not arbitrary runtime logic.
+
+The rule should be:
+
+```txt
+Use schema/mappings/relations/actions to infer what you can.
+Use rules to declare higher-level derived facts and dependencies.
+Use manual keys only for opaque external boundaries.
+```
+
+That is the cleanest version.
+Yes — **generic CRUD/query helpers over generated entity metadata** would be extremely useful, and they fit the architecture well.
+
+But I would make them **generic function factories**, not magical runtime functions that guess everything dynamically.
+
+The shape should be:
+
+```ts
+const userCrud = gen.crud(User, {
+  mapping: UserMap,
+  projection: {
+    summary: UserSummary,
+    detail: UserDetail,
+  },
+})
+```
+
+Then it gives you typed static functions:
+
+```ts
+userCrud.getById
+userCrud.list
+userCrud.create
+userCrud.update
+userCrud.delete
+userCrud.upsert
+```
+
+Each one is a `gen.func.query` or `gen.func.action`, so reactivity, optimistic UI, IVM, routes, hooks, forms, and clients can all be generated from them.
+
+## 1. The basic idea
+
+Given:
+
+```ts
+const User = gen.entity("User", {
+  id: gen.uuid(),
+  email: gen.email(),
+  displayName: gen.string(),
+  role: gen.enumOf(["user", "admin"]),
+  createdAt: gen.datetime(),
+})
+```
+
+and a mapping:
+
+```ts
+const UserMap = gen.mapping.mapping(User, [
+  gen.mapping.mapField(User.fields.id, {
+    read: users.columns.id,
+    write: users.columns.id,
+  }),
+  gen.mapping.mapField(User.fields.email, {
+    read: users.columns.email,
+    write: users.columns.email,
+  }),
+  gen.mapping.mapField(User.fields.displayName, {
+    read: FullName.to({
+      first: users.columns.firstName,
+      last: users.columns.lastName,
+    }),
+    write: FullName.from({
+      first: users.columns.firstName,
+      last: users.columns.lastName,
+    }),
+  }),
+])
+```
+
+You should be able to write:
+
+```ts
+const userCrud = gen.crud(User, {
+  mapping: UserMap,
+  id: User.fields.id,
+  projections: {
+    summary: UserSummary,
+    detail: UserDetail,
+  },
+})
+```
+
+and get:
+
+```ts
+userCrud.getById
+userCrud.list
+userCrud.create
+userCrud.update
+userCrud.patch
+userCrud.delete
+userCrud.exists
+userCrud.count
+```
+
+These should be real typed static functions, not opaque helpers.
+
+```ts
+type GetUserInput = InferInput<typeof userCrud.getById>
+// { id: string }
+
+type GetUserOutput = InferOutput<typeof userCrud.getById>
+// InferProjection<typeof UserDetail>
+```
+
+## 2. `getById(entity, id, opts?)`
+
+There are two useful levels:
+
+### Runtime/client helper
+
+Generated client usage:
+
+```ts
+const user = await client.user.getById({ id })
+```
+
+or:
+
+```ts
+const user = await gen.runtime.getById(User, id, {
+  projection: UserDetail,
+})
+```
+
+### Static function factory
+
+Source definition:
+
+```ts
+const getUserById = gen.crud.getById(User, {
+  mapping: UserMap,
+  id: User.fields.id,
+  returns: UserDetail,
+})
+```
+
+This produces a static query function:
+
+```ts
+const getUserById = gen.func.query({
+  name: "User.getById",
+  input: gen.object({
+    id: User.fields.id.type,
+  }),
+  returns: UserDetail,
+  key: gen.expr(({ id }) => gen.key.entity(User, id)),
+  body: gen.query(({ id }) =>
+    gen.query.from(User)
+      .where(gen.op.eq(User.fields.id, id))
+      .select(UserDetail)
+      .one()
+  ),
+})
+```
+
+So yes, the user-facing helper is generic, but internally it expands to the same static IR.
+
+## 3. Generic CRUD should derive reactivity
+
+If the CRUD operation is generated from entity/mapping/relation metadata, reactivity can be derived.
+
+For `getById`:
+
+```ts
+key: ({ id }) => gen.key.entity(User, id)
+```
+
+For `list`:
+
+```ts
+key: ({ filter, sort, page }) =>
+  gen.key.collection(User).with({ filter, sort, page })
+```
+
+For `create`:
+
+```txt
+writes User
+creates User:{result.id}
+invalidates User.collection
+invalidates relation collections that depend on User
+invalidates derived views/rules that depend on User
+```
+
+For `update`:
+
+```txt
+writes User fields
+invalidates User:{id}
+invalidates any list/query whose predicates/projections depend on changed fields
+invalidates computed fields dependent on written storage columns
+invalidates relation keys if relation fields changed
+```
+
+For `delete`:
+
+```txt
+deletes User:{id}
+invalidates User.collection
+invalidates User:{id}
+invalidates related collections
+applies delete behavior from relations
+invalidates derived rules/views/aggregates
+```
+
+This maps directly to the atom-style explicit reactivity key model from the uploaded `@effect-atom/atom` docs, but in our design most keys should be derived from the static schema/action graph rather than hand-maintained strings. The atom docs’ concepts like stable keyed atom families, function atoms, and reactivity invalidation are useful generation targets for this layer. 
+
+## 4. Generic CRUD can still be customizable
+
+The generic CRUD factory should not be all-or-nothing.
+
+```ts
+const userCrud = gen.crud(User, {
+  mapping: UserMap,
+  id: User.fields.id,
+
+  projections: {
+    summary: UserSummary,
+    detail: UserDetail,
+  },
+
+  operations: {
+    getById: true,
+    list: true,
+    create: {
+      input: [
+        User.fields.email,
+        User.fields.displayName,
+        User.fields.role,
+      ],
+      returns: UserDetail,
+    },
+    update: {
+      input: [
+        User.fields.email.optional(),
+        User.fields.displayName.optional(),
+        User.fields.role.optional(),
+      ],
+      returns: UserDetail,
+    },
+    delete: {
+      behavior: gen.appDelete.preventIfRelated({
+        relations: [UserPosts],
+      }),
+    },
+  },
+})
+```
+
+This creates a default set of static funcs.
+
+But users can override any one:
+
+```ts
+const userCrud = gen.crud(User, {
+  mapping: UserMap,
+
+  operations: {
+    create: gen.func.action({
+      name: "createUser",
+      input: CreateUserInput,
+      returns: UserDetail,
+      body: customCreateUserAction,
+    }),
+  },
+})
+```
+
+Or extend:
+
+```ts
+const deactivateUser = gen.func.action({
+  name: "deactivateUser",
+  input: gen.object({ id: User.fields.id.type }),
+  returns: UserDetail,
+  body: gen.action(({ id }) =>
+    gen.action.update(User)
+      .where(gen.op.eq(User.fields.id, id))
+      .set(User.fields.status, "inactive")
+      .returning(UserDetail)
+  ),
+})
+
+const userResource = gen.api.resource(User, {
+  path: gen.api.route`/users`,
+  operations: [
+    ...userCrud.operations,
+    deactivateUser,
+  ],
+})
+```
+
+## 5. CRUD should respect mappings
+
+This is important: generic CRUD cannot just use entity fields. It must use the mapping layer.
+
+If a field is read-only:
+
+```ts
+postCount: readOnly()
+```
+
+then:
+
+```ts
+userCrud.create.input
+userCrud.update.input
+```
+
+must exclude it.
+
+If a field is writable through a reversible mapping:
+
+```ts
+displayName: FullName.from({
+  first: users.columns.firstName,
+  last: users.columns.lastName,
+})
+```
+
+then `create`/`update` can accept `displayName`.
+
+If a field is hidden:
+
+```ts
+password: {
+  read: hidden(),
+  write: hashPassword(...)
+}
+```
+
+then:
+
+```txt
+create/update input may include password
+get/list output must not include password
+forms may include password in create flow
+```
+
+So generic CRUD should derive from:
+
+```txt
+Entity
+Mapping
+Projection
+Relations
+Policies
+Traits
+Operations
+Runtime/store capabilities
+```
+
+not just from `Entity`.
+
+## 6. Generic CRUD should generate forms
+
+Once you have CRUD funcs, forms can be generated from them:
+
+```ts
+const UserCreateForm = gen.forms.fromFunc(userCrud.create)
+const UserEditForm = gen.forms.fromFunc(userCrud.update)
+const UserDeleteConfirm = gen.forms.confirm(userCrud.delete)
+```
+
+Because `create`/`update` are typed action functions, forms know:
+
+```txt
+input fields
+field types
+writable fields
+validation traits
+server-only validation
+typed errors
+optimistic behavior
+submit result
+```
+
+The UI layer can expose typed slots/handles, following the AF-UI-inspired model:
+
+```ts
+const StyledUserCreateForm = UserCreateForm.pipe(
+  gen.ui.Style.attach({
+    root: { gap: "md" },
+    submitButton: { backgroundColor: "primary" },
+  })
+)
+```
+
+So generic CRUD should not only create backend operations; it should create a full typed surface for forms, hooks, routes, and state.
+
+## 7. Generic CRUD should generate optimistic UI when safe
+
+For simple operations, optimistic behavior can be inferred.
+
+### Create
+
+```ts
+const createPost = postCrud.create
+```
+
+If create has enough client-known values and a temp ID strategy:
+
+```ts
+optimistic: gen.optimistic.derive()
+```
+
+The compiler can derive:
+
+```txt
+insert optimistic Post into listPosts
+use temporary Post.id
+replace temp ID with server ID on success
+remove optimistic item on failure
+invalidate/reconcile affected lists
+```
+
+### Update
+
+If the action is a field patch:
+
+```ts
+update(User)
+  .where(id)
+  .set(displayName, newDisplayName)
+```
+
+Then optimistic patch:
+
+```txt
+patch User:{id}.displayName
+patch matching list rows
+rollback to previous value on failure
+```
+
+### Delete
+
+For delete:
+
+```txt
+remove User:{id} from lists
+mark entity deleted or remove from cache
+restore on failure
+```
+
+### Derived aggregates / IVM
+
+If `User.postCount` is derived from `Post.authorId`, then `createPost` can optimistically:
+
+```txt
+insert Post into post list
+increment User.postCount
+rollback by removing Post and decrementing User.postCount
+```
+
+This should only happen when the relevant operations have laws/rollback semantics:
+
+```txt
+add/subtract are inverse
+count can be incrementally maintained
+relation target is known
+old/new value is known or pre-read
+```
+
+So generic CRUD can derive optimistic UI, but it must be conservative and diagnosable.
+
+## 8. Generic CRUD + IVM
+
+Generic CRUD should feed the IVM planner automatically.
+
+Example:
+
+```ts
+const UserPostCount = gen.rules.ivm("UserPostCount", {
+  key: User.fields.id,
+  value: gen.int(),
+  body: ({ user }) =>
+    gen.rules.aggregate.count(Post, {
+      where: gen.op.eq(Post.fields.authorId, user.id),
+    }),
+})
+```
+
+Then generic `postCrud.create` should automatically produce deltas:
+
+```txt
+on insert Post(authorId = A):
+  UserPostCount[A] += 1
+```
+
+`postCrud.delete`:
+
+```txt
+on delete Post(authorId = A):
+  UserPostCount[A] -= 1
+```
+
+`postCrud.update` when `authorId` changes:
+
+```txt
+oldAuthor -= 1
+newAuthor += 1
+```
+
+The generic CRUD factory does not need to manually know about `UserPostCount`. The compiler can derive it from rules/views/dependencies.
+
+This is the really powerful flow:
+
+```txt
+crud(Post).create
+  -> writes Post
+  -> rule graph sees UserPostCount depends on Post.authorId
+  -> IVM planner derives count delta
+  -> reactivity graph invalidates/patches affected keys
+  -> generators emit cache updates, atoms, query invalidation, subscriptions, tests
+```
+
+## 9. Generic CRUD should generate routes and clients
+
+```ts
+const userResource = gen.crud.resource(User, userCrud, {
+  path: gen.api.route`/users`,
+})
+```
+
+Can produce:
+
+```txt
+GET /users/:id
+GET /users
+POST /users
+PATCH /users/:id
+DELETE /users/:id
+```
+
+But routes are optional interpretations. Some users may want RPC, some HTTP, some GraphQL.
+
+```ts
+await gen.generate([
+  gen.hono.routes(userResource),
+  gen.rpc.group(userResource),
+  gen.openapi.document(userResource),
+  gen.reactQuery.hooks(userCrud),
+  gen.effectAtom.resources(userCrud),
+  gen.react.forms(userCrud),
+])
+```
+
+Same CRUD funcs, many outputs.
+
+## 10. Possible API design
+
+### Minimal
+
+```ts
+const userCrud = gen.crud(User, {
+  mapping: UserMap,
+  projection: UserDetail,
+})
+```
+
+### More explicit
+
+```ts
+const userCrud = gen.crud.define(User, {
+  id: User.fields.id,
+  mapping: UserMap,
+
+  projections: {
+    list: UserSummary,
+    detail: UserDetail,
+  },
+
+  capabilities: {
+    create: true,
+    update: true,
+    delete: true,
+    list: true,
+    getById: true,
+  },
+})
+```
+
+### Fully configured
+
+```ts
+const userCrud = gen.crud.define(User, {
+  id: User.fields.id,
+  mapping: UserMap,
+
+  projections: {
+    list: UserSummary,
+    detail: UserDetail,
+  },
+
+  getById: {
+    returns: UserDetail,
+    auth: UserPolicy.actions.read,
+    reactivity: gen.reactivity.derive(),
+  },
+
+  list: {
+    input: gen.object({
+      search: gen.optional(gen.string()),
+      role: gen.optional(User.fields.role.type),
+    }),
+    filter: ({ search, role }) =>
+      gen.op.and(
+        gen.op.whenSome(search, s =>
+          gen.op.contains(User.fields.displayName, s)
+        ),
+        gen.op.whenSome(role, r =>
+          gen.op.eq(User.fields.role, r)
+        ),
+      ),
+    returns: gen.page(UserSummary),
+    pagination: gen.api.pagination.cursor({
+      cursor: User.fields.id,
+      defaultLimit: 50,
+    }),
+  },
+
+  create: {
+    input: [
+      User.fields.email,
+      User.fields.displayName,
+      User.fields.role,
+    ],
+    returns: UserDetail,
+    auth: UserPolicy.actions.create,
+    optimistic: gen.optimistic.derive(),
+  },
+
+  update: {
+    input: [
+      User.fields.email.optional(),
+      User.fields.displayName.optional(),
+      User.fields.role.optional(),
+    ],
+    returns: UserDetail,
+    auth: UserPolicy.actions.update,
+    optimistic: gen.optimistic.derive(),
+  },
+
+  delete: {
+    auth: UserPolicy.actions.delete,
+    behavior: gen.appDelete.preventIfRelated({
+      relations: [UserPosts],
+    }),
+    optimistic: gen.optimistic.derive(),
+  },
+})
+```
+
+## 11. Generic helpers for advanced queries
+
+Beyond CRUD:
+
+```ts
+gen.crud.getById(User, id)
+gen.crud.getMany(User, ids)
+gen.crud.findOne(User, predicate)
+gen.crud.findMany(User, predicate)
+gen.crud.exists(User, predicate)
+gen.crud.count(User, predicate)
+gen.crud.create(User, values)
+gen.crud.updateById(User, id, patch)
+gen.crud.deleteById(User, id)
+```
+
+But these should have two forms:
+
+### Static authoring form
+
+```ts
+const getUser = gen.crud.getByIdFunc(User, {
+  mapping: UserMap,
+  returns: UserDetail,
+})
+```
+
+### Generated runtime/client form
+
+```ts
+await client.User.getById(id, {
+  include: [UserPosts],
+  projection: UserDetail,
+})
+```
+
+The runtime/client helper is generated from the static metadata.
+
+## 12. Generic CRUD should support relations/includes
+
+```ts
+const user = await client.User.getById(id, {
+  include: [UserPosts],
+})
+```
+
+Static function:
+
+```ts
+const getUserWithPosts = gen.crud.getById(User, {
+  returns: gen.projection(User, {
+    base: UserDetail,
+    include: [UserPosts],
+  }),
+})
+```
+
+Type:
+
+```ts
+type Output = {
+  id: string
+  email: string
+  displayName: string
+  posts: PostSummary[]
+}
+```
+
+The reactivity graph then knows:
+
+```txt
+getUserWithPosts reads User
+getUserWithPosts reads UserPosts relation
+getUserWithPosts reads Post projection
+insert/delete/update Post.authorId affects output
+```
+
+## 13. CRUD policies
+
+Generic CRUD should compose with policies:
+
+```ts
+const userCrud = gen.crud(User, {
+  mapping: UserMap,
+  policy: UserPolicy,
+})
+```
+
+Defaults:
+
+```txt
+getById -> policy.read
+list -> policy.read
+create -> policy.create
+update -> policy.update
+delete -> policy.delete
+```
+
+But override:
+
+```ts
+delete: {
+  auth: gen.authz.allow.role("owner"),
+}
+```
+
+## 14. CRUD errors
+
+Generic CRUD can derive common typed errors:
+
+```txt
+NotFound
+Conflict
+UniqueViolation
+ForeignKeyViolation
+ValidationError
+Unauthorized
+Forbidden
+DeleteRestricted
+StaleVersion
+```
+
+Example:
+
+```ts
+const userCrud = gen.crud(User, {
+  errors: {
+    notFound: true,
+    conflict: true,
+    validation: true,
+  },
+})
+```
+
+Generated form knows:
+
+```txt
+UniqueViolation(User.email) -> email field error
+DeleteRestricted(UserPosts) -> form/dialog error
+```
+
+## 15. CRUD with versioning / optimistic concurrency
+
+Useful default:
+
+```ts
+const User = gen.entity("User", {
+  id: gen.uuid(),
+  version: gen.int().traits([gen.traits.version()]),
+  ...
+})
+```
+
+Generic update can include:
+
+```ts
+input: {
+  id: UserId
+  version: number
+  patch: ...
+}
+```
+
+and generate:
+
+```txt
+WHERE id = ? AND version = ?
+SET version = version + 1
+```
+
+Error:
+
+```txt
+StaleVersion
+```
+
+This plugs directly into optimistic UI reconciliation.
+
+## 16. CRUD with soft delete
+
+If entity has:
+
+```ts
+deletedAt: gen.datetime().nullable().traits([gen.traits.softDelete()])
+```
+
+Then:
+
+```ts
+userCrud.delete
+```
+
+can generate a soft delete by default:
+
+```txt
+UPDATE users SET deleted_at = now()
+```
+
+and list/get can exclude deleted rows unless configured.
+
+```ts
+const userCrud = gen.crud(User, {
+  delete: gen.crud.delete.soft(),
+})
+```
+
+## 17. CRUD should have levels
+
+I’d define three levels:
+
+### Level 1: Convenience CRUD
+
+For simple apps.
+
+```ts
+const userCrud = gen.crud(User, { mapping: UserMap })
+```
+
+### Level 2: Configured CRUD
+
+For production apps.
+
+```ts
+const userCrud = gen.crud(User, {
+  mapping: UserMap,
+  projections,
+  policies,
+  filters,
+  errors,
+  optimistic,
+})
+```
+
+### Level 3: Custom funcs
+
+For domain-specific behavior.
+
+```ts
+const createUser = gen.func.action(...)
+```
+
+Users should be able to mix them.
+
+## 18. This should be a package
+
+I would make this an official standard package:
+
+```txt
+@gen/crud
+```
+
+It depends on:
+
+```txt
+@gen/core
+@gen/mapping
+@gen/relations
+@gen/api
+@gen/reactivity
+```
+
+It optionally integrates with:
+
+```txt
+@gen/forms
+@gen/authz
+@gen/rules
+@gen/ivm
+@gen/ui
+```
+
+It should not be kernel core.
+
+## 19. What it generates
+
+From:
+
+```ts
+const userCrud = gen.crud(User, { mapping: UserMap })
+```
+
+Generators can emit:
+
+```txt
+query functions
+action functions
+API routes
+RPC procedures
+OpenAPI operations
+client SDK methods
+React Query hooks
+Effect Atom atoms/functions
+Svelte/Vue/Solid resources
+forms
+tables
+detail views
+optimistic patches
+cache invalidation
+IVM deltas
+tests
+docs
+visualization graphs
+```
+
+## 20. Final design rule
+
+Generic CRUD is not a shortcut around the static model.
+
+It is a **macro/factory over the static model**.
+
+```txt
+gen.crud(User)
+  expands to typed static funcs:
+    getById = func.query
+    list = func.query
+    create = func.action
+    update = func.action
+    delete = func.action
+
+Those funcs participate in:
+  mapping checks
+  relation graph
+  policy checks
+  reactivity derivation
+  optimistic patch derivation
+  IVM planning
+  route generation
+  client state generation
+  form generation
+```
+
+So yes: generic CRUD would be extremely helpful, but the key is that it should produce the same analyzable IR as hand-authored functions. That way you get convenience without sacrificing the deep benefits of the design.
+
+
+Yes — this should be a **first-class design principle**, especially because the library aims to generate full-stack UI, state, routing, forms, optimistic updates, and cross-boundary behavior.
+
+I’d add a standard package/concept like:
+
+```txt
+@gen/enhancement
+  capability tiers
+  fallback plans
+  server-first form behavior
+  no-JS behavior
+  hydration boundaries
+  offline behavior
+  optimistic upgrade paths
+  target capability checks
+```
+
+But the core primitive is simple:
+
+```txt
+Every generated feature should declare:
+  baseline behavior
+  enhanced behavior
+  required capabilities
+  fallback behavior
+  failure behavior
+```
+
+## The basic model
+
+A generated form should not only say:
+
+```txt
+React form that calls a mutation hook
+```
+
+It should say:
+
+```txt
+Baseline:
+  HTML form POST works without JS.
+
+Enhanced:
+  JS intercepts submit.
+  Client validation runs before submit.
+  Optimistic update applies.
+  Mutation hook submits via fetch/RPC.
+  Errors map back into fields.
+  Cache invalidates/reconciles.
+
+Fallback:
+  If JS fails, browser submits normally.
+  If optimistic unsupported, submit still works without optimistic patch.
+  If client validation unavailable, server validation still runs.
+```
+
+So a form can be generated as:
+
+```ts
+const UserCreateForm = gen.forms.fromFunc(createUserFunc, {
+  enhancement: gen.enhancement.progressive({
+    baseline: gen.forms.baseline.htmlPost({
+      action: gen.api.path`/users`,
+      method: "POST",
+    }),
+
+    enhanced: gen.forms.enhanced.mutation({
+      func: createUserFunc,
+      optimistic: gen.optimistic.derive(),
+      validation: "client-and-server",
+    }),
+
+    fallback: gen.forms.fallback.serverRedirect({
+      success: gen.nav.to(UserListPage),
+      failure: gen.nav.samePageWithErrors(),
+    }),
+  }),
+})
+```
+
+This makes progressive enhancement explicit and generatable.
+
+## Feature tiers
+
+I’d model capability tiers like this:
+
+```txt
+Tier 0: static/read-only
+  generated HTML, links, static rendering
+
+Tier 1: server forms
+  no-JS HTML forms, server validation, redirects, field errors
+
+Tier 2: enhanced client forms
+  client validation, fetch submit, inline errors, pending states
+
+Tier 3: reactive client state
+  query cache, invalidation, live refresh, mutation hooks
+
+Tier 4: optimistic/offline
+  optimistic patching, rollback, reconciliation, offline queue
+
+Tier 5: realtime/collaborative
+  subscriptions, streams, conflict handling, CRDT/IVM/live queries
+```
+
+Targets can support different tiers.
+
+```ts
+const UserCreateForm = gen.forms.fromFunc(createUserFunc, {
+  enhancement: gen.enhancement.tiers({
+    baseline: "server-form",
+    preferred: "optimistic",
+    max: "realtime",
+  }),
+})
+```
+
+Then generators choose the best implementation for the target:
+
+```txt
+Static HTML target:
+  Tier 0/1 only
+
+Hono + React target:
+  Tier 1/2/3/4
+
+Effect Atom target:
+  Tier 3/4/5 depending resources
+
+Server Components target:
+  Tier 1/2 with partial hydration
+
+Native target:
+  no HTML form fallback, but can use local fallback/offline queue
+```
+
+## Capability-driven generation
+
+This fits perfectly with our runtime/target model.
+
+A target declares capabilities:
+
+```ts
+const ReactDomTarget = gen.ui.platform("react-dom", {
+  capabilities: [
+    gen.cap.htmlForms(),
+    gen.cap.clientHydration(),
+    gen.cap.fetch(),
+    gen.cap.localStorage(),
+    gen.cap.optimisticPatches(),
+  ],
+})
+
+const StaticHtmlTarget = gen.ui.platform("static-html", {
+  capabilities: [
+    gen.cap.htmlForms(),
+    gen.cap.links(),
+  ],
+})
+
+const ReactNativeTarget = gen.ui.platform("react-native", {
+  capabilities: [
+    gen.cap.clientRuntime(),
+    gen.cap.network(),
+    gen.cap.localStorage(),
+    gen.cap.optimisticPatches(),
+  ],
+  lacks: [
+    gen.cap.htmlForms(),
+  ],
+})
+```
+
+Then the generator can pick the right plan:
+
+```txt
+Does platform support HTML forms?
+  generate no-JS form fallback.
+
+Does platform support client runtime?
+  generate enhanced submit.
+
+Does platform support optimistic patches?
+  generate optimistic UI.
+
+Does platform support persistent local store?
+  generate offline queue.
+
+Does platform support streams/subscriptions?
+  generate live updates.
+```
+
+## Static functions make this easy
+
+Because `createUserFunc` is static, the compiler knows:
+
+```txt
+input schema
+server validation
+client-safe validation
+typed errors
+action body
+optimistic patch
+invalidations
+runtime requirements
+serialization
+```
+
+So it can generate several implementations from one source:
+
+```txt
+HTML POST endpoint
+server action
+fetch/RPC client
+mutation hook
+optimistic patch
+offline command
+rollback/reconcile
+field error mapping
+```
+
+That is progressive enhancement from static IR.
+
+## Server-first form example
+
+A generated form could emit plain HTML first:
+
+```html
+<form method="post" action="/users">
+  <label>Email</label>
+  <input name="email" type="email" required />
+  <label>Display name</label>
+  <input name="displayName" required />
+  <button type="submit">Create user</button>
+</form>
+```
+
+Then enhanced React behavior hydrates onto the same structure:
+
+```txt
+intercept submit
+parse form values
+run client-safe validators
+call generated mutation client
+apply optimistic patch
+display pending state
+map typed errors to fields
+reconcile or rollback
+```
+
+If hydration fails, the form still posts.
+
+That should be a default for web targets.
+
+## Degrading optimistic UI
+
+Optimistic UI should be optional per target and per operation.
+
+```ts
+const createPostFunc = gen.func.action({
+  ...
+  optimistic: gen.optimistic.derive({
+    fallback: gen.optimistic.fallback.invalidateAndRefetch(),
+  }),
+})
+```
+
+Possible fallbacks:
+
+```txt
+optimistic patch
+  -> pending placeholder
+  -> disable submit + refetch
+  -> server redirect
+```
+
+Example degradation:
+
+```txt
+Best:
+  optimistic insert into list, rollback on failure.
+
+If rollback cannot be derived:
+  show pending row, refetch on settle.
+
+If client cache unavailable:
+  disable submit, show spinner, server response updates page.
+
+If JS unavailable:
+  normal POST, server redirect.
+```
+
+This is exactly how to make ambitious generated UI practical.
+
+## Degrading reactivity
+
+Reactive resources can degrade too.
+
+```ts
+const listUsersResource = gen.reactivity.resource(listUsersFunc, {
+  mode: gen.reactivity.progressive({
+    preferred: "live",
+    fallback: ["cache-invalidation", "manual-refresh", "server-render"],
+  }),
+})
+```
+
+Meaning:
+
+```txt
+If subscriptions available:
+  live query / stream updates.
+
+Else if query cache available:
+  invalidate/refetch after mutations.
+
+Else if JS available:
+  manual refresh button.
+
+Else:
+  server-rendered page refresh.
+```
+
+The static reactivity graph lets all of this be generated.
+
+## Degrading cross-boundary communication
+
+A function can have several exposure modes:
+
+```ts
+const createUserEndpoint = gen.api.expose(createUserFunc, {
+  transports: gen.enhancement.progressive([
+    gen.transport.rpc(),
+    gen.transport.httpJson(),
+    gen.transport.htmlFormPost(),
+  ]),
+})
+```
+
+For web:
+
+```txt
+enhanced client uses RPC/fetch
+baseline uses form POST
+server endpoint supports both
+```
+
+For native:
+
+```txt
+uses HTTP/RPC only
+no HTML fallback
+offline queue if configured
+```
+
+For edge/server actions:
+
+```txt
+uses server action where supported
+falls back to HTTP POST
+```
+
+## Degrading validation
+
+Validation should be split by capability:
+
+```txt
+client-safe validators:
+  required, min/max, email format, enum, simple pure predicates
+
+server-only validators:
+  unique email, permission checks, database constraints, external service checks
+
+database validators:
+  unique constraints, foreign keys, check constraints
+```
+
+Generated form behavior:
+
+```txt
+No JS:
+  server validates everything.
+
+JS:
+  client validates client-safe checks early.
+  server still validates everything on submit.
+
+Enhanced:
+  async field validators may call server for uniqueness.
+
+Offline:
+  local validation runs.
+  server-only validation deferred until sync.
+```
+
+The trait/expression/effect system can classify each validator.
+
+## Degrading UI components
+
+The AF-UI-style UI IR helps here too.
+
+A component can declare fallbacks:
+
+```ts
+const RelationSelect = gen.ui.component({
+  name: "RelationSelect",
+  preferred: gen.ui.behavior.asyncSearch(),
+  fallback: [
+    gen.ui.behavior.nativeSelect(),
+    gen.ui.behavior.textInputWithServerValidation(),
+  ],
+})
+```
+
+Example for a relation select:
+
+```txt
+Best:
+  searchable async combobox.
+
+Fallback 1:
+  server-rendered select with available options.
+
+Fallback 2:
+  text input for ID with server validation.
+
+No JS:
+  plain select or text input.
+```
+
+The form still works.
+
+## Degrading storage/client state
+
+For client-side persistence:
+
+```txt
+preferred:
+  IndexedDB offline queue
+
+fallback:
+  localStorage queue
+
+fallback:
+  in-memory pending state
+
+fallback:
+  no offline support
+```
+
+Model:
+
+```ts
+gen.offline.queue(createPostFunc, {
+  persistence: gen.enhancement.progressive([
+    gen.clientStore.indexedDb(),
+    gen.clientStore.localStorage(),
+    gen.clientStore.memory(),
+  ]),
+})
+```
+
+Target checks capabilities and chooses.
+
+## Requirements should bubble upward
+
+A progressively enhanced feature should produce requirements for each tier.
+
+```txt
+Baseline requirements:
+  server route
+  HTML form support
+
+Enhanced requirements:
+  client runtime
+  mutation client
+  query cache
+
+Optimistic requirements:
+  patch plan
+  rollback/reconcile strategy
+
+Offline requirements:
+  persistent client store
+  command serialization
+
+Realtime requirements:
+  stream/subscription runtime
+```
+
+The generated app shell can say:
+
+```txt
+This page supports:
+  baseline server form
+  enhanced client form
+  optimistic updates
+
+This page does not support:
+  offline queue
+  realtime subscriptions
+```
+
+Useful for diagnostics and docs.
+
+## API shape I’d add
+
+```ts
+gen.enhancement.progressive({
+  baseline,
+  enhanced,
+  fallback,
+})
+
+gen.enhancement.tiers({
+  baseline: "server-form",
+  preferred: "optimistic",
+  max: "realtime",
+})
+
+gen.enhancement.require(capability)
+
+gen.enhancement.fallback([
+  preferredPlan,
+  fallbackPlan,
+  lastResortPlan,
+])
+```
+
+For forms:
+
+```ts
+gen.forms.fromFunc(createUserFunc, {
+  enhancement: gen.forms.enhancement.progressive({
+    baseline: gen.forms.baseline.htmlPost(),
+    enhanced: gen.forms.enhanced.clientMutation(),
+    optimistic: gen.forms.enhanced.optimistic(),
+    fallback: gen.forms.fallback.serverRedirect(),
+  }),
+})
+```
+
+For resources:
+
+```ts
+gen.reactivity.resource(listUsersFunc, {
+  enhancement: gen.reactivity.enhancement.progressive({
+    preferred: gen.reactivity.live(),
+    fallback: [
+      gen.reactivity.invalidateAndRefetch(),
+      gen.reactivity.manualRefresh(),
+      gen.reactivity.serverRender(),
+    ],
+  }),
+})
+```
+
+For routes:
+
+```ts
+gen.api.expose(createUserFunc, {
+  transports: gen.enhancement.fallback([
+    gen.transport.rpc(),
+    gen.transport.httpJson(),
+    gen.transport.htmlFormPost(),
+  ]),
+})
+```
+
+## Diagnostics
+
+The checker should report degradation choices:
+
+```txt
+INFO:
+  UserCreateForm: optimistic enhancement enabled.
+
+WARNING:
+  UserCreateForm: offline queue requested, but target has no persistent client store.
+  Falling back to in-memory pending state.
+
+INFO:
+  UserCreateForm: no-JS fallback enabled via HTML POST.
+
+ERROR:
+  CreatePost optimistic patch requested but rollback cannot be derived.
+  Provide rollback strategy or choose fallback invalidateAndRefetch().
+```
+
+This is not just convenience; it makes generated apps understandable.
+
+## Should this be core?
+
+Core should only provide the general mechanism:
+
+```txt
+Capability
+Requirement
+FallbackPlan
+Target capability check
+Diagnostic
+StaticNode
+```
+
+A standard package should provide:
+
+```txt
+@gen/enhancement
+  progressive plans
+  feature tiers
+  fallback trees
+  degradation diagnostics
+```
+
+And packages like forms/reactivity/api/ui use it.
+
+## Final design rule
+
+Every generated artifact should have a capability ladder:
+
+```txt
+baseline behavior
+enhanced behavior
+fallback behavior
+unsupported behavior diagnostics
+```
+
+For web apps, default to:
+
+```txt
+server-first, progressively enhanced.
+```
+
+For native/client-only apps, default to:
+
+```txt
+local-first where configured, network-aware, graceful failure.
+```
+
+So yes: graceful degradation and progressive enhancement should be explicitly modeled. It fits the whole architecture beautifully because our static functions, reactivity graph, UI IR, runtime capabilities, and targets already provide the information needed to generate multiple tiers from the same source.
+
+
+The user seems excited about this realization. I should validate their insight and paint a picture of how close we are.
+Yes. That's exactly the trajectory. Gen2 is a schema-driven domain compiler — the Editor module is the last major piece of the puzzle for turning a typed schema into a working CMS/admin panel.
+Here's what you already have for schema → CMS generation:
+What's Already Working
+1. Schema Definition
+const { gen } = createGen();
+const Post = gen.entity("Post", {
+  id: gen.types.uuid(),
+  title: gen.types.string(),
+  body: gen.types.string(),
+  status: gen.types.enumOf("draft", "published", "archived"),
+  author_id: gen.types.uuid(),
+  published_at: gen.types.datetime(),
+});
+2. Auto-Derived Storage
+// gen.table, gen.mapping, gen.schema produce database artifacts
+const postTable = gen.table(postgresStore, "posts", [
+  gen.column("id", gen.types.uuid()),
+  gen.column("title", gen.types.string()),
+  // ...
+]);
+3. Auto-Derived Forms
+// Forms already derive automatically from action functions
+const createPost = gen.func.action({...});
+const form = gen.forms.build("PostForm", createPost, gen.types.void());
+4. Editors (what we just built)
+// Now you can define a WYSIWYG editor for any entity
+const PostEditor = gen.editor.define({
+  name: "PostEditor",
+  entity: Post,
+  purpose: "create_or_update",
+  // fields, sections, preview components, nested editors...
+});
+5. Auto-Derived API
+// Resources, getters, mutators, routes
+gen.api.resource({ path: "/posts", target_entity: Post });
+gen.api.getter({ name: "getPost", target_entity: Post, by_field: Post.fields.id });
+gen.api.mutator({ name: "createPost", target_entity: Post, mapping });
+6. Authorization
+gen.authz.policy({
+  name: "PostPolicy",
+  target_entity: Post,
+  actions: [
+    { action_name: "create", condition: gen.authz.allowAuthenticated() },
+    { action_name: "update", condition: gen.authz.allowOwner(Post.fields.author_id) },
+  ],
+});
+---
+What's Missing for "Schema → CMS" Auto-Generation
+To go from just gen.entity("Post", {...}) to a full admin panel, you need a few more things. The good news: they're all derivable from the schema.
+Missing 1: Auto-CRUD Actions
+Right now you have to manually write:
+const createPost = gen.func.action({...});
+const updatePost = gen.func.action({...});
+const deletePost = gen.func.action({...});
+const listPosts = gen.func.query({...});
+const getPost = gen.func.query({...});
+You need:
+const crud = gen.crud.derive(Post); // Auto-creates all 5 functions
+This is a ~50-line module that maps entity fields to actionInsert/actionUpdate/actionDelete/buildQuery.
+Missing 2: Auto-Editors
+Right now:
+const PostEditor = gen.editor.define({ entity: Post, create: createPost, update: updatePost });
+You need:
+const PostEditor = gen.editor.auto(Post); // Derives editor from entity + crud actions
+This is a thin wrapper that calls gen.editor.define with sensible defaults:
+- All fields editable
+- Type-inferred widgets
+- Single "main" section
+- purpose: "create_or_update"
+- Auto-derived CRUD actions
+Missing 3: Listing Views (Tables/Grids)
+Editors are for editing single entities. A CMS also needs list views:
+const PostList = gen.list.define({
+  entity: Post,
+  columns: [Post.fields.title, Post.fields.status, Post.fields.published_at],
+  sortable: [Post.fields.published_at],
+  filterable: [Post.fields.status],
+  searchable: [Post.fields.title],
+});
+This is the biggest gap. Gen2 has QueryBuilder, QueryExpression, and Component, but no high-level "list view" IR.
+Missing 4: Admin Dashboard / Navigation
+You need a top-level admin shell that discovers all entities and exposes:
+const Admin = gen.admin.define({
+  title: "Content Admin",
+  entities: [Post, User, Comment],
+  navigation: "sidebar",
+});
+This would generate:
+- Sidebar nav with entity links
+- Entity list pages (using gen.list)
+- Entity edit pages (using gen.editor)
+- Breadcrumbs, search, global actions
+Missing 5: Frontend Page Generation
+A CMS needs public-facing pages too:
+const Blog = gen.site.define({
+  routes: [
+    { path: "/", view: PostListView },
+    { path: "/post/:id", view: PostDetailView },
+  ],
+});
+---
+What a True "Schema → CMS" Would Look Like
+Here's the dream API:
+import { createGen } from "gen2";
+import { cmsPlugin } from "gen2/plugins/cms";
+const { gen } = createGen({ plugins: [cmsPlugin()] });
+// Step 1: Define your schema
+const Post = gen.entity("Post", {
+  title: gen.types.string(),
+  body: gen.types.markdown(),
+  status: gen.types.enumOf("draft", "published"),
+  author: gen.types.relation("User"),
+});
+const User = gen.entity("User", {
+  name: gen.types.string(),
+  email: gen.types.email(),
+});
+// Step 2: Done. The CMS plugin auto-generates:
+// - CRUD actions for Post and User
+// - Admin editors with rich text, relation pickers, etc.
+// - List views with sorting, filtering, search
+// - REST API routes
+// - Authz policies (admin-only by default)
+// - Database schema + migrations
+gen.lifecycle.check(ctx);   // Validates everything
+gen.lifecycle.generate(ctx); // Emits: drizzle schema, hono routes, solid-js admin UI
+---
+How Close Are We?
+Layer	Status
+Schema (entities, types)	✅ Done
+Storage (DB mapping)	✅ Done
+Queries	✅ Done
+Actions (CRUD)	⚠️ Manual — needs gen.crud.derive()
+Forms	✅ Auto-derived from actions
+Editors	✅ Just built — needs gen.editor.auto() wrapper
+List views	❌ Missing — biggest gap
+Admin shell	❌ Missing — needs gen.admin.define()
+API routes	✅ Done
+Authz	✅ Done
+Frontend pages	❌ Missing
+My Recommendation
+The next two modules that unlock "schema → CMS" are:
+1. src/crud/crud.ts — deriveCrud(entity) that auto-creates create/update/delete/list/get functions from an entity definition. Maybe 60 lines.
+2. src/list/list.ts — defineList({ entity, columns, sortable, filterable }) for table/grid views. Maybe 100 lines.
+3. src/admin/admin.ts — defineAdmin({ entities }) that composes lists + editors into a navigation shell.
+
+
+Yes. This AF-UI note sharpens a few things we were already circling around. My main suggestions for Gen would be:
+
+## 1. Add a formal “semantic reactivity service”
+
+We already discussed deriving reactivity from schema, mappings, relations, actions, and rules. AF-UI adds a useful runtime shape: reads are tracked against **semantic keys**, writes invalidate those keys, and the runtime bridges those keys to low-level version signals. That lets unrelated components/resources refresh without holding direct references to each other. 
+
+For Gen, I’d model this as:
+
+```ts
+const usersKey = gen.key.collection(User)
+const userKey = gen.key.entity(User)
+
+const listUsers = gen.func.query({
+  name: "listUsers",
+  input: gen.object({}),
+  returns: gen.array(UserSummary),
+
+  tracks: gen.expr(() => [
+    usersKey,
+  ]),
+
+  body: gen.query(() =>
+    gen.query.from(User).select(UserSummary)
+  ),
+})
+
+const createUser = gen.func.action({
+  name: "createUser",
+  input: CreateUserInput,
+  returns: UserDetail,
+
+  body: gen.action(({ email, displayName }) =>
+    gen.action.insert(User, {
+      [User.fields.email]: email,
+      [User.fields.displayName]: displayName,
+    }).returning(UserDetail)
+  ),
+
+  invalidates: gen.expr(({ result }) => [
+    usersKey,
+    userKey(result.id),
+  ]),
+})
+```
+
+But importantly, Gen should usually **derive** `tracks` and `invalidates` from query/action bodies. Manual keys should be available for opaque/external dependencies.
+
+## 2. Add “tracking scopes” as a runtime concept
+
+AF-UI’s auto-tracking idea is valuable: a render, memo, loader, atom, or effect runs inside a tracking scope; anything it reads can register semantic dependencies automatically. 
+
+For Gen:
+
+```ts
+const UserList = gen.ui.component({
+  name: "UserList",
+  setup: gen.func.query({
+    name: "UserList.setup",
+    input: gen.object({}),
+    returns: gen.object({
+      users: gen.resource(listUsers),
+    }),
+    body: gen.query(() => listUsers.call({})),
+  }),
+  view: ...
+})
+```
+
+The generated React target might use TanStack Query. The Effect Atom target might use `Atom.withReactivity`. The Svelte target might use stores. But the **Gen IR** should say:
+
+```txt
+this component reads listUsers
+listUsers tracks User.collection
+therefore UserList depends on User.collection
+```
+
+That makes devtools, visualization, SSR hydration, cache invalidation, and tests much stronger.
+
+## 3. Add SingleFlight as a first-class generator target
+
+The AF-UI SingleFlight idea is one of the biggest missing pieces for full-app generation: when navigating to a route, collect all matched loaders, run them together, and return one bundled payload; after a mutation, return all affected loader data in one round trip. 
+
+For Gen, routes already know their loaders and loaders are `gen.func.query`. Actions know what they invalidate. So Gen can generate a single-flight plan:
+
+```ts
+const UserRoute = gen.route({
+  path: gen.path`/users/${User.fields.id}`,
+  params: gen.object({
+    id: User.fields.id.type,
+  }),
+  loader: getUser,
+  component: UserDetailPage,
+})
+
+const AppRoutes = gen.routes([UserRoute])
+
+await gen.generate([
+  gen.singleFlight.routes(AppRoutes),
+])
+```
+
+For mutations:
+
+```ts
+const createUserRoute = gen.api.post({
+  path: gen.path`/users`,
+  func: createUser,
+  singleFlight: gen.singleFlight.afterMutation({
+    refreshAffectedLoaders: true,
+  }),
+})
+```
+
+This could generate:
+
+```txt
+POST /users
+  -> run createUser
+  -> derive invalidated keys
+  -> find active route loaders affected by those keys
+  -> return mutation result + refreshed loader payloads
+```
+
+That would be a major differentiator.
+
+## 4. Make routes first-class typed static values, not just API paths
+
+AF-UI’s routes accumulate path, param schemas, loaders, guards, titles, and error boundaries through a typed pipeable API. It also validates path params, query, and hash at the boundary. 
+
+Gen should have a route primitive separate from API resources:
+
+```ts
+const UserRoute = gen.route({
+  name: "UserRoute",
+  path: gen.path`/users/${User.fields.id}`,
+  params: gen.object({
+    id: User.fields.id.type,
+  }),
+  query: gen.object({
+    tab: gen.optional(gen.enumOf(["profile", "posts"])),
+  }),
+  loader: getUser,
+  title: gen.func.expr({
+    name: "UserRoute.title",
+    input: gen.object({
+      data: UserDetail,
+    }),
+    returns: gen.string(),
+    body: gen.expr(({ data }) =>
+      gen.op.concat("User: ", data.displayName)
+    ),
+  }),
+  component: UserDetailPage,
+  catch: gen.route.catch({
+    UserNotFound: NotFoundView,
+    NetworkError: OfflineView,
+  }),
+})
+```
+
+This lets Gen generate:
+
+```txt
+filesystem routes
+React Router routes
+TanStack Router routes
+Next/Remix routes
+server document rendering
+OpenAPI-ish route docs
+route loaders
+typed navigation helpers
+single-flight bundles
+```
+
+## 5. Make typed error boundaries part of `gen.route` and `gen.ui`
+
+AF-UI’s loader errors are typed and handled with exhaustive matching.  Gen should do the same for query/action functions.
+
+```ts
+const getUser = gen.func.query({
+  name: "getUser",
+  input: gen.object({ id: User.fields.id.type }),
+  returns: UserDetail,
+  errors: [
+    gen.error.notFound("UserNotFound"),
+    gen.error.network("NetworkError"),
+  ],
+  body: ...
+})
+
+const UserRoute = gen.route({
+  path: gen.path`/users/${User.fields.id}`,
+  loader: getUser,
+  catch: gen.match.errors(getUser, {
+    UserNotFound: NotFoundView,
+    NetworkError: OfflineView,
+  }),
+})
+```
+
+The checker should enforce exhaustiveness if desired.
+
+## 6. Add a standardized `Result<A, E>` resource state
+
+AF-UI’s `Result` union includes loading, success, failure, defect, and refreshing/stale states. That maps very well to Gen’s generated state layer. 
+
+Gen should standardize:
+
+```ts
+type ResourceState<A, E> =
+  | { status: "initial" }
+  | { status: "loading" }
+  | { status: "success"; value: A }
+  | { status: "refreshing"; value: A }
+  | { status: "failure"; error: E; previous?: A }
+  | { status: "defect"; cause: unknown; previous?: A }
+```
+
+Targets can map it to:
+
+```txt
+Effect Atom Result
+TanStack Query result
+Vue Query result
+Svelte store state
+Solid resource state
+```
+
+Generated UI can use consistent loading/error/success boundaries across platforms.
+
+## 7. Add hydration as a formal service/layer
+
+The AF-UI note’s hydration section is very relevant: server dehydrates tracked atom state into a payload, client validates and restores it before mount, avoiding flicker and mismatches. 
+
+For Gen:
+
+```ts
+const AppHydration = gen.hydration.define({
+  include: [
+    gen.hydration.fromRoutes(AppRoutes),
+    gen.hydration.resource(listUsers),
+    gen.hydration.resource(getCurrentUser),
+  ],
+  exclude: [
+    gen.hydration.sensitive(AuthSession),
+  ],
+  validation: "strict",
+})
+```
+
+Generators can emit:
+
+```txt
+server snapshot collection
+JSON-safe serialization
+schema validation
+client rehydration
+selective hydration
+sensitive-state exclusion
+zero-flicker initial resource states
+```
+
+This fits the static function/resource model perfectly.
+
+## 8. Treat Effect Layers / services as a target, but keep Gen’s generic service model
+
+AF-UI uses Effect Layers as compile-time-enforced context with scoped cleanup and test layers.  Gen should learn from that, but not require Effect everywhere.
+
+Core/standard Gen should define:
+
+```ts
+const ApiClient = gen.service("ApiClient", {
+  methods: {
+    getUser,
+    createUser,
+  },
+})
+
+const AppRuntime = gen.runtime.client({
+  services: [ApiClient, gen.services.Router, gen.services.Theme],
+})
+```
+
+Effect target:
+
+```ts
+gen.effect.layers(AppRuntime)
+```
+
+React target:
+
+```ts
+gen.react.providers(AppRuntime)
+```
+
+Test target:
+
+```ts
+gen.testing.mockLayer(AppRuntime)
+```
+
+The important design is **requirement bubbling**:
+
+```txt
+UserCreateForm requires MutationClient, Theme, Router
+UserRoute requires ApiClient, AuthSession
+AppShell must provide them
+```
+
+The checker should catch missing services before generation.
+
+## 9. Keep everything pipeable
+
+AF-UI’s pipeability is useful because it lets metadata and behavior compose without central giant config objects.  Gen already has a functional flavor, but I’d add `.pipe()` consistently to major values:
+
+```ts
+const UserCreateForm = gen.forms.fromFunc(createUser).pipe(
+  gen.ui.Style.attach(formStyle),
+  gen.ui.Behavior.attach(submitOnEnter),
+  gen.enhancement.progressive(...),
+)
+
+const UserRoute = gen.route(UserDetailPage).pipe(
+  gen.route.path(gen.path`/users/${User.fields.id}`),
+  gen.route.loader(getUser),
+  gen.route.catch(...),
+)
+```
+
+This should be sugar over plain functions:
+
+```ts
+pipe(UserCreateForm, gen.ui.Style.attach(...))
+```
+
+No builder-only trap; just compositional ergonomics.
+
+## 10. Add “semantic key hierarchy” and batching semantics
+
+AF-UI supports granular key invalidation like a user sub-key refreshing observers of that sub-key or parent key, plus microtask batching.  Gen should define this behavior abstractly:
+
+```ts
+gen.key.collection(User)       // User.*
+gen.key.entity(User, id)       // User.{id}
+gen.key.field(User.fields.email, id)
+gen.key.relation(UserPosts, id)
+gen.key.view(UserPostCount, id)
+```
+
+Invalidating `User.collection` refreshes collection readers. Invalidating `User.entity(id)` refreshes exact-entity readers and possibly collection readers depending on query dependency precision. Multiple invalidations in one action should batch.
+
+This gives targets predictable semantics.
+
+## My concrete additions to the Gen plan
+
+I’d add these standard packages/concepts:
+
+```txt
+@gen/router
+  typed routes, params/query/hash schemas, loaders, guards, titles, error boundaries
+
+@gen/singleflight
+  loader bundling, mutation+affected-loader refresh, SSR/client request bundling
+
+@gen/hydration
+  resource snapshotting, selective hydration, schema validation, rehydration
+
+@gen/reactivity
+  semantic keys, tracking scopes, version bridge, batching, resource states
+
+@gen/services
+  service refs, runtime layers, requirement bubbling, scoped cleanup, test layers
+```
+
+And I’d update the design rule to:
+
+```txt
+Static Gen graph:
+  funcs + routes + loaders + actions + keys + UI requirements
+
+Compiler derives:
+  route data dependencies
+  resource states
+  invalidation graph
+  single-flight plans
+  hydration snapshots
+  runtime service requirements
+
+Targets emit:
+  framework-specific routers, state managers, server renderers, providers/layers, devtools
+```
+
+## The one thing I would not do
+
+I would not make Gen depend on Effect-TS as the only runtime model.
+
+AF-UI is Effect-native; Gen should be **Effect-compatible** and generate excellent Effect targets, but the core should remain generic:
+
+```txt
+Effect Layer target
+React Context target
+TanStack target
+Svelte store target
+plain fetch target
+server-only target
+```
+
+That keeps Gen broadly usable while still absorbing the best ideas.
+
+My strongest recommendation: **add typed routes + single-flight + hydration as first-class standard packages.** Those are the biggest missing pieces if Gen wants to generate truly cohesive apps, not just schemas, forms, and APIs.
+
+
+Yes — **modules should be compatible with Effect Layers/services**, but Gen should not require Effect as the only dependency model.
+
+The best design is:
+
+```txt
+Gen module/service model = generic static dependency graph
+Effect Layer = one excellent target/runtime interpretation
+```
+
+So a Gen module should declare the services it provides, the services it requires, and any scoped resources/finalizers it owns. Then generators can emit Effect Layers, React providers, test mocks, server DI containers, or plain constructor wiring.
+
+## Module shape
+
+```ts
+const UsersModule = gen.module("users", {
+  entities: [User],
+  mappings: [UserMap],
+  relations: [UserPosts],
+  funcs: [getUser, listUsers, createUser],
+  resources: [UserResource],
+  forms: [UserCreateForm],
+
+  requires: [
+    gen.service.ref("Database"),
+    gen.service.ref("Logger"),
+    gen.service.ref("EmailClient"),
+  ],
+
+  provides: [
+    gen.service("UsersService", {
+      methods: {
+        getUser,
+        listUsers,
+        createUser,
+      },
+    }),
+  ],
+})
+```
+
+Then an Effect target can generate something like:
+
+```ts
+export class UsersService extends Effect.Tag("UsersService")<
+  UsersService,
+  {
+    readonly getUser: typeof getUserImpl
+    readonly listUsers: typeof listUsersImpl
+    readonly createUser: typeof createUserImpl
+  }
+>() {}
+
+export const UsersLive = Layer.effect(
+  UsersService,
+  Effect.gen(function* () {
+    const db = yield* Database
+    const logger = yield* Logger
+    const email = yield* EmailClient
+
+    return {
+      getUser: makeGetUser({ db, logger }),
+      listUsers: makeListUsers({ db, logger }),
+      createUser: makeCreateUser({ db, logger, email }),
+    }
+  }),
+)
+```
+
+But a non-Effect target could generate:
+
+```ts
+export function createUsersService(deps: {
+  db: Database
+  logger: Logger
+  email: EmailClient
+}) {
+  return {
+    getUser: makeGetUser(deps),
+    listUsers: makeListUsers(deps),
+    createUser: makeCreateUser(deps),
+  }
+}
+```
+
+Same Gen module, different runtime output.
+
+## Services should be first-class refs
+
+I’d add service refs to the standard/core-adjacent model:
+
+```ts
+const Database = gen.service("Database", {
+  methods: {
+    query: gen.func.type({
+      input: gen.object({ sql: gen.string() }),
+      returns: gen.unknown(),
+    }),
+  },
+})
+
+const EmailClient = gen.service("EmailClient", {
+  methods: {
+    send: gen.func.type({
+      input: gen.object({
+        to: gen.email(),
+        subject: gen.string(),
+        body: gen.string(),
+      }),
+      returns: gen.unit(),
+      effects: [gen.effect.network(), gen.effect.email()],
+    }),
+  },
+})
+```
+
+Action functions can require services:
+
+```ts
+const sendWelcomeEmail = gen.func.action({
+  name: "sendWelcomeEmail",
+
+  input: gen.object({
+    email: User.fields.email.type,
+  }),
+
+  returns: gen.unit(),
+
+  requires: [EmailClient],
+
+  body: gen.action(({ email }) =>
+    gen.service.call(EmailClient.methods.send, {
+      to: email,
+      subject: gen.literal("Welcome"),
+      body: gen.literal("Thanks for joining!"),
+    })
+  ),
+})
+```
+
+That means requirement bubbling works across modules, routes, forms, UI behaviors, loaders, actions, and generated runtimes.
+
+## Modules should bubble requirements
+
+If `createUser` calls `sendWelcomeEmail`, and `sendWelcomeEmail` requires `EmailClient`, then:
+
+```txt
+createUser requires EmailClient
+UserResource requires EmailClient
+UsersModule requires EmailClient
+AppModule requires EmailClient unless UsersModule provides it
+```
+
+This gives compile/check-time diagnostics:
+
+```txt
+ERROR services:missing-provider
+  UsersModule requires EmailClient, but AppModule does not provide it.
+```
+
+Effect targets can turn this into a type-level missing-layer error where possible. Other targets can produce Gen diagnostics.
+
+## Scoped resources and cleanup
+
+This is where Effect Layers are especially good. Gen should model lifecycle generically:
+
+```ts
+const WebSocketClient = gen.service("WebSocketClient", {
+  scope: gen.scope.scoped(),
+  acquire: gen.func.action({
+    name: "openWebSocket",
+    input: gen.object({ url: gen.url() }),
+    returns: gen.resource("WebSocketClient"),
+    body: ...
+  }),
+  release: gen.func.action({
+    name: "closeWebSocket",
+    input: gen.resource("WebSocketClient"),
+    returns: gen.unit(),
+    body: ...
+  }),
+})
+```
+
+Effect target:
+
+```txt
+Layer.scoped(...)
+Effect.addFinalizer(...)
+```
+
+React target:
+
+```txt
+provider + useEffect cleanup
+```
+
+Server target:
+
+```txt
+startup/shutdown hooks
+```
+
+Test target:
+
+```txt
+mock scoped service with deterministic finalizer
+```
+
+So yes: service/layer compatibility should include **scoped cleanup**, not just dependency injection.
+
+## Module composition
+
+Modules should compose like layers:
+
+```ts
+const AppModule = gen.module("app", {
+  imports: [
+    UsersModule,
+    PostsModule,
+    AuthModule,
+  ],
+
+  provides: [
+    DatabaseLive,
+    LoggerLive,
+    EmailClientLive,
+  ],
+})
+```
+
+The checker computes:
+
+```txt
+provided services
+required services
+unresolved services
+conflicting providers
+service scopes
+runtime compatibility
+```
+
+Then targets can generate:
+
+```ts
+// Effect
+export const AppLive = Layer.mergeAll(
+  DatabaseLive,
+  LoggerLive,
+  EmailClientLive,
+  UsersLive,
+  PostsLive,
+  AuthLive,
+)
+```
+
+or:
+
+```ts
+// Plain TS
+export const app = createApp({
+  database: createDatabase(),
+  logger: createLogger(),
+  email: createEmailClient(),
+  users: createUsersService(...),
+})
+```
+
+## Testing story
+
+Effect Layers are excellent for tests, and Gen should support that directly:
+
+```ts
+const UsersTest = UsersModule.with({
+  providers: [
+    gen.service.mock(EmailClient, {
+      send: gen.testing.fn(),
+    }),
+    gen.service.mock(Database, gen.testing.inMemoryDb()),
+  ],
+})
+```
+
+Effect target:
+
+```ts
+const TestLayer = Layer.mergeAll(
+  DatabaseTest,
+  EmailClientTest,
+  UsersLive,
+)
+```
+
+Generated tests can run against the static funcs:
+
+```ts
+gen.testing.testFunc(createUser, {
+  layer: UsersTest,
+  input: {
+    email: "ada@example.com",
+    displayName: "Ada",
+  },
+  expect: {
+    output: gen.match.object({ email: "ada@example.com" }),
+    serviceCalls: [
+      EmailClient.methods.send.calledOnce(),
+    ],
+  },
+})
+```
+
+## Recommended package split
+
+I’d add this as a standard package:
+
+```txt
+@gen/services
+  ServiceRef
+  MethodRef
+  Provider
+  Layer
+  Module
+  Requirement bubbling
+  Scope/finalizer model
+  Mock/test provider model
+```
+
+Targets:
+
+```txt
+@gen/effect
+  Effect.Tag
+  Layer
+  Layer.scoped
+  Effect.Service
+  Effect testing layers
+
+@gen/react
+  Context/providers/hooks
+
+@gen/node
+  startup/shutdown DI container
+
+@gen/testing
+  mocks/fakes/in-memory providers
+```
+
+Core only needs generic refs, requirements, effects, static funcs, diagnostics, artifacts.
+
+## Final recommendation
+
+Yes: **Gen modules should be compatible with Effect Layers/services by design.**
+
+But the abstraction should be:
+
+```txt
+Gen service/module/layer graph
+  -> Effect Layer target
+  -> React provider target
+  -> plain TS DI target
+  -> test mock target
+```
+
+That gives you the best of Effect — typed requirements, scoped cleanup, test layers, composable services — without making all Gen users adopt Effect.
+
+
+Yes — rules are probably one of the **best primitives for auth**, and they should absolutely feed CRUD generation.
+
+Auth is rarely just:
+
+```ts
+allow.role("admin")
+```
+
+It is usually relational:
+
+```txt
+Can edit post if:
+  user is admin
+  OR user authored the post
+  OR user belongs to the org that owns the post and has role editor
+  OR user has an explicit permission grant
+```
+
+That is exactly what rules are good at.
+
+## Auth rules as typed predicates
+
+A rule can be a typed predicate over domain values:
+
+```ts
+const CanEditPost = gen.rules.rule("CanEditPost", {
+  input: {
+    actor: User,
+    post: Post,
+  },
+
+  body: ({ actor, post }) =>
+    gen.rules.or(
+      gen.rules.eq(actor.role, "admin"),
+
+      gen.rules.rel(PostAuthor, {
+        post,
+        user: actor,
+      }),
+
+      gen.rules.exists(({ membership, org }) =>
+        gen.rules.and(
+          gen.rules.rel(PostOrg, { post, org }),
+          gen.rules.rel(UserMembership, { user: actor, membership }),
+          gen.rules.eq(membership.orgId, org.id),
+          gen.rules.in(membership.role, ["owner", "editor"]),
+        )
+      ),
+    ),
+})
+```
+
+Then CRUD can use it:
+
+```ts
+const postCrud = gen.crud(Post, {
+  mapping: PostMap,
+  policy: {
+    read: CanReadPost,
+    create: CanCreatePost,
+    update: CanEditPost,
+    delete: CanDeletePost,
+  },
+})
+```
+
+The generated `postCrud.update` action now has a typed auth predicate built in.
+
+## CRUD generation can use rules automatically
+
+Given:
+
+```ts
+const postCrud = gen.crud(Post, {
+  mapping: PostMap,
+  policy: PostPolicy,
+})
+```
+
+Gen can generate different enforcement layers from the same rule.
+
+For `getById`:
+
+```ts
+const getPost = gen.func.query({
+  input: gen.object({
+    actor: gen.auth.actor(User),
+    id: Post.fields.id.type,
+  }),
+
+  returns: PostDetail,
+
+  body: gen.query(({ actor, id }) =>
+    gen.query.from(Post)
+      .where(gen.op.eq(Post.fields.id, id))
+      .where(CanReadPost({ actor, post: gen.query.current(Post) }))
+      .select(PostDetail)
+      .one()
+  ),
+})
+```
+
+For `update`:
+
+```ts
+const updatePost = gen.func.action({
+  input: gen.object({
+    actor: gen.auth.actor(User),
+    id: Post.fields.id.type,
+    title: gen.optional(Post.fields.title.type),
+  }),
+
+  returns: PostDetail,
+
+  body: gen.action(({ actor, id, title }) =>
+    gen.action.update(Post)
+      .where(gen.op.eq(Post.fields.id, id))
+      .where(CanEditPost({ actor, post: gen.action.current(Post) }))
+      .setWhenSome(Post.fields.title, title)
+      .returning(PostDetail)
+  ),
+})
+```
+
+The user does not need to write all this by hand. CRUD generation can insert the policy predicate.
+
+## Rules can compile to different enforcement forms
+
+The same auth rule can generate:
+
+```txt
+SQL WHERE clauses
+server-side checks
+route middleware
+form visibility rules
+field-level editability
+OpenAPI/security metadata
+tests
+audit logs
+diagnostics if not translatable
+```
+
+For example, this rule:
+
+```ts
+const CanReadPost = gen.rules.rule("CanReadPost", {
+  input: {
+    actor: User,
+    post: Post,
+  },
+  body: ({ actor, post }) =>
+    gen.rules.or(
+      gen.rules.eq(post.visibility, "public"),
+      gen.rules.eq(post.authorId, actor.id),
+      gen.rules.eq(actor.role, "admin"),
+    ),
+})
+```
+
+Can compile to a SQL predicate:
+
+```sql
+posts.visibility = 'public'
+OR posts.author_id = $actor_id
+OR $actor_role = 'admin'
+```
+
+But this rule:
+
+```ts
+const CanReadPost = gen.rules.rule("CanReadPost", {
+  input: { actor: User, post: Post },
+  body: ({ actor, post }) =>
+    gen.rules.call(ExternalPolicyService.canReadPost, { actor, post }),
+})
+```
+
+cannot compile to SQL. Gen should diagnose that and choose a fallback:
+
+```txt
+CanReadPost is not SQL-translatable.
+Falling back to server-side post-filtering.
+Warning: this may overfetch.
+```
+
+Or fail if the target requires database-level filtering.
+
+## CRUD needs policy placement
+
+Not every policy can or should run in the same place.
+
+```ts
+const postCrud = gen.crud(Post, {
+  policy: {
+    read: CanReadPost,
+    update: CanEditPost,
+  },
+
+  policyPlacement: {
+    read: gen.policy.prefer("database").fallback("server"),
+    update: gen.policy.require("server-before-write"),
+  },
+})
+```
+
+Placement options:
+
+```txt
+database
+  compile to WHERE / RLS / policy predicate
+
+server-before-query
+  check before query if enough input is known
+
+server-after-query
+  fetch then check, useful but must avoid leaking list data
+
+server-before-write
+  check before mutation
+
+client-hint
+  hide/disable UI only, never authoritative
+
+edge
+  route-level fast rejection
+
+external
+  call policy service
+```
+
+This matters for CRUD generation.
+
+For `listPosts`, read policy should ideally become a database predicate. For `deletePost`, policy should run before deletion. For UI, the same rule may generate a non-authoritative hint like “show edit button if likely allowed.”
+
+## Rules can generate field-level auth
+
+CRUD often needs field-level policies.
+
+Example:
+
+```ts
+const CanEditPostField = gen.rules.fieldPolicy(Post, {
+  field: ({ actor, post, field }) =>
+    gen.rules.match(field, {
+      [Post.fields.title]: CanEditPost({ actor, post }),
+      [Post.fields.body]: CanEditPost({ actor, post }),
+      [Post.fields.publishedAt]: gen.rules.eq(actor.role, "admin"),
+    }),
+})
+```
+
+Or more simply:
+
+```ts
+const PostPolicy = gen.authz.policy(Post, {
+  read: CanReadPost,
+  update: CanEditPost,
+
+  fields: {
+    publishedAt: {
+      update: CanPublishPost,
+    },
+    internalNotes: {
+      read: CanReadInternalNotes,
+      update: CanEditInternalNotes,
+    },
+  },
+})
+```
+
+Then CRUD generation can infer:
+
+```txt
+postCrud.update input excludes fields actor cannot edit generally
+generated forms disable/hide fields based on client-safe policy hints
+server action validates field-level permissions
+OpenAPI docs can expose role-based constraints if configured
+```
+
+This is very useful.
+
+## Rules can power relation-aware CRUD
+
+For org-scoped apps:
+
+```ts
+const IsOrgMember = gen.rules.rule("IsOrgMember", {
+  input: {
+    user: User,
+    org: Org,
+  },
+  body: ({ user, org }) =>
+    gen.rules.exists(({ membership }) =>
+      gen.rules.and(
+        gen.rules.rel(UserMembership, { user, membership }),
+        gen.rules.eq(membership.orgId, org.id),
+      )
+    ),
+})
+
+const CanReadProject = gen.rules.rule("CanReadProject", {
+  input: {
+    actor: User,
+    project: Project,
+  },
+  body: ({ actor, project }) =>
+    gen.rules.exists(({ org }) =>
+      gen.rules.and(
+        gen.rules.rel(ProjectOrg, { project, org }),
+        IsOrgMember({ user: actor, org }),
+      )
+    ),
+})
+```
+
+Then:
+
+```ts
+const projectCrud = gen.crud(Project, {
+  policy: {
+    read: CanReadProject,
+    update: CanManageProject,
+    delete: CanManageProject,
+  },
+})
+```
+
+Generated list queries automatically include org membership constraints.
+
+This is much better than sprinkling custom `where` clauses throughout your app.
+
+## Rules can also generate UI auth hints
+
+Server-side auth remains authoritative, but generated UI can use a client-safe approximation.
+
+```ts
+const CanEditPostClientHint = gen.rules.clientHint(CanEditPost, {
+  allowedInputs: ["actor.role", "post.authorId"],
+})
+```
+
+Then a generated table can show/hide row actions:
+
+```ts
+const PostsTable = gen.ui.table(postCrud.list, {
+  rowActions: [
+    gen.ui.action(postCrud.update, {
+      visibleWhen: CanEditPostClientHint,
+    }),
+  ],
+})
+```
+
+If a rule depends on server-only data, Gen can say:
+
+```txt
+Cannot generate client hint for CanEditPost:
+requires Membership query not available on client.
+Use server check or include membership in loader.
+```
+
+This is exactly the kind of diagnostic you want.
+
+## Rules can drive reactivity for auth
+
+Auth changes affect visible data.
+
+If a user’s membership changes, queries protected by `IsOrgMember` may need refresh.
+
+Because the policy is a rule, Gen knows dependencies:
+
+```txt
+CanReadProject depends on:
+  Project.orgId
+  Membership.userId
+  Membership.orgId
+```
+
+So if an action changes `Membership`, Gen can infer:
+
+```txt
+invalidate:
+  project list queries for affected user/org
+  route loaders whose auth depends on membership
+  UI actions whose visibility depends on membership
+```
+
+This is a huge win over hand-maintained invalidation.
+
+## Rules can generate database RLS
+
+For Postgres, some rules can generate row-level security policies.
+
+```ts
+const CanReadProject = gen.rules.rule(...)
+```
+
+Target:
+
+```ts
+gen.postgres.rls(Project, {
+  select: CanReadProject,
+  update: CanManageProject,
+})
+```
+
+Generated SQL might create policies using current user/session variables.
+
+But Gen should classify rules:
+
+```txt
+RLS-translatable
+SQL-WHERE-translatable
+server-only
+client-hint-only
+not statically analyzable
+```
+
+And emit diagnostics accordingly.
+
+## Suggested API shape
+
+I’d model auth like this:
+
+```ts
+const PostPolicy = gen.authz.policy(Post, {
+  actor: User,
+
+  read: CanReadPost,
+  create: CanCreatePost,
+  update: CanEditPost,
+  delete: CanDeletePost,
+
+  fields: {
+    internalNotes: {
+      read: CanReadInternalNotes,
+      update: CanEditInternalNotes,
+    },
+  },
+
+  placement: {
+    read: gen.authz.place.preferDatabase().fallbackServer(),
+    update: gen.authz.place.serverBeforeWrite(),
+    delete: gen.authz.place.serverBeforeWrite(),
+  },
+})
+```
+
+Then CRUD:
+
+```ts
+const postCrud = gen.crud(Post, {
+  mapping: PostMap,
+  policy: PostPolicy,
+})
+```
+
+And forms:
+
+```ts
+const PostEditForm = gen.forms.fromFunc(postCrud.update, {
+  fieldVisibility: gen.forms.authz.fromPolicy(PostPolicy),
+})
+```
+
+And routes:
+
+```ts
+const PostResource = gen.api.resource(Post, {
+  operations: postCrud.operations,
+  auth: PostPolicy,
+})
+```
+
+## The rule system should distinguish predicates
+
+I’d have several related concepts:
+
+```txt
+Rule
+  general Datalog-like predicate
+
+PolicyRule
+  auth predicate with actor/resource/action semantics
+
+ConstraintRule
+  invariant that must hold
+
+DerivationRule
+  derived fact/view
+
+ReactivityRule
+  dependency/invalidation relation
+
+ClientHintRule
+  non-authoritative UI predicate
+```
+
+They can share implementation, but the names help users understand intent.
+
+## Final recommendation
+
+Yes: rules should be a core part of the **authz package** and should integrate deeply with CRUD generation.
+
+The ideal flow:
+
+```txt
+Define relations and rules once.
+Attach policy rules to an entity.
+Generate CRUD.
+CRUD injects rules into queries/actions.
+Targets compile rules to SQL/RLS/server checks/client hints where possible.
+Reactivity uses rule dependencies to refresh auth-sensitive data.
+Forms and UI use client-safe hints, while server checks remain authoritative.
+```
+
+The big benefit is that auth becomes:
+
+```txt
+typed
+relational
+reusable
+translatable
+testable
+visualizable
+reactivity-aware
+```
+
+instead of scattered middleware and one-off `if` statements.
+
+Rules should have **multiple evaluation strategies**, chosen by a planner based on the rule’s AST, required data, target runtime, and safety constraints.
+
+The short version:
+
+```txt
+Rule definition
+  -> typed logical AST
+  -> dependency analysis
+  -> translatability analysis
+  -> planner chooses one or more evaluators:
+       database predicate / RLS
+       server-side check
+       client-side hint
+       materialized / incremental view
+       external policy call
+```
+
+The same rule should not blindly run everywhere. Gen should classify it.
+
+## 1. A rule is static data
+
+A rule should compile to a typed logic AST, not a JS function.
+
+```ts
+const CanReadPost = gen.rules.rule("CanReadPost", {
+  input: {
+    actor: User,
+    post: Post,
+  },
+
+  body: ({ actor, post }) =>
+    gen.rules.or(
+      gen.rules.eq(post.visibility, "public"),
+      gen.rules.eq(post.authorId, actor.id),
+      gen.rules.eq(actor.role, "admin"),
+    ),
+})
+```
+
+Internally this becomes something like:
+
+```txt
+or(
+  eq(field(post.visibility), lit("public")),
+  eq(field(post.authorId), field(actor.id)),
+  eq(field(actor.role), lit("admin")),
+)
+```
+
+Because it is static, Gen can inspect it and ask:
+
+```txt
+Can this become SQL?
+Can this become a Postgres RLS policy?
+Can this run on the server?
+Can this become a client-side hint?
+What data does it need?
+What changes should invalidate it?
+```
+
+## 2. Rules get classified by capability
+
+I’d classify every rule into tiers:
+
+```txt
+Tier A: pure local
+  only uses input values already present
+  can run client, server, tests, UI hints
+
+Tier B: database-translatable
+  uses fields, relations, joins, exists, aggregates supported by target DB
+  can become SQL WHERE / JOIN / EXISTS / RLS
+
+Tier C: server-evaluable
+  needs database queries, services, secrets, external APIs, or opaque operations
+  runs on server before/after query/action
+
+Tier D: materialized / IVM
+  expensive or recursive derived facts
+  best maintained as a view, cache, materialized table, rule engine, or Datalog runtime
+
+Tier E: client-hint-only
+  safe approximation for UI visibility, not authoritative
+
+Tier F: not portable
+  uses opaque JS/effects without declared implementation
+  requires explicit runtime placement
+```
+
+A rule can have multiple valid placements.
+
+Example:
+
+```ts
+CanReadPost
+```
+
+might be:
+
+```txt
+SQL WHERE: yes
+Postgres RLS: yes
+Server check: yes
+Client hint: yes, if actor.role and post.authorId are present
+```
+
+But:
+
+```ts
+const CanReadPost = gen.rules.rule("CanReadPost", {
+  input: { actor: User, post: Post },
+  body: ({ actor, post }) =>
+    gen.rules.call(ExternalPolicyService.canReadPost, { actor, post }),
+})
+```
+
+is:
+
+```txt
+SQL WHERE: no
+Client hint: no
+Server check: yes
+External policy service required
+```
+
+## 3. Database translation
+
+For database translation, rules compile to predicates or joins.
+
+Simple rule:
+
+```ts
+gen.rules.or(
+  gen.rules.eq(post.visibility, "public"),
+  gen.rules.eq(post.authorId, actor.id),
+  gen.rules.eq(actor.role, "admin"),
+)
+```
+
+can become SQL:
+
+```sql
+posts.visibility = 'public'
+OR posts.author_id = $actor_id
+OR $actor_role = 'admin'
+```
+
+A relation rule:
+
+```ts
+const IsOrgMember = gen.rules.rule("IsOrgMember", {
+  input: { user: User, org: Org },
+  body: ({ user, org }) =>
+    gen.rules.exists(({ membership }) =>
+      gen.rules.and(
+        gen.rules.fact(Membership, { userId: user.id, orgId: org.id }),
+        gen.rules.in(membership.role, ["owner", "editor"])
+      )
+    ),
+})
+```
+
+can become SQL `EXISTS`:
+
+```sql
+EXISTS (
+  SELECT 1
+  FROM memberships m
+  WHERE m.user_id = $actor_id
+    AND m.org_id = projects.org_id
+    AND m.role IN ('owner', 'editor')
+)
+```
+
+So generated `listProjects` can include:
+
+```sql
+SELECT ...
+FROM projects
+WHERE EXISTS (...)
+```
+
+For CRUD:
+
+```ts
+const projectCrud = gen.crud(Project, {
+  policy: {
+    read: CanReadProject,
+    update: CanEditProject,
+  },
+})
+```
+
+Gen can insert the policy into generated queries:
+
+```txt
+getById -> WHERE id = $id AND CanReadProject(actor, project)
+list    -> WHERE CanReadProject(actor, project)
+update  -> UPDATE ... WHERE id = $id AND CanEditProject(actor, project)
+delete  -> DELETE ... WHERE id = $id AND CanDeleteProject(actor, project)
+```
+
+This is the best placement when possible, because unauthorized rows never leave the database query.
+
+## 4. RLS translation
+
+Some rules can become database row-level security policies.
+
+```ts
+gen.postgres.rls(Project, {
+  select: CanReadProject,
+  update: CanEditProject,
+})
+```
+
+The Postgres target can generate policies if the rule is SQL/RLS-translatable.
+
+But RLS has constraints. The rule must be expressible using DB-visible values and session context.
+
+So Gen needs a session binding model:
+
+```ts
+const DbSession = gen.db.session({
+  actorId: User.fields.id.type,
+  actorRole: User.fields.role.type,
+})
+```
+
+Then a rule can refer to:
+
+```ts
+gen.auth.dbSession.actorId
+gen.auth.dbSession.actorRole
+```
+
+Generated SQL might use:
+
+```sql
+current_setting('app.actor_id')::uuid
+current_setting('app.actor_role')
+```
+
+If the rule uses a service call, opaque JS, or non-SQL operation, RLS generation fails with a diagnostic.
+
+```txt
+ERROR authz:rule-not-rls-translatable
+  CanReadProject calls ExternalPolicyService.
+  RLS policies cannot call this service.
+  Use server-side policy placement or provide a SQL implementation.
+```
+
+## 5. Server evaluation
+
+Server evaluation is the general fallback and the most flexible placement.
+
+There are two forms:
+
+### Server pre-query
+
+If the rule can be checked from input alone:
+
+```ts
+CanCreatePost(actor)
+```
+
+then run it before doing any DB work.
+
+```txt
+if !CanCreatePost(actor) -> Forbidden
+else continue
+```
+
+### Server query-integrated
+
+If the rule depends on the resource row, either compile it into the query or fetch enough data and check.
+
+```txt
+SELECT post WHERE id = ?
+then check CanEditPost(actor, post)
+```
+
+This is okay for `getById` or `updateById`, but risky for lists because it can overfetch.
+
+For list operations, Gen should prefer DB predicate translation. If it cannot translate the policy, it should require an explicit choice:
+
+```ts
+const postCrud = gen.crud(Post, {
+  policy: PostPolicy,
+  policyPlacement: {
+    list: gen.authz.place.databaseRequired(),
+  },
+})
+```
+
+or:
+
+```ts
+policyPlacement: {
+  list: gen.authz.place.serverPostFilter({
+    maxRows: 500,
+    warning: true,
+  }),
+}
+```
+
+That prevents accidental “fetch all rows then filter in memory.”
+
+## 6. Client evaluation
+
+Client evaluation should usually be a **hint**, not the source of truth.
+
+Use it for:
+
+```txt
+show/hide buttons
+disable fields
+choose UI state
+client-side route guards
+preflight feedback
+```
+
+Do not use it as authoritative access control.
+
+Example:
+
+```ts
+const CanEditPostClientHint = gen.rules.clientHint(CanEditPost, {
+  inputs: {
+    actor: CurrentUserSummary,
+    post: PostSummary,
+  },
+  allowApproximation: true,
+})
+```
+
+If the full rule is:
+
+```txt
+actor is admin
+OR actor is author
+OR actor is org editor
+```
+
+but the client only has:
+
+```txt
+actor.role
+actor.id
+post.authorId
+```
+
+then Gen can derive a partial hint:
+
+```txt
+actor.role == "admin" OR post.authorId == actor.id
+```
+
+It should know this is incomplete:
+
+```txt
+client hint may produce false negatives
+server remains authoritative
+```
+
+False negatives are usually okay for UI hints: you might hide an edit button even though the server would allow it. False positives are dangerous but still safe if server checks are enforced; they produce a worse UX but not a security issue.
+
+So client hints should declare their approximation behavior:
+
+```ts
+gen.rules.clientHint(CanEditPost, {
+  mode: "sound-deny", // never shows allowed unless definitely allowed
+})
+```
+
+Possible modes:
+
+```txt
+exact
+  rule fully evaluable on client
+
+sound-allow
+  if hint says allow, server should allow
+  may falsely deny
+
+sound-deny
+  if hint says deny, server should deny
+  may falsely allow
+
+best-effort
+  UI only; server authoritative
+
+disabled
+  no client hint
+```
+
+For auth UI, I’d default to `sound-allow` or `best-effort` depending on use.
+
+## 7. Partial evaluation
+
+Partial evaluation is the key to client/server split.
+
+Given a rule:
+
+```ts
+CanEditPost(actor, post) =
+  actor.role == "admin"
+  OR post.authorId == actor.id
+  OR exists Membership(actor.id, post.orgId, role in ["owner", "editor"])
+```
+
+On the client, if you have actor and post but not memberships, Gen can partially evaluate:
+
+```txt
+actor.role == "admin"
+OR post.authorId == actor.id
+OR unknown(Membership check)
+```
+
+Then depending on the hint mode:
+
+```txt
+sound-allow:
+  allow if first two are true
+  otherwise unknown -> deny/hide
+
+best-effort:
+  maybe render pending/checking state
+
+exact:
+  diagnostic: cannot evaluate exactly on client
+```
+
+This is a huge UX win.
+
+## 8. Materialized / IVM evaluation
+
+Rules that are expensive, recursive, or aggregate-heavy might be best evaluated as derived views.
+
+Example:
+
+```ts
+const CanViewDashboard = gen.rules.rule("CanViewDashboard", {
+  input: { actor: User, dashboard: Dashboard },
+  body: ({ actor, dashboard }) =>
+    gen.rules.exists(({ grant }) =>
+      gen.rules.and(
+        gen.rules.fact(AccessGrant, {
+          userId: actor.id,
+          resourceId: dashboard.id,
+        }),
+        gen.rules.gte(grant.expiresAt, gen.op.now()),
+      )
+    ),
+})
+```
+
+This could be evaluated live via SQL `EXISTS`.
+
+But for very complex rules:
+
+```ts
+const EffectivePermission = gen.rules.ivm("EffectivePermission", {
+  key: gen.object({
+    userId: User.fields.id.type,
+    resourceId: gen.uuid(),
+    action: gen.string(),
+  }),
+  body: ... // groups, inheritance, org tree, explicit grants, denies
+})
+```
+
+Gen can maintain an `effective_permissions` table or cache.
+
+Then auth checks become simple lookups:
+
+```sql
+EXISTS (
+  SELECT 1 FROM effective_permissions
+  WHERE user_id = $actor_id
+    AND resource_id = posts.id
+    AND action = 'edit'
+)
+```
+
+This can be much faster and easier to translate.
+
+## 9. Evaluation planner
+
+I’d add an auth/rules planner.
+
+Input:
+
+```txt
+rule AST
+target operation: get/list/update/delete/form/action
+available data
+store capabilities
+runtime capabilities
+security requirements
+performance policy
+client hint policy
+```
+
+Output:
+
+```txt
+evaluation plan
+```
+
+Example plan:
+
+```txt
+CanReadProject for listProjects:
+  database: SQL EXISTS predicate
+  server: no post-filter needed
+  client: best-effort hint using actor.role only
+  reactivity: depends on Project.orgId, Membership.userId, Membership.orgId, Membership.role
+```
+
+Another:
+
+```txt
+CanChargeCustomer:
+  database: impossible
+  client: disabled
+  server: ExternalPolicyService call before action
+  requirements: BillingPolicyService
+```
+
+## 10. Rule target annotations
+
+Users should be able to configure desired placement.
+
+```ts
+const ProjectPolicy = gen.authz.policy(Project, {
+  read: CanReadProject,
+  update: CanEditProject,
+
+  placement: {
+    read: gen.authz.place.preferDatabase().fallbackServer(),
+    list: gen.authz.place.requireDatabase(),
+    update: gen.authz.place.serverBeforeWrite(),
+    client: gen.authz.place.clientHint({
+      mode: "sound-allow",
+    }),
+  },
+})
+```
+
+For high-security or high-volume reads, `requireDatabase()` is useful: fail generation if the rule cannot become a DB predicate.
+
+## 11. What happens in CRUD generation
+
+For generic CRUD:
+
+```ts
+const postCrud = gen.crud(Post, {
+  mapping: PostMap,
+  policy: PostPolicy,
+})
+```
+
+Gen expands something like:
+
+```ts
+postCrud.list = gen.func.query({
+  input: { actor, filter, pagination },
+  body: query(Post)
+    .where(userFilters)
+    .where(compilePolicy(PostPolicy.read, { actor, row: Post }))
+    .select(PostSummary)
+})
+```
+
+`postCrud.update`:
+
+```ts
+postCrud.update = gen.func.action({
+  input: { actor, id, patch },
+  body: action.update(Post)
+    .where(eq(Post.id, id))
+    .where(compilePolicy(PostPolicy.update, { actor, row: Post }))
+    .set(patch)
+    .returning(PostDetail)
+})
+```
+
+If policy can’t compile into update `WHERE`, server fallback might be:
+
+```txt
+begin transaction
+select row for update
+check policy on server
+perform update
+commit
+```
+
+The planner chooses based on capability and configured placement.
+
+## 12. Testing generated auth
+
+Because rules are static, Gen can generate tests:
+
+```txt
+unit tests for rule evaluation
+SQL predicate equivalence tests
+client hint approximation tests
+CRUD auth tests
+RLS policy tests
+```
+
+Example:
+
+```ts
+gen.testing.rule(CanEditPost, [
+  {
+    name: "admin can edit",
+    input: { actor: adminUser, post },
+    expect: true,
+  },
+  {
+    name: "author can edit",
+    input: { actor: author, post },
+    expect: true,
+  },
+  {
+    name: "random user cannot edit",
+    input: { actor: randomUser, post },
+    expect: false,
+  },
+])
+```
+
+For DB translation, Gen can run generated SQL against fixtures and compare with server evaluator.
+
+## 13. What should not be allowed
+
+Avoid unsafe implicit behavior.
+
+Bad:
+
+```txt
+Rule not translatable to SQL for list query.
+Gen silently fetches all rows and filters in memory.
+```
+
+Better:
+
+```txt
+ERROR:
+  CanReadProject is not database-translatable for listProjects.
+  Choose:
+    - provide SQL implementation
+    - use materialized permission view
+    - allow bounded server post-filter with maxRows
+    - change policy placement
+```
+
+Also avoid authoritative client auth. Client auth is only a hint.
+
+## 14. Final model
+
+I’d define rule evaluation like this:
+
+```txt
+Rules are static logical predicates.
+
+They can be evaluated by:
+  1. database translation
+       SQL WHERE, EXISTS, JOIN, CHECK, RLS
+  2. server interpreter/compiler
+       TypeScript/Effect function, service calls, transactions
+  3. client partial evaluator
+       UI hints only unless explicitly safe
+  4. materialized / IVM evaluator
+       precomputed derived facts, permission tables, views
+  5. external evaluator
+       policy service, OPA, custom runtime
+
+The planner chooses based on:
+  rule AST
+  available data
+  target operation
+  runtime/store capabilities
+  security policy
+  performance policy
+```
+
+So yes: rules can be translated to DB and also to client, but not always exactly and not always authoritatively. The correct system is one that classifies, plans, degrades safely, and emits diagnostics when a desired placement is impossible.
+
+
+
+
+
+

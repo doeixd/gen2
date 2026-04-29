@@ -1,0 +1,1603 @@
+Yes. AF-UI gives us a very useful UI-side analogue to the backend/domain primitives we’ve been designing.
+
+The strongest lesson is: **generated UI should not be “React components with props and class strings.”** It should be a typed, platform-agnostic UI IR with structure, slots, styles, behaviors, requirements, and render targets separated. AF-UI’s key split is `Tags → Views → Components → Renderer → Platform`, and components return a typed `View<Slots>` rather than a black-box `JSX.Element`. That is exactly the kind of primitive our `@gen/forms` / `@gen/components` layer should learn from. 
+
+## What to take
+
+### 1. Typed slots / handles should be first-class
+
+AF-UI’s best idea is that a component exposes named slots like `root`, `label`, `content`, `closeButton`, etc., and styles/behaviors attach to those slots from the outside. That fits perfectly with generated forms and design-system customization. 
+
+In our spec, instead of generating this as opaque JSX:
+
+```tsx
+function UserForm() {
+  return <form className="...">...</form>
+}
+```
+
+we should generate a typed view:
+
+```ts
+const UserCreateView = gen.ui.view({
+  root: gen.ui.Element.Form,
+  emailField: gen.ui.Element.Field,
+  emailInput: gen.ui.Element.TextInput,
+  submitButton: gen.ui.Element.Interactive,
+}, ({ slots }) => (
+  <Form slot={slots.root}>
+    <Field slot={slots.emailField}>
+      <TextInput slot={slots.emailInput} />
+    </Field>
+    <Button slot={slots.submitButton}>Create</Button>
+  </Form>
+))
+```
+
+Then external packages can attach:
+
+```ts
+const StyledUserCreateForm = UserCreateView.pipe(
+  gen.ui.Style.attach({
+    root: { gap: "md" },
+    emailInput: { borderColor: "neutral" },
+    submitButton: { backgroundColor: "primary" },
+  }),
+  gen.ui.Behavior.attach(submitOnEnter, {
+    target: "root",
+  })
+)
+```
+
+That means users can customize generated components without forking generated files.
+
+This solves the same “shadcn fork rot” problem AF-UI describes: generated code should expose typed handles, not require copy-paste edits. 
+
+---
+
+### 2. Separate View, Style, Behavior, and Platform
+
+Our current plan has forms/components, but AF-UI gives us a better breakdown:
+
+```txt
+View       = structure + slots
+Style      = appearance attached to slots
+Behavior   = interaction attached to slots
+Component  = logical state + view
+Renderer   = compiles/interprets UI IR
+Platform   = web/native/TUI vocabulary + events + rendering
+```
+
+This maps well to our static-function design:
+
+```txt
+Form Func       = typed action/input contract
+Form View       = structural UI over that input
+Form Behavior   = submit, validation, focus, disclosure, keyboard nav
+Form Style      = tokens, variants, responsive layout
+Renderer        = React/Vue/Svelte/Native/TUI target
+Platform        = Web DOM, React Native, terminal, server components, etc.
+```
+
+So generated forms should be:
+
+```ts
+const UserCreateForm = gen.forms.fromFunc(createUserFunc, {
+  view: gen.ui.view(...),
+  behavior: gen.forms.behavior.standardSubmit(),
+  style: gen.forms.style.defaultForm(),
+})
+```
+
+rather than directly “generate React component.”
+
+---
+
+### 3. Behaviors should attach to capabilities, not component names
+
+AF-UI’s behavior system matches behaviors to element capabilities like `Element.Interactive`, `Element.TextInput`, `Element.Container`. That is excellent. 
+
+For us:
+
+```ts
+const submitBehavior = gen.ui.Behavior.make({
+  form: gen.ui.Element.Form,
+  submit: gen.ui.Element.Interactive,
+})(({ form, submit }) =>
+  gen.action.seq(
+    submit.onPress(form.submit()),
+    form.onSubmit(createUserFunc)
+  )
+)
+```
+
+Then a behavior can only attach to compatible slots:
+
+```ts
+UserCreateView.pipe(
+  gen.ui.Behavior.attach(submitBehavior, {
+    form: "root",
+    submit: "submitButton",
+  })
+)
+```
+
+This should fail:
+
+```ts
+gen.ui.Behavior.attach(submitBehavior, {
+  submit: "emailInput",
+})
+```
+
+if `emailInput` is `TextInput` but not `Interactive`, or does not satisfy the required capability.
+
+This is exactly analogous to our typed relation/field refs: **UI slots are refs with capabilities**.
+
+---
+
+### 4. Typed design tokens beat Tailwind strings
+
+AF-UI’s critique of Tailwind strings is directly relevant. Generated UI should not emit giant untyped class strings as the source of truth. Styles should be typed data using tokens. 
+
+We should add a style/token primitive:
+
+```ts
+const AppTheme = gen.ui.theme({
+  color: {
+    primary: gen.ui.color("#2563eb"),
+    surface: gen.ui.color("#ffffff"),
+    danger: gen.ui.color("#dc2626"),
+  },
+  space: {
+    xs: "0.25rem",
+    sm: "0.5rem",
+    md: "1rem",
+  },
+  radius: {
+    sm: "0.25rem",
+    md: "0.5rem",
+    full: "9999px",
+  },
+})
+```
+
+Then styles:
+
+```ts
+const buttonStyle = gen.ui.Style.make({
+  root: {
+    padding: ["sm", "md"],
+    borderRadius: "md",
+    backgroundColor: "primary",
+  },
+  label: {
+    color: "surface",
+    fontWeight: "bold",
+  },
+})
+```
+
+Invalid token names should be type errors.
+
+Targets can compile this to:
+
+```txt
+CSS classes
+Tailwind-compatible classes
+inline styles
+React Native StyleSheet
+terminal styles
+static extracted CSS
+```
+
+but the source remains typed.
+
+---
+
+### 5. Generated UI should have style handles
+
+This is a big one.
+
+For every generated form/table/detail/card, expose public handles:
+
+```ts
+const UserCreateForm = gen.forms.fromFunc(createUserFunc, {
+  handles: {
+    root: gen.ui.Element.Form,
+    emailField: gen.ui.Element.Field,
+    emailInput: gen.ui.Element.TextInput,
+    displayNameField: gen.ui.Element.Field,
+    displayNameInput: gen.ui.Element.TextInput,
+    submitButton: gen.ui.Element.Interactive,
+  },
+})
+```
+
+Then users or design-system plugins can override safely:
+
+```ts
+const BrandedUserCreateForm = UserCreateForm.pipe(
+  gen.ui.Style.attach({
+    submitButton: {
+      backgroundColor: "primary",
+      borderRadius: "full",
+    },
+  })
+)
+```
+
+No generated-file fork. No magic CSS selectors. No “find the right div.”
+
+---
+
+### 6. Requirements should bubble through UI too
+
+AF-UI uses Effect-style requirements: if a child component needs `Auth` or `Router`, the parent’s required services include that automatically. 
+
+This lines up with our `Runtime`, `Effect`, and `Requirement` model.
+
+A generated form might require:
+
+```txt
+Router
+MutationClient
+ToastService
+Theme
+AuthContext
+I18n
+```
+
+So the UI function/component should carry requirements:
+
+```ts
+const UserCreateComponent = gen.ui.component({
+  name: "UserCreateComponent",
+  props: gen.object({}),
+  requires: [
+    gen.req.service("MutationClient"),
+    gen.req.service("Theme"),
+    gen.req.service("Router"),
+  ],
+  view: ...
+})
+```
+
+When composed into a page/layout, requirements bubble upward. The generator can fail if the target app shell does not provide them.
+
+---
+
+### 7. Views should support slot remapping
+
+AF-UI’s slot remapping example is very relevant for generated UI composition. 
+
+For example, a generated `ModalForm` might wrap `UserCreateForm` but remap slots:
+
+```ts
+const UserCreateModal = gen.ui.view({
+  modalRoot: gen.ui.Element.Container,
+  modalTitle: gen.ui.Element.Text,
+  modalBody: gen.ui.Element.Container,
+  formSubmit: gen.ui.Element.Interactive,
+}, () => (
+  <Modal
+    slots={{
+      root: "modalRoot",
+      title: "modalTitle",
+      content: "modalBody",
+    }}
+  >
+    <UserCreateForm
+      slots={{
+        submitButton: "formSubmit",
+      }}
+    />
+  </Modal>
+))
+```
+
+This lets generated components compose without leaking internal structure.
+
+---
+
+### 8. Collection slots matter for generated lists/tables
+
+AF-UI’s `Element.Collection<Element.Container>` is useful for generated tables, lists, relation selects, data grids, and repeatable form sections. 
+
+We should add collection slots:
+
+```ts
+const UsersTableView = gen.ui.view({
+  root: gen.ui.Element.Table,
+  rows: gen.ui.Element.Collection(gen.ui.Element.Row),
+  cells: gen.ui.Element.Collection(gen.ui.Element.Cell),
+})
+```
+
+Then selection, keyboard navigation, drag-and-drop, row expansion, bulk actions, and virtualization can be behaviors attached to typed collections:
+
+```ts
+UsersTableView.pipe(
+  gen.ui.Behavior.attach(selectionBehavior, {
+    target: "rows",
+  }),
+  gen.ui.Behavior.attach(keyboardNavBehavior, {
+    target: "rows",
+  })
+)
+```
+
+This is much better than generated ad hoc table components.
+
+---
+
+## How this changes our spec
+
+I would add a standard package:
+
+```txt
+@gen/ui
+  Element capabilities
+  View<Slots>
+  Component<Props, Req, Error, Bindings, Slots>
+  Style
+  Behavior
+  Theme/Tokens
+  Renderer
+  Platform
+  Slot remapping
+  Collection slots
+```
+
+Then make:
+
+```txt
+@gen/forms
+@gen/components
+@gen/react
+@gen/vue
+@gen/svelte
+@gen/native
+@gen/tui
+```
+
+build on `@gen/ui`.
+
+### Core stays small
+
+This does **not** belong in kernel core, except for shared primitives:
+
+```txt
+Ref
+Metadata
+Requirement
+Effect
+StaticNode
+StaticFunction
+Artifact
+Plugin/Target contracts
+```
+
+The UI package defines UI-specific refs/nodes.
+
+---
+
+## Proposed `@gen/ui` primitives
+
+```ts
+gen.ui.Element.Base
+gen.ui.Element.Container
+gen.ui.Element.Text
+gen.ui.Element.Interactive
+gen.ui.Element.TextInput
+gen.ui.Element.Form
+gen.ui.Element.Collection(inner)
+
+gen.ui.view(slots, renderAst)
+gen.ui.component(...)
+gen.ui.Style.make(...)
+gen.ui.Style.attach(...)
+gen.ui.Behavior.make(...)
+gen.ui.Behavior.attach(...)
+gen.ui.theme(...)
+gen.ui.platform(...)
+gen.ui.renderer(...)
+```
+
+A component:
+
+```ts
+const BaseButton = gen.ui.component({
+  name: "BaseButton",
+
+  props: gen.object({
+    children: gen.ui.node(),
+  }),
+
+  setup: gen.func.expr({
+    name: "buttonSetup",
+    input: gen.object({}),
+    returns: gen.object({}),
+    body: gen.expr(() => ({})),
+  }),
+
+  view: gen.ui.view({
+    root: gen.ui.Element.Interactive,
+    label: gen.ui.Element.Text,
+  }, ({ props, slots }) => (
+    <button slot={slots.root}>
+      <span slot={slots.label}>{props.children}</span>
+    </button>
+  )),
+})
+```
+
+Style:
+
+```ts
+const buttonStyle = gen.ui.Style.make({
+  root: {
+    padding: ["sm", "md"],
+    borderRadius: "md",
+    backgroundColor: "primary",
+  },
+  label: {
+    color: "inverse",
+    fontWeight: "bold",
+  },
+})
+```
+
+Behavior:
+
+```ts
+const pressBehavior = gen.ui.Behavior.make({
+  root: gen.ui.Element.Interactive,
+})(({ root }) =>
+  gen.action.seq(
+    root.onPress(gen.func.actionRef(handlePress))
+  )
+)
+```
+
+Compose:
+
+```ts
+const Button = BaseButton.pipe(
+  gen.ui.Style.attach(buttonStyle),
+  gen.ui.Behavior.attach(pressBehavior)
+)
+```
+
+---
+
+## Implications for generated forms
+
+A generated form should expose slots like:
+
+```ts
+const UserCreateForm = gen.forms.fromFunc(createUserFunc, {
+  slots: {
+    root: gen.ui.Element.Form,
+    emailField: gen.ui.Element.Container,
+    emailLabel: gen.ui.Element.Text,
+    emailInput: gen.ui.Element.TextInput,
+    emailError: gen.ui.Element.Text,
+    submitButton: gen.ui.Element.Interactive,
+  },
+})
+```
+
+Then:
+
+```ts
+const StyledUserCreateForm = UserCreateForm.pipe(
+  gen.ui.Style.attach({
+    root: { gap: "md" },
+    emailInput: { borderColor: "neutral" },
+    emailError: { color: "danger" },
+    submitButton: { backgroundColor: "primary" },
+  }),
+  gen.ui.Behavior.attach(formSubmitBehavior, {
+    form: "root",
+    submit: "submitButton",
+  })
+)
+```
+
+Generated React code becomes an interpretation of this UI IR.
+
+---
+
+## The most important design lesson
+
+AF-UI’s inside-out model solves a problem we will definitely have: **users will want to customize generated UI without editing generated files.**
+
+So our generated UI should never be a sealed black box.
+
+It should be:
+
+```txt
+typed function contract
++ generated structural view with slots
++ attachable behavior
++ attachable style
++ platform renderer
+```
+
+That gives us:
+
+```txt
+type-safe generated forms
+type-safe component customization
+no generated-file forking
+no Tailwind string typos
+platform-agnostic render targets
+runtime/requirement bubbling
+behavior reuse
+design-system override hooks
+```
+
+## What I would add to the spec
+
+Add this to v2.1:
+
+```txt
+@gen/ui is the standard UI IR package.
+
+It defines:
+  Element capabilities
+  View<Slots>
+  Component<Props, Req, E, Bindings, Slots>
+  Style as typed token data
+  Behavior as typed slot-consuming action/effect plans
+  Theme/token service
+  Renderer
+  Platform
+  Slot remapping
+  Collection slots
+
+Forms and generated components should target @gen/ui first.
+React/Vue/Svelte/TUI/Native packages compile @gen/ui to concrete platforms.
+Generated UI must expose typed style/behavior handles.
+```
+
+This is the best thing to take from AF-UI.
+
+Here’s the diff I’d make conceptually to the last version of the plan.
+
+````diff
+ # Typed Domain Compiler Library — v2.1 Design Specification
++
++## v2.2 UI Update
++
++Add a standard UI IR package inspired by AF-UI:
++
++```txt
++@gen/ui
++  Element capabilities
++  View<Slots>
++  Component<Props, Req, E, Bindings, Slots>
++  Style
++  Behavior
++  Theme / typed tokens
++  Renderer
++  Platform
++  Slot remapping
++  Collection slots
++```
++
++Forms and generated components should target `@gen/ui` first.
++React, Vue, Svelte, Solid, React Native, TUI, and other renderers should compile `@gen/ui` into concrete platform output.
++
++Generated UI should not be sealed framework code. It should expose typed structure, style handles, and behavior attachment points so users can customize it without forking generated files.
+````
+
+---
+
+```diff
+ ## 1. Design Principles
+```
+
+Add:
+
+````diff
++## 1.12 Generated UI Should Be Inside-Out
++
++Generated UI should separate:
++
++```txt
++View      = structure and typed slots
++Style     = appearance attached to slots
++Behavior  = interaction attached to slots
++Renderer  = converts abstract UI tree to host output
++Platform  = element vocabulary, event system, renderer, and host capabilities
++```
++
++Generated forms/components should not be black-box JSX or template files with hardcoded class strings.
++
++They should expose named typed slots:
++
++```ts
++root
++label
++input
++error
++submitButton
++rows
++cells
++```
++
++Styles and behaviors attach to those slots from the outside.
++
++This avoids generated-file forking and lets design-system packages override appearance/behavior safely.
++
++## 1.13 UI Slots Are Refs With Capabilities
++
++UI slots should behave like typed refs.
++
++```txt
++FieldRef      -> typed domain field
++RelationRef   -> typed relation
++SlotRef        -> typed UI attachment point
++```
++
++A slot knows:
++
++```txt
++slot name
++element capability
++owning view/component
++allowed attributes
++allowed events
++platform requirements
++metadata/style handles
++```
++
++Behaviors and styles should attach only to compatible slots.
++
++Example:
++
++```ts
++gen.ui.Behavior.attach(pressBehavior, {
++  target: "submitButton",
++})
++```
++
++should type-check only if `submitButton` satisfies `Element.Interactive`.
++
++## 1.14 UI Source Is Platform-Agnostic
++
++The standard UI representation should not be Web-DOM-specific.
++
++The same generated form/view should be compilable to:
++
++```txt
++React DOM
++Vue
++Svelte
++Solid
++React Native
++Terminal UI
++static HTML where possible
++server components where possible
++```
++
++Platform packages define available tags, events, attributes, renderer behavior, and capability mappings.
+````
+
+---
+
+```diff
+ ## 2.2 Official Standard Packages
+```
+
+Change:
+
+```diff
+ @gen/forms
+   portable form IR, widgets, layout, submit contracts
+ 
+ @gen/components
+   portable component contracts
++
++@gen/ui
++  platform-agnostic UI IR, element capabilities, views, slots, styles,
++  behaviors, typed tokens, renderers, platforms, slot remapping, collections
+```
+
+And I’d clarify dependency direction:
+
+```diff
++`@gen/forms` and `@gen/components` should build on `@gen/ui`.
++
++Framework packages such as `@gen/react`, `@gen/vue`, `@gen/svelte`,
++`@gen/native`, and `@gen/tui` should target `@gen/ui`, not invent
++separate form/component abstractions.
+```
+
+---
+
+```diff
+ ## 2.3 Adapter Packages
+```
+
+Add:
+
+```diff
+ @gen/react
+ @gen/vue
+ @gen/svelte
+ @gen/solid
++@gen/react-native
++@gen/tui
++@gen/web
++@gen/static-html
+```
+
+---
+
+```diff
+ # 5. Core Reference Protocol
+```
+
+Add `SlotRef` to examples:
+
+```diff
+ EntityRef
+ FieldRef
+ RelationRef
+ OperationRef
+ RuntimeRef
+ StoreRef
+ MappingRef
+ ProjectionRef
+ GetterRef
+ MutatorRef
+ FormRef
+ ComponentRef
++SlotRef
++StyleRef
++BehaviorRef
++PlatformRef
++RendererRef
+```
+
+Add:
+
+```diff
++UI packages should implement slots as refs under the core ref protocol.
++That allows diagnostics, metadata, requirements, and dependency tracking to
++work consistently across domain and UI layers.
+```
+
+---
+
+```diff
+ # 12. Static Functions
+```
+
+Add UI function usage:
+
+````diff
++## 12.10 UI Functions
++
++UI components, behaviors, and render plans may use static functions too.
++
++Examples:
++
++```txt
++component setup = Func<Props, Bindings>
++behavior body = Func<Slots + Bindings, Action>
++style variant = Func<Props + Theme, StyleObject>
++form transform = Func<FormValues, MutatorInput>
++optimistic patch = Func<MutatorInput, Patch>
++```
++
++This keeps UI logic analyzable and lets requirements/effects bubble through
++component composition.
+````
+
+---
+
+Add a new major section after Forms or before Components:
+
+````diff
++# 23. UI IR
++
++## 23.1 Purpose
++
++`@gen/ui` defines a platform-agnostic intermediate representation for generated UI.
++
++It should be used by:
++
++```txt
++forms
++components
++tables
++detail views
++cards
++modals
++admin pages
++design-system packages
++framework renderers
++```
++
++The purpose is to avoid generating sealed framework components that users must fork to customize.
++
++## 23.2 Architecture
++
++The UI stack is:
++
++```txt
++Element capabilities -> View<Slots> -> Component -> Renderer -> Platform
++```
++
++Definitions:
++
++```txt
++Element capability:
++  abstract element interface such as Container, Text, Interactive, TextInput, Form.
++
++View<Slots>:
++  structural skeleton with named typed slots.
++
++Component:
++  logical unit with props, requirements, possible errors, bindings/state, and a View.
++
++Style:
++  typed appearance data attached to slots.
++
++Behavior:
++  typed interaction/effect/action data attached to slots.
++
++Renderer:
++  service that converts UI IR into host nodes or source files.
++
++Platform:
++  element vocabulary, event system, renderer, attribute model, and host capabilities.
++```
++
++## 23.3 Element Capabilities
++
++The UI package should define abstract element capabilities:
++
++```ts
++gen.ui.Element.Base
++gen.ui.Element.Container
++gen.ui.Element.Text
++gen.ui.Element.Interactive
++gen.ui.Element.TextInput
++gen.ui.Element.NumberInput
++gen.ui.Element.Select
++gen.ui.Element.Form
++gen.ui.Element.Label
++gen.ui.Element.Field
++gen.ui.Element.Table
++gen.ui.Element.Row
++gen.ui.Element.Cell
++gen.ui.Element.Collection(inner)
++```
++
++Element capabilities are not hardcoded HTML tags.
++
++Platform packages map them to concrete tags/widgets/events:
++
++```txt
++Web:
++  Interactive -> button, a, div[role=button], etc.
++  onPress -> click / keyboard activation
++
++TUI:
++  Interactive -> focusable terminal node
++  onPress -> key event / enter
++
++Native:
++  Interactive -> Pressable
++  onPress -> GestureResponderEvent
++```
++
++## 23.4 View<Slots>
++
++A view is a typed structural skeleton.
++
++```ts
++const BaseButtonView = gen.ui.view({
++  root: gen.ui.Element.Interactive,
++  label: gen.ui.Element.Text,
++}, ({ props, slot }) => (
++  <Button slot={slot.root}>
++    <Text slot={slot.label}>{props.children}</Text>
++  </Button>
++))
++```
++
++The stored artifact should be a UI AST, not an opaque JSX element.
++
++The callback is an authoring surface, like `gen.expr`; it builds static UI structure.
++
++## 23.5 Component
++
++Components combine props, setup/bindings, requirements, and a view.
++
++```ts
++const BaseButton = gen.ui.component({
++  name: "BaseButton",
++  props: gen.object({
++    children: gen.ui.node(),
++  }),
++  requires: [],
++  setup: gen.func.expr({
++    name: "buttonSetup",
++    input: gen.object({}),
++    returns: gen.object({}),
++    body: gen.expr(() => ({})),
++  }),
++  view: BaseButtonView,
++})
++```
++
++Conceptual type:
++
++```ts
++type Component<Props, Req, E, Bindings, Slots> = {
++  kind: "component"
++  props: Props
++  requirements: Req
++  errors: E
++  bindings: Bindings
++  view: View<Slots>
++  pipe: PipeableComponent<Props, Req, E, Bindings, Slots>
++}
++```
++
++Components should not return black-box `JSX.Element`.
++They should return or contain a typed `View<Slots>`.
++
++## 23.6 Style
++
++Styles are typed data attached to slots.
++
++```ts
++const buttonStyle = gen.ui.Style.make({
++  root: {
++    padding: ["sm", "md"],
++    borderRadius: "md",
++    backgroundColor: "primary",
++  },
++  label: {
++    color: "inverse",
++    fontWeight: "bold",
++  },
++})
++
++const Button = BaseButton.pipe(
++  gen.ui.Style.attach(buttonStyle)
++)
++```
++
++Invalid slot names should be type errors.
++
++Invalid theme tokens should be type errors.
++
++Invalid style properties for a platform should be diagnostics or type errors where possible.
++
++## 23.7 Theme and Typed Tokens
++
++The UI package should support typed theme tokens.
++
++```ts
++const AppTheme = gen.ui.theme({
++  color: {
++    primary: gen.ui.color("#2563eb"),
++    inverse: gen.ui.color("#ffffff"),
++    danger: gen.ui.color("#dc2626"),
++    surface: gen.ui.color("#ffffff"),
++  },
++  space: {
++    xs: "0.25rem",
++    sm: "0.5rem",
++    md: "1rem",
++  },
++  radius: {
++    sm: "0.25rem",
++    md: "0.5rem",
++    full: "9999px",
++  },
++})
++```
++
++Styles should refer to tokens:
++
++```ts
++backgroundColor: "primary"
++padding: ["sm", "md"]
++borderRadius: "full"
++```
++
++No massive untyped Tailwind strings should be the source of truth.
++
++Targets may compile typed style data to Tailwind classes, CSS, CSS modules,
++Vanilla Extract, inline styles, React Native StyleSheet, or terminal styles.
++
++## 23.8 Style Handles and Overrides
++
++Generated components should expose public style handles.
++
++Example generated form handles:
++
++```ts
++{
++  root: Element.Form,
++  emailField: Element.Field,
++  emailLabel: Element.Text,
++  emailInput: Element.TextInput,
++  emailError: Element.Text,
++  submitButton: Element.Interactive,
++}
++```
++
++Users should customize generated UI with:
++
++```ts
++const BrandedForm = UserCreateForm.pipe(
++  gen.ui.Style.attach({
++    submitButton: {
++      backgroundColor: "primary",
++      borderRadius: "full",
++    },
++  })
++)
++```
++
++This avoids generated-file forking.
++
++## 23.9 Behavior
++
++Behaviors are typed slot consumers that attach interaction, accessibility, state,
++subscriptions, lifecycle resources, or effects to slots.
++
++```ts
++const submitBehavior = gen.ui.Behavior.make({
++  form: gen.ui.Element.Form,
++  submit: gen.ui.Element.Interactive,
++})(({ form, submit }) =>
++  gen.action.seq(
++    submit.onPress(form.submit()),
++    form.onSubmit(createUserFunc)
++  )
++)
++```
++
++Attach:
++
++```ts
++const UserCreateFormWithBehavior = UserCreateForm.pipe(
++  gen.ui.Behavior.attach(submitBehavior, {
++    form: "root",
++    submit: "submitButton",
++  })
++)
++```
++
++Attachment should type-check:
++
++```txt
++slot exists
++slot satisfies required element capability
++behavior requirements are provided or bubble upward
++events are supported by target platform
++effects are supported by target runtime
++```
++
++## 23.10 Lifecycle and Cleanup
++
++Behaviors may acquire resources:
++
++```txt
++event listeners
++timers
++subscriptions
++focus traps
++observers
++external stores
++```
++
++The behavior system should model lifecycle requirements and cleanup as static action/effect plans where possible.
++
++Platform renderers are responsible for translating lifecycle plans into concrete cleanup behavior.
++
++## 23.11 Slot Remapping
++
++Views/components should support slot remapping for composition.
++
++```ts
++const Panel = gen.ui.component({
++  name: "Panel",
++  props: gen.object({
++    title: gen.string(),
++    children: gen.ui.node(),
++  }),
++  view: gen.ui.view({
++    panelRoot: gen.ui.Element.Container,
++    panelTitle: gen.ui.Element.Text,
++    panelBody: gen.ui.Element.Container,
++  }, ({ props, slot }) => (
++    <BaseModal
++      title={props.title}
++      slots={{
++        root: slot.panelRoot,
++        title: slot.panelTitle,
++        content: slot.panelBody,
++      }}
++    >
++      {props.children}
++    </BaseModal>
++  )),
++})
++```
++
++Slot remapping lets components compose without leaking internal slot names.
++
++## 23.12 Collection Slots
++
++Generated lists, tables, grids, repeatable form sections, and relation selectors
++need typed collection slots.
++
++```ts
++const UsersTableView = gen.ui.view({
++  root: gen.ui.Element.Table,
++  rows: gen.ui.Element.Collection(gen.ui.Element.Row),
++  cells: gen.ui.Element.Collection(gen.ui.Element.Cell),
++})
++```
++
++Behaviors can attach to collections:
++
++```ts
++UsersTableView.pipe(
++  gen.ui.Behavior.attach(selectionBehavior, {
++    target: "rows",
++  }),
++  gen.ui.Behavior.attach(keyboardNavBehavior, {
++    target: "rows",
++  })
++)
++```
++
++This supports:
++
++```txt
++selection
++keyboard navigation
++drag and drop
++virtualization
++row expansion
++bulk actions
++sortable tables
++```
++
++## 23.13 Requirements Bubble Through UI
++
++Components and behaviors should declare requirements:
++
++```txt
++Theme
++Router
++MutationClient
++QueryClient
++ToastService
++AuthContext
++I18n
++Platform capabilities
++```
++
++When a component renders a child or attaches a behavior with requirements,
++those requirements should bubble up to the parent component/page/app.
++
++Missing requirements should be compile-time errors where possible or structured diagnostics.
++
++## 23.14 Platform and Renderer
++
++Platform packages define:
++
++```txt
++element vocabulary
++attribute model
++event model
++renderer
++host capabilities
++style output
++lifecycle behavior
++```
++
++Examples:
++
++```ts
++gen.web.platform(...)
++gen.react.renderer(...)
++gen.vue.renderer(...)
++gen.native.platform(...)
++gen.tui.platform(...)
++```
++
++Generated UI targets should compile the same `@gen/ui` IR to platform-specific output.
++
++## 23.15 Security Holes
++
++UI holes that can introduce security risks should require branded safe types.
++
++Example:
++
++```ts
++gen.ui.html(SafeHtml)
++```
++
++not:
++
++```ts
++gen.ui.html(gen.string())
++```
++
++Unsafe HTML/string interpolation should be explicit and diagnosable.
+````
+
+---
+
+Then renumber the existing sections:
+
+```diff
+-# 23. Components and Framework Adapters
++# 24. Components and Framework Adapters
+
+-# 24. Events, Facts, Rules, and Reducers
++# 25. Events, Facts, Rules, and Reducers
+
+-# 25. Generation Targets
++# 26. Generation Targets
+
+-# 26. Query System
++# 27. Query System
+
+-# 27. Serialization
++# 28. Serialization
+
+-# 28. Environment and Secrets
++# 29. Environment and Secrets
+
+-# 29. Check and Generate Lifecycle
++# 30. Check and Generate Lifecycle
+
+-# 30. Type Safety Requirements
++# 31. Type Safety Requirements
+
+-# 31. Inference Requirements
++# 32. Inference Requirements
+
+-# 32. Testing Requirements
++# 33. Testing Requirements
+
+-# 33. CLI Requirements
++# 34. CLI Requirements
+
+-# 34. End-to-End Example
++# 35. End-to-End Example
+
+-# 35. Final Primitive Set
++# 36. Final Primitive Set
+```
+
+---
+
+Modify the Components section:
+
+````diff
+-# 23. Components and Framework Adapters
++# 24. Components and Framework Adapters
+ 
+-## 21.1 Portable Component Contracts
++## 24.1 Components Build on @gen/ui
+ 
+-`@gen/components` should define framework-neutral component contracts.
++`@gen/components` should build on `@gen/ui`, not define an unrelated component model.
++
++The core component abstraction should be:
++
++```txt
++Component<Props, Req, E, Bindings, Slots>
++```
++
++where `Slots` is a typed slot map from `@gen/ui`.
+ 
+ ```ts
+ type ComponentContract<Props, Events, Slots = {}> = {
+   props: Props
+   events: Events
+   slots: Slots
+ }
+````
+
+*
+
++Framework adapters should consume the UI/component IR and emit framework-specific code.
+
+````
+
+Add:
+
+```diff
++## 24.2 Framework-Specific Rendering
++
++React/Vue/Svelte/Solid/native/TUI packages should compile `@gen/ui` views,
++styles, and behaviors to concrete components.
++
++They should not require forms/components to be authored separately per framework.
++
++Example:
++
++```ts
++await gen.generate([
++  gen.react.component(UserCreateForm),
++  gen.vue.component(UserCreateForm),
++  gen.tui.component(UserCreateForm),
++])
++```
++
++Targets may vary in feature coverage, but unsupported platform features should produce diagnostics.
+````
+
+---
+
+Modify Forms section:
+
+```diff
+ # 22. Forms
+ 
+ ## 22.1 Portable Form from Function
+ 
+ Forms describe input and interaction intent without requiring a frontend framework.
+ 
+ A form should usually be derived from a `gen.func.action` input contract.
++
++Forms should produce a `@gen/ui` component/view with typed slots, not direct framework JSX.
+```
+
+Change example:
+
+```diff
+ const UserCreateForm = gen.forms.fromFunc(createUserFunc, {
+   name: "UserCreateForm",
++  slots: {
++    root: gen.ui.Element.Form,
++    emailField: gen.ui.Element.Field,
++    emailLabel: gen.ui.Element.Text,
++    emailInput: gen.ui.Element.TextInput,
++    emailError: gen.ui.Element.Text,
++    displayNameField: gen.ui.Element.Field,
++    displayNameInput: gen.ui.Element.TextInput,
++    submitButton: gen.ui.Element.Interactive,
++  },
+   fields: [
+     gen.forms.field("email", {
+       source: User.fields.email,
+       widget: gen.forms.widgets.emailInput(),
+       label: "Email",
++      slots: {
++        field: "emailField",
++        input: "emailInput",
++        error: "emailError",
++        label: "emailLabel",
++      },
+     }),
+```
+
+Add:
+
+````diff
++Generated forms must expose stable public slots/handles for styling and behavior attachment.
++
++Examples:
++
++```ts
++const BrandedUserCreateForm = UserCreateForm.pipe(
++  gen.ui.Style.attach({
++    root: { gap: "md" },
++    emailInput: { borderColor: "neutral" },
++    emailError: { color: "danger" },
++    submitButton: { backgroundColor: "primary" },
++  }),
++  gen.ui.Behavior.attach(gen.forms.behaviors.submitOnEnter(), {
++    form: "root",
++    submit: "submitButton",
++  })
++)
++```
+````
+
+---
+
+Modify Generation Targets section:
+
+```diff
+ await gen.generate([
+   gen.drizzle.schema(PrimarySchema),
+   gen.hono.routes(UserResource, {
+     runtime: gen.runtimes.node20,
+   }),
+-  gen.react.form(UserCreateForm, {
++  gen.react.component(UserCreateForm, {
+     runtime: gen.runtimes.browserModern,
+   }),
+   gen.zod.schemas([User, Post]),
+   gen.openapi.document(UserResource),
+ ])
+```
+
+Add:
+
+````diff
++UI generation targets should consume `@gen/ui` IR:
++
++```ts
++gen.react.component(...)
++gen.vue.component(...)
++gen.svelte.component(...)
++gen.native.component(...)
++gen.tui.component(...)
++```
++
++Form-specific helpers may exist, but should be sugar over UI component generation:
++
++```ts
++gen.react.form(UserCreateForm)
++// sugar for:
++gen.react.component(UserCreateForm)
++```
+````
+
+---
+
+Modify Type Safety Requirements:
+
+```diff
+ 30. Action function writes fields not writable under its mapping/consistency policy.
++31. Style attaches to a slot that does not exist.
++32. Behavior attaches to a slot that does not satisfy its required element capability.
++33. Style uses an invalid token.
++34. Style uses a property unsupported by the target platform.
++35. UI behavior requires an event unsupported by the target platform.
++36. Component/page fails to provide a required UI service such as Theme, Router, QueryClient, or MutationClient.
++37. Unsafe HTML/string interpolation is used without a branded safe type.
++38. Slot remapping points to an incompatible slot capability.
++39. Collection behavior attaches to a non-collection slot.
++40. Generated UI component hides all style/behavior handles and therefore cannot be customized safely.
+```
+
+---
+
+Modify Inference Requirements:
+
+```diff
+ form values and submit types from functions
++UI slot maps
++slot element capabilities
++style handle names
++style token names
++behavior slot requirements
++component requirements/errors/bindings
++platform event/attribute types
++collection slot item types
++slot remapping compatibility
+```
+
+---
+
+Modify Testing Requirements:
+
+```diff
+ static function inference
+ query/action/patch body compatibility
+ getter/mutator inference
++UI slot inference
++style attachment type errors
++behavior attachment type errors
++theme token type errors
++slot remapping compatibility
++collection slot behavior compatibility
++platform renderer diagnostics
++unsafe HTML branded type checks
+```
+
+---
+
+Modify Final Primitive Set:
+
+````diff
+ The best standard primitives appear to be:
+ 
+ ```txt
+ Trait
+ Store
+ StoreDialect
+ Table
+ Column
+ Collection
+ Index
+ Mapping
+ Projection
+ Relation
+ RelationEntity
+ Graph
+ Getter
+ Mutator
+ Resource
+ Policy
+ Form
+ Widget
+ ComponentContract
++ElementCapability
++SlotRef
++View
++UIComponent
++Style
++Behavior
++Theme
++Token
++Renderer
++Platform
+ Event
+ Fact
+ Rule
+ View
+ Reducer
+````
+
+````
+
+Maybe rename one of the `View`s to avoid ambiguity:
+
+```diff
+-View
++DataView
++UIView
+````
+
+I’d use:
+
+```txt
+QueryView / MaterializedView
+UIView
+```
+
+to avoid collision.
+
+---
+
+Add a short “AF-UI-inspired design rule” near the summary:
+
+````diff
++Generated UI should be customized by attaching typed styles and behaviors to published handles,
++not by editing generated files.
++
++The design-system story should be:
++
++```txt
++Generated function/form contract
++  -> generated View<Slots>
++  -> design-system Style attachments
++  -> behavior attachments
++  -> platform renderer
++```
++
++This preserves the same architecture used elsewhere in the system:
++
++```txt
++semantic core
++static analyzable IR
++typed refs
++external interpretation by plugins
++```
+````
+
+That’s the diff I’d make. The main point is to add `@gen/ui` as a standard IR layer and make forms/components target that layer first, rather than directly targeting React/Vue/Svelte.
+

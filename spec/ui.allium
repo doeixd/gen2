@@ -1,0 +1,405 @@
+-- UI Module
+
+use "./core.allium" as core
+use "./entity.allium" as entity
+use "./types.allium" as types
+use "./relation.allium" as relation
+use "./function.allium" as function
+
+given {
+    context: core/GenContext
+}
+
+entity View {
+    name: String
+    slots: List<Slot>
+    structure: String
+    slot_remaps: List<SlotRemap>
+    -- The platforms this view is intended to render on. Style and behavior
+    -- compatibility rules iterate over these instead of every Platform in the
+    -- registry, so a web-only view does not produce iOS/Android warnings.
+    target_platforms: List<Platform>
+}
+
+entity Component {
+    name: String
+    props_type: String
+    requirements: List<String>
+    errors: List<function/ErrorType>
+    bindings: List<String>
+    view: View
+}
+
+entity Slot {
+    name: String
+    capability: ElementCapability
+    owning_view: View
+    allowed_attributes: List<String>
+    allowed_events: List<String>
+    platform_requirements: List<String>
+    -- Slots marked hidden are not exposed to style/behavior attachment.
+    -- A component whose every slot is hidden cannot be customized externally.
+    hidden: Boolean
+}
+
+entity Form {
+    name: String
+    source_function: function/ActionFunction
+    fields: List<FormField>
+    slots: List<Slot>
+    submit_result: types/SemanticType
+    error_mapping: List<FormErrorMapping>
+}
+
+entity FormField {
+    name: String
+    source_field: entity/Field
+    widget: Widget
+    label: String?
+    slot_names: List<String>
+}
+
+entity Widget {
+    kind: WidgetKind
+    options: WidgetOptions?
+}
+
+entity Style {
+    name: String
+    slot_styles: List<SlotStyle>
+    target_view: View?
+}
+
+entity Behavior {
+    name: String
+    required_slots: List<BehaviorSlot>
+    attached_view: View?
+    body: String
+    allowed_events: List<String>
+}
+
+entity Theme {
+    name: String
+    colors: List<ThemeToken>
+    spaces: List<ThemeToken>
+    radii: List<ThemeToken>
+    fonts: List<ThemeToken>
+}
+
+entity Platform {
+    name: String
+    element_capabilities: List<ElementCapability>
+    event_model: List<String>
+    attribute_model: List<String>
+    renderer_name: String
+    host_capabilities: List<String>
+}
+
+entity Renderer {
+    name: String
+    target_platform: Platform
+    supported_capabilities: List<String>
+}
+
+entity SlotStyle {
+    slot_name: String
+    properties: List<StyleProperty>
+}
+
+entity StyleProperty {
+    name: String
+    value: String
+    kind: token | literal
+}
+
+entity ThemeToken {
+    name: String
+    value: String
+}
+
+entity BehaviorSlot {
+    slot_name: String
+    required_capability: ElementCapability
+}
+
+entity FormErrorMapping {
+    error_code: String
+    target_field: FormField?
+    message: String
+}
+
+entity SlotRemap {
+    source: Slot
+    target: Slot
+}
+
+-- Element capabilities with collection support
+
+value ElementCapability {
+    kind: Base | Container | Text | Interactive | TextInput | NumberInput | Select | Form | Label | Field | Table | Row | Cell | Collection
+    inner_capability: ElementCapability?
+    collection_item: ElementCapability?
+}
+
+-- Widget kinds
+
+value WidgetKind {
+    kind: textInput | emailInput | numberInput | select | checkbox | relationSelect | datePicker | textArea
+}
+
+value WidgetOptions {
+    options_source: EnumOptions?
+    relation: relation/Relation?
+    label_field: entity/Field?
+    value_field: entity/Field?
+    search_fields: List<entity/Field>?
+}
+
+value EnumOptions {
+    values: List<String>
+}
+
+-- Invariants
+
+invariant SlotNamesUniqueWithinView {
+    for v in Views:
+        for s in v.slots:
+            for t in v.slots where t != s:
+                not (s.name = t.name)
+}
+
+invariant FormFieldsMatchFunctionInput {
+    for f in Forms:
+        for field in f.fields:
+            field.source_field in f.source_function.input_fields
+}
+
+invariant StyleSlotExists {
+    for s in Styles where s.target_view != null:
+        for slot_style in s.slot_styles:
+            s.target_view.slots.any(slot => slot.name = slot_style.slot_name)
+}
+
+invariant BehaviorSlotCapabilityCompatible {
+    for b in Behaviors where b.attached_view != null:
+        for req in b.required_slots:
+            for slot in b.attached_view.slots where slot.name = req.slot_name:
+                slot.capability = req.required_capability
+}
+
+-- A Collection slot must declare its item type via collection_item.
+-- inner_capability is for non-collection composite types like Container(child).
+invariant CollectionSlotHasItemCapability {
+    for s in Slots where s.capability.kind = Collection:
+        s.capability.collection_item != null
+}
+
+invariant WidgetFieldTypeCompatible {
+    for f in Forms:
+        for field in f.fields:
+            if field.widget.kind.kind = textInput:
+                field.source_field.semantic_type.name = "string" or field.source_field.semantic_type.kind = "string"
+            if field.widget.kind.kind = textArea:
+                field.source_field.semantic_type.name = "string" or field.source_field.semantic_type.kind = "string"
+            if field.widget.kind.kind = emailInput:
+                field.source_field.semantic_type.name = "email" or field.source_field.semantic_type.name = "string"
+            if field.widget.kind.kind = numberInput:
+                field.source_field.semantic_type.kind = "numeric"
+            if field.widget.kind.kind = checkbox:
+                field.source_field.semantic_type.name = "boolean" or field.source_field.semantic_type.kind = "boolean"
+            if field.widget.kind.kind = select:
+                field.source_field.semantic_type.kind = "enum" or
+                (field.widget.options != null and field.widget.options.options_source != null)
+            if field.widget.kind.kind = datePicker:
+                field.source_field.semantic_type.name in {"datetime", "date", "timestamp"}
+            if field.widget.kind.kind = relationSelect:
+                field.widget.options != null and field.widget.options.relation != null
+}
+
+-- Rules
+
+rule StyleInvalidSlot {
+    when: s: Style where s.target_view != null
+    for slot_style in s.slot_styles:
+        requires: not s.target_view.slots.any(slot => slot.name = slot_style.slot_name and not slot.hidden)
+        ensures: core/Diagnostic.created(
+            severity: error,
+            code: "ui:style-invalid-slot",
+            message: "Style attaches to unknown or hidden slot " ++ slot_style.slot_name ++ " in view " ++ s.target_view.name,
+            refs: []
+        )
+}
+
+-- General capability mismatch. The collection-specific case is handled by
+-- CollectionBehaviorOnNonCollectionSlot to give a more actionable message.
+rule BehaviorSlotCapabilityMismatch {
+    when: b: Behavior where b.attached_view != null
+    for req in b.required_slots:
+        for slot in b.attached_view.slots where slot.name = req.slot_name:
+            requires: slot.capability != req.required_capability and req.required_capability.kind != Collection
+            ensures: core/Diagnostic.created(
+                severity: error,
+                code: "ui:behavior-slot-mismatch",
+                message: "Behavior " ++ b.name ++ " requires capability " ++ req.required_capability.kind ++ " but slot " ++ req.slot_name ++ " has " ++ slot.capability.kind,
+                refs: []
+            )
+}
+
+rule UnsafeHtmlRequiresBrandedType {
+    when: node: UiAstNode where node.kind = "html_content"
+    requires: not node.is_safe_html
+    ensures: core/Diagnostic.created(
+        severity: error,
+        code: "ui:unsafe-html",
+        message: "Unsafe HTML requires branded SafeHtml type",
+        refs: []
+    )
+}
+
+rule ComponentHidesAllHandles {
+    when: c: Component where c.view.slots.count > 0
+    requires: c.view.slots.all(s => s.hidden)
+    ensures: core/Diagnostic.created(
+        severity: warning,
+        code: "ui:hidden-handles",
+        message: "Component " ++ c.name ++ " hides every slot; downstream code cannot attach styles or behaviors",
+        refs: []
+    )
+}
+
+rule MissingUiService {
+    when: c: Component where c.requirements.count > 0
+    for req in c.requirements:
+        requires: req not in {"Theme", "Router", "QueryClient", "MutationClient", "ToastService", "AuthContext", "I18n"}
+        ensures: core/Diagnostic.created(
+            severity: error,
+            code: "ui:missing-service",
+            message: "Component " ++ c.name ++ " requires unknown UI service " ++ req,
+            refs: []
+        )
+}
+
+rule CollectionBehaviorOnNonCollectionSlot {
+    when: b: Behavior where b.attached_view != null
+    for req in b.required_slots:
+        for slot in b.attached_view.slots where slot.name = req.slot_name and slot.capability.kind != Collection:
+            requires: req.required_capability.kind = Collection
+            ensures: core/Diagnostic.created(
+                severity: error,
+                code: "ui:collection-on-non-collection",
+                message: "Behavior " ++ b.name ++ " requires collection slot but " ++ req.slot_name ++ " is not a collection",
+                refs: []
+            )
+}
+
+-- Only checks platforms the target view actually targets. A web-only view
+-- does not produce diagnostics for iOS/Android attribute or event mismatches.
+rule StyleUnsupportedPropertyForPlatform {
+    when: s: Style where s.target_view != null
+    for slot_style in s.slot_styles:
+        for prop in slot_style.properties:
+            for platform in s.target_view.target_platforms:
+                requires: prop.name not in platform.attribute_model
+                ensures: core/Diagnostic.created(
+                    severity: warning,
+                    code: "ui:unsupported-style-property",
+                    message: "Style property " ++ prop.name ++ " not supported by platform " ++ platform.name,
+                    refs: []
+                )
+}
+
+rule BehaviorUnsupportedEventForPlatform {
+    when: b: Behavior where b.attached_view != null
+    for event in b.allowed_events:
+        for platform in b.attached_view.target_platforms:
+            requires: event not in platform.event_model
+            ensures: core/Diagnostic.created(
+                severity: warning,
+                code: "ui:unsupported-event",
+                message: "Behavior event " ++ event ++ " not supported by platform " ++ platform.name,
+                refs: []
+            )
+}
+
+rule InvalidThemeToken {
+    when: s: Style where s.target_view != null
+    for slot_style in s.slot_styles:
+        for prop in slot_style.properties:
+            requires: prop.kind = token and not Themes.any(t => t.colors.any(c => c.name = prop.value) or t.spaces.any(s => s.name = prop.value) or t.radii.any(r => r.name = prop.value) or t.fonts.any(f => f.name = prop.value))
+            ensures: core/Diagnostic.created(
+                severity: error,
+                code: "ui:invalid-token",
+                message: "Style uses invalid theme token " ++ prop.value,
+                refs: []
+            )
+}
+
+rule SlotRemappingIncompatibleCapability {
+    when: c: Component where c.view.slots.count > 0
+    for remapping in c.view.slot_remaps:
+        requires: remapping.source.capability != remapping.target.capability
+        ensures: core/Diagnostic.created(
+            severity: error,
+            code: "ui:remap-capability-mismatch",
+            message: "Slot remapping from " ++ remapping.source.name ++ " to " ++ remapping.target.name ++ " has incompatible capabilities",
+            refs: []
+        )
+}
+
+-- Surfaces
+
+surface FormSurface {
+    facing developer: DomainModeler
+    facing viewer: EndUser
+
+    context form: Form
+
+    exposes:
+        form.fields
+        form.slots
+        form.submit_result
+        form.error_mapping
+
+    provides:
+        SubmitForm(values: FormValues)
+            when values.fields.all(f => form.fields.any(field => field.name = f))
+
+        AttachStyle(style: Style)
+            when style.slot_styles.all(s => form.slots.any(slot => slot.name = s.slot_name))
+
+        AttachBehavior(behavior: Behavior)
+            when behavior.required_slots.all(s => form.slots.any(slot => slot.name = s.slot_name))
+    }
+}
+
+surface ComponentSurface {
+    facing developer: DomainModeler
+
+    context component: Component
+
+    exposes:
+        component.props_type
+        component.view.slots
+        component.requirements
+
+    provides:
+        -- Render requires that every declared service requirement is recognized.
+        -- The MissingUiService rule produces diagnostics for unknown ones.
+        Render(props: component.props_type)
+            when component.requirements.all(req => req in {"Theme", "Router", "QueryClient", "MutationClient", "ToastService", "AuthContext", "I18n"})
+
+        RemapSlot(source: String, target: Slot)
+            when component.view.slots.any(s => s.name = source and s.capability = target.capability)
+    }
+}
+
+-- Helper entities
+
+entity UiAstNode {
+    kind: String
+    is_safe_html: Boolean
+}
+
+entity FormValues {
+    fields: List<String>
+}

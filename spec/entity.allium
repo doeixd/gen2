@@ -1,0 +1,241 @@
+-- Entity and Field Module
+
+use "./core.allium" as core
+use "./types.allium" as types
+
+given {
+    context: core/GenContext
+}
+
+entity Entity {
+    name: String
+    fields: List<Field>
+    store_name: String?
+    metadata: List<core/MetadataEntry>
+    transitions: List<TransitionGraph>
+}
+
+entity Field {
+    name: String
+    owning_entity: Entity
+    semantic_type: types/SemanticType
+    nullable: Boolean
+    optional: Boolean
+    default_value: DefaultValue?
+    read_only: Boolean
+    traits: List<types/Trait>
+    present_when: FieldPresenceCondition?
+}
+
+entity DefaultValue {
+    kind: literal | expression | auto
+    value: String?
+    expression: types/Expression?
+}
+
+-- Transition graphs (v3)
+
+entity TransitionGraph {
+    target_field: Field
+    transitions: List<StateTransition>
+    terminal_states: List<String>
+}
+
+entity StateTransition {
+    from_state: String
+    to_state: String
+}
+
+-- State-dependent field presence (v3)
+
+entity FieldPresenceCondition {
+    field: Field
+    allowed_values: List<String>
+}
+
+-- Invariants
+
+invariant FieldNamesUniqueWithinEntity {
+    for e in Entities:
+        for f in e.fields:
+            for g in e.fields where g != f:
+                not (f.name = g.name)
+}
+
+invariant EntityNameUnique {
+    for e in Entities:
+        for f in Entities where f != e:
+            not (e.name = f.name)
+}
+
+invariant TransitionGraphOnEnumField {
+    for tg in TransitionGraphs:
+        tg.target_field.semantic_type.kind = "enum"
+}
+
+invariant TransitionStatesValid {
+    for tg in TransitionGraphs where tg.target_field.semantic_type.enum_values != null:
+        for t in tg.transitions:
+            t.from_state in tg.target_field.semantic_type.enum_values and
+            t.to_state in tg.target_field.semantic_type.enum_values
+}
+
+invariant TerminalStatesReachable {
+    for tg in TransitionGraphs where tg.target_field.semantic_type.enum_values != null:
+        for ts in tg.terminal_states:
+            ts in tg.target_field.semantic_type.enum_values
+}
+
+invariant FieldPresenceConditionOnEnum {
+    for fpc in FieldPresenceConditions:
+        fpc.field.semantic_type.kind = "enum" or fpc.field.semantic_type.kind = "tagged"
+}
+
+invariant FieldPresenceValuesValid {
+    for fpc in FieldPresenceConditions:
+        for v in fpc.allowed_values:
+            v in fpc.field.semantic_type.enum_values
+}
+
+-- Rules
+
+rule FieldRefCreated {
+    when: f: Field where f.owning_entity != null
+    ensures: core/Ref.created(
+        kind: "FieldRef",
+        owner: core/RefOwner(kind: "Entity", name: f.owning_entity.name),
+        name: f.name,
+        value_type: f.semantic_type.name,
+        metadata: []
+    )
+}
+
+rule ReadOnlyFieldInCreateInput {
+    when: op: CreateOperation where op.input_fields.count > 0
+    for f in op.input_fields:
+        requires: f.read_only
+        ensures: core/Diagnostic.created(
+            severity: error,
+            code: "entity:readonly-field-in-create",
+            message: "Read-only field " ++ f.name ++ " cannot appear in create input",
+            refs: []
+        )
+}
+
+rule ReadOnlyFieldInUpdateInput {
+    when: op: UpdateOperation where op.input_fields.count > 0
+    for f in op.input_fields:
+        requires: f.read_only
+        ensures: core/Diagnostic.created(
+            severity: error,
+            code: "entity:readonly-field-in-update",
+            message: "Read-only field " ++ f.name ++ " cannot appear in update input",
+            refs: []
+        )
+}
+
+rule NonexistentFieldRef {
+    when: ref: core/Ref where ref.kind = "FieldRef"
+    requires: not Entities.any(e => e.name = ref.owner.name and e.fields.any(f => f.name = ref.name))
+    ensures: core/Diagnostic.created(
+        severity: error,
+        code: "entity:nonexistent-field",
+        message: "Field reference " ++ ref.owner.name ++ "." ++ ref.name ++ " does not exist",
+        refs: [ref]
+    )
+}
+
+rule FieldFromWrongEntity {
+    when: ownership: FieldOwnershipCheck where ownership.field != null
+    requires: ownership.field.owning_entity != ownership.target_entity
+    ensures: core/Diagnostic.created(
+        severity: error,
+        code: "entity:wrong-entity-field",
+        message: "Field " ++ ownership.field.name ++ " belongs to entity " ++ ownership.field.owning_entity.name ++ " but mapping targets " ++ ownership.target_entity.name,
+        refs: []
+    )
+}
+
+rule InvalidTransition {
+    when: e: Entity where e.transitions.count > 0
+    for tg in e.transitions:
+        for t in tg.transitions:
+            requires: t.from_state = t.to_state
+            ensures: core/Diagnostic.created(
+                severity: warning,
+                code: "entity:self-transition",
+                message: "Transition from " ++ t.from_state ++ " to itself on field " ++ tg.target_field.name,
+                refs: []
+            )
+}
+
+rule TerminalStateNoOutgoingTransitions {
+    when: tg: TransitionGraph
+    for ts in tg.terminal_states:
+        for t in tg.transitions:
+            requires: t.from_state = ts
+            ensures: core/Diagnostic.created(
+                severity: warning,
+                code: "entity:terminal-state-outgoing",
+                message: "Terminal state " ++ ts ++ " has outgoing transition in field " ++ tg.target_field.name,
+                refs: []
+            )
+}
+
+-- Surfaces
+
+surface EntityDefinitionSurface {
+    facing developer: DomainModeler
+
+    exposes:
+        Entities
+        Fields
+        TransitionGraphs
+        FieldPresenceConditions
+
+    provides:
+        DefineEntity(name: String, fields: List<Field>)
+            when not Entities.any(e => e.name = name)
+
+        DefineField(entity: Entity, name: String, type: types/SemanticType)
+            when not entity.fields.any(f => f.name = name)
+
+        MarkReadOnly(field: Field)
+            when field in Fields
+
+        DefineTransitionGraph(entity: Entity, target_field: Field, transitions: List<StateTransition>)
+            when target_field in entity.fields and target_field.semantic_type.kind = "enum"
+
+        DefineFieldPresence(field: Field, condition: FieldPresenceCondition)
+            when field in Fields and (field.semantic_type.kind = "enum" or field.semantic_type.kind = "tagged")
+
+    related:
+        storage.MappingSurface
+            when entity has mapping
+
+        relation.RelationSurface
+            when entity participates in relation
+}
+
+-- Helper entities
+
+entity CreateOperation {
+    name: String
+    target_entity: Entity
+    input_fields: List<Field>
+}
+
+entity UpdateOperation {
+    name: String
+    target_entity: Entity
+    input_fields: List<Field>
+}
+
+-- Helper entity for the FieldFromWrongEntity rule. Renamed from FieldMapping to
+-- avoid collision with storage/FieldMapping (which is a richer mapping entity).
+-- Created when something attempts to bind a field to a target entity (e.g. a
+-- relation or projection) so the rule can verify ownership.
+entity FieldOwnershipCheck {
+    target_entity: Entity
+    field: Field
+}

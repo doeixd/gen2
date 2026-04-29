@@ -1,0 +1,191 @@
+-- Authorization Module
+
+use "./core.allium" as core
+use "./entity.allium" as entity
+use "./relation.allium" as relation
+use "./api.allium" as api
+
+given {
+    context: core/GenContext
+}
+
+entity Policy {
+    name: String
+    target_entity: entity/Entity
+    actions: List<PolicyRule>
+}
+
+entity PolicyRule {
+    action_name: String
+    condition: AuthCondition
+    policy: Policy
+}
+
+value AuthCondition {
+    kind: AllowAuthenticated | AllowPublic | AllowRole | AllowOwner | AllowRelation | OrCondition
+    role: String?
+    owner_field: entity/Field?
+    target_relation: relation/Relation?
+    relation_field: entity/Field?
+    left: AuthCondition?
+    right: AuthCondition?
+}
+
+-- Policy translation and client exposure
+
+entity PolicyTranslation {
+    policy: Policy
+    target: TranslationTarget
+    translated_expression: String?
+    translatable: Boolean
+}
+
+entity TranslationTarget {
+    kind: sql_predicate | server_runtime_check | client_metadata | none
+}
+
+entity ClientPolicyExposure {
+    policy: Policy
+    exposed_actions: List<String>
+    server_only_fields_hidden: Boolean
+    safe_to_expose: Boolean
+}
+
+-- Invariants
+
+invariant PolicyActionsMatchEntity {
+    for p in Policies:
+        for a in p.actions:
+            a.policy = p
+}
+
+invariant OwnerFieldBelongsToEntity {
+    for p in Policies:
+        for a in p.actions where a.condition.kind = AllowOwner and a.condition.owner_field != null:
+            a.condition.owner_field.owning_entity = p.target_entity
+}
+
+invariant RelationFieldBelongsToEntity {
+    for p in Policies:
+        for a in p.actions where a.condition.kind = AllowRelation and a.condition.target_relation != null:
+            a.condition.target_relation.from_entity = p.target_entity
+}
+
+invariant PolicyTranslationTargetValid {
+    for pt in PolicyTranslations:
+        if pt.target.kind = sql_predicate:
+            pt.translatable implies pt.policy.target_entity.store_name != null
+}
+
+invariant ClientExposureSafe {
+    for cpe in ClientPolicyExposures:
+        if cpe.safe_to_expose:
+            cpe.server_only_fields_hidden
+}
+
+-- Rules
+
+rule PolicyAppliedToGetter {
+    when: g: api/Getter where g.auth != null
+    requires: not Policies.any(p => p.name = g.auth.policy_name and p.target_entity = g.target_entity)
+    ensures: core/Diagnostic.created(
+        severity: error,
+        code: "authz:policy-entity-mismatch",
+        message: "Policy " ++ g.auth.policy_name ++ " does not match getter entity",
+        refs: []
+    )
+}
+
+rule PolicyAppliedToMutator {
+    when: m: api/Mutator where m.auth != null
+    requires: not Policies.any(p => p.name = m.auth.policy_name and p.target_entity = m.target_entity)
+    ensures: core/Diagnostic.created(
+        severity: error,
+        code: "authz:policy-entity-mismatch",
+        message: "Policy " ++ m.auth.policy_name ++ " does not match mutator entity",
+        refs: []
+    )
+}
+
+rule UnenforceablePolicy {
+    when: p: Policy where p.actions.count > 0
+    for a in p.actions where a.condition.kind = AllowRelation and a.condition.target_relation != null:
+        requires: p.target_entity.store_name != null and a.condition.target_relation.to_entity.store_name != null and p.target_entity.store_name != a.condition.target_relation.to_entity.store_name
+        ensures: core/Diagnostic.created(
+            severity: warning,
+            code: "authz:unenforceable-policy",
+            message: "Relation-aware policy may not be translatable to SQL for cross-store relation",
+            refs: []
+        )
+}
+
+rule PolicyNotTranslatableToSQL {
+    when: pt: PolicyTranslation where pt.target.kind = sql_predicate
+    requires: not pt.translatable
+    ensures: core/Diagnostic.created(
+        severity: warning,
+        code: "authz:sql-translation-failed",
+        message: "Policy " ++ pt.policy.name ++ " cannot be translated to SQL predicate",
+        refs: []
+    )
+}
+
+rule ServerOnlyFieldExposedInClientPolicy {
+    when: cpe: ClientPolicyExposure
+    for action in cpe.exposed_actions:
+        for policy_rule in cpe.policy.actions where policy_rule.action_name = action and policy_rule.condition.kind = AllowOwner and policy_rule.condition.owner_field != null:
+            requires: policy_rule.condition.owner_field.semantic_type.server_only
+            ensures: core/Diagnostic.created(
+                severity: error,
+                code: "authz:server-only-in-client-policy",
+                message: "Server-only owner field exposed in client policy metadata for action " ++ action,
+                refs: []
+            )
+}
+
+rule UnsafeClientPolicyExposure {
+    when: cpe: ClientPolicyExposure
+    requires: not cpe.safe_to_expose and not cpe.server_only_fields_hidden
+    ensures: core/Diagnostic.created(
+        severity: error,
+        code: "authz:unsafe-client-exposure",
+        message: "Policy " ++ cpe.policy.name ++ " exposes unsafe metadata to client",
+        refs: []
+    )
+}
+
+-- Surfaces
+
+surface AuthorizationSurface {
+    facing developer: DomainModeler
+
+    exposes:
+        Policies
+        PolicyRules
+        PolicyTranslations
+        ClientPolicyExposures
+
+    provides:
+        DefinePolicy(target: entity/Entity, actions: List<PolicyRule>)
+            when target in entity/Entities
+
+        AllowAuthenticated(action: String)
+
+        AllowRole(action: String, role: String)
+
+        AllowOwner(action: String, field: entity/Field)
+            when field.owning_entity in entity/Entities
+
+        AllowRelation(action: String, target_relation: relation/Relation, field: entity/Field)
+            when target_relation.from_entity in entity/Entities
+
+        TranslatePolicyToSQL(policy: Policy)
+            when policy.target_entity.store_name != null
+
+        ExposePolicyToClient(policy: Policy, actions: List<String>)
+            when actions.all(a => policy.actions.any(rule => rule.action_name = a))
+
+    related:
+        api.ResourceSurface
+            when policy protects API operation
+}

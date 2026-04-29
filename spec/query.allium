@@ -1,0 +1,282 @@
+-- Query System Module
+-- Defines typed predicates, query expressions, query-backed fields, and runtime-aware planning.
+
+use "./core.allium" as core
+use "./types.allium" as types
+use "./entity.allium" as entity
+use "./storage.allium" as storage
+use "./expression.allium" as expression
+use "./relation.allium" as relation
+
+given {
+    context: core/GenContext
+}
+
+-- Query expression entities
+
+entity QueryExpression {
+    kind: expression/QueryExprKind
+    source: QuerySource
+    predicate: expression/Predicate?
+    projection: QueryProjection?
+    joins: List<JoinClause>
+    order_by: List<OrderByClause>
+    limit: expression/Expr?
+    offset: expression/Expr?
+    group_by: List<entity/Field>
+    result_type: types/SemanticType
+    requirements: List<types/Requirement>
+    effects: List<types/Effect>
+    target_runtimes: List<types/Runtime>
+    target_stores: List<storage/Store>
+}
+
+entity QuerySource {
+    kind: entity_source | relation_source | subquery_source | expression_source
+    entity: entity/Entity?
+    relation: relation/Relation?
+    subquery: QueryExpression?
+    source_expression: expression/Expr?
+}
+
+entity QueryProjection {
+    fields: List<ProjectedField>
+    aggregates: List<AggregateProjection>
+}
+
+entity ProjectedField {
+    field: entity/Field
+    alias: String?
+    expression: expression/Expr?
+}
+
+entity AggregateProjection {
+    aggregate_op: types/Operation
+    field: entity/Field
+    alias: String
+    expression: expression/Expr?
+}
+
+entity JoinClause {
+    kind: inner | left | right | cross
+    target: QuerySource
+    condition: expression/Predicate
+}
+
+entity OrderByClause {
+    field: entity/Field
+    expression: expression/Expr?
+    direction: asc | desc
+}
+
+entity QueryBackedField {
+    field: entity/Field
+    query: QueryExpression
+    entity: entity/Entity
+}
+
+-- Query planner
+
+entity QueryPlanner {
+    name: String
+    query: QueryExpression
+    plan: QueryPlan
+}
+
+entity QueryPlan {
+    assignments: List<FieldAssignment>
+    joins_required: Boolean
+    subqueries_required: Boolean
+    server_composition_required: Boolean
+    cross_store_reads: Boolean
+    fallback_policy: expression/FallbackPolicy
+}
+
+entity FieldAssignment {
+    field: entity/Field
+    source: FieldSource
+    runtime: types/Runtime
+    store: storage/Store?
+    operation: expression/Expr?
+}
+
+value FieldSource {
+    kind: database_column | computed_expression | aggregate_query | subquery | service_call | cache_lookup
+    column: storage/Column?
+    expression: expression/Expr?
+    query: QueryExpression?
+}
+
+-- Cross-store query composition
+
+entity CrossStoreQuery {
+    query: QueryExpression
+    store_plans: List<StoreQueryPlan>
+    composition_strategy: server_composition | materialized_view | streaming_join
+}
+
+entity StoreQueryPlan {
+    store: storage/Store
+    fields: List<entity/Field>
+    local_query: QueryExpression
+    runtime: types/Runtime
+}
+
+-- Invariants
+
+-- QueryPredicateTypeConsistent removed: source does not expose a result_type field.
+-- Type consistency between predicate and source is enforced by FieldFromWrongEntityInPredicate.
+
+invariant QueryBackedFieldEntityMatch {
+    for qbf in QueryBackedFields:
+        qbf.entity = qbf.field.owning_entity
+}
+
+invariant AggregateProjectionUsesAggregateOp {
+    for ap in AggregateProjections:
+        ap.aggregate_op.kind = aggregate
+}
+
+invariant AggregateProjectionFieldNumericWhenRequired {
+    for ap in AggregateProjections:
+        if ap.aggregate_op.requires_numeric:
+            ap.field.semantic_type.kind = "numeric"
+}
+
+invariant JoinConditionPredicate {
+    for j in JoinClauses:
+        j.condition.kind.kind = comparison or j.condition.kind.kind = boolean_logic
+}
+
+-- CrossStoreQueryHasComposition removed: composition_strategy is non-nullable.
+
+invariant FieldAssignmentRuntimeCapability {
+    for fa in FieldAssignments where fa.operation != null:
+        fa.operation.requirements.all(req => req.kind in fa.runtime.capabilities)
+}
+
+-- Rules
+
+rule UnsupportedQueryOperation {
+    when: q: QueryExpression
+    for runtime in q.target_runtimes:
+        requires: q.effects.any(e => e.kind not in runtime.capabilities)
+        ensures: core/Diagnostic.created(
+            severity: error,
+            code: "query:unsupported-operation",
+            message: "Query requires effects not supported by runtime " ++ runtime.name,
+            refs: []
+        )
+}
+
+rule QueryBackedFieldTypeMismatch {
+    when: qbf: QueryBackedField
+    requires: qbf.query.result_type != qbf.field.semantic_type
+    ensures: core/Diagnostic.created(
+        severity: error,
+        code: "query:backed-field-type-mismatch",
+        message: "Query-backed field " ++ qbf.field.name ++ " type does not match query result type",
+        refs: []
+    )
+}
+
+rule JoinConditionReferencesJoinedEntity {
+    when: j: JoinClause where j.target.entity != null
+    requires: not j.condition.refs.any(r => r.kind = "FieldRef" and j.target.entity.fields.any(f => f.name = r.name and f.owning_entity.name = r.owner.name))
+    ensures: core/Diagnostic.created(
+        severity: error,
+        code: "query:join-condition-invalid",
+        message: "Join condition does not reference any field of joined entity " ++ j.target.entity.name,
+        refs: []
+    )
+}
+
+rule QueryAggregateOverAmbiguousType {
+    when: q: QueryExpression where q.projection != null
+    for ap in q.projection.aggregates:
+        requires: ap.field.semantic_type.storage_repr.aggregate = null and ap.aggregate_op.name in {"sum", "avg"}
+        ensures: core/Diagnostic.created(
+            severity: error,
+            code: "query:ambiguous-aggregate",
+            message: "Aggregate " ++ ap.aggregate_op.name ++ " over field " ++ ap.field.name ++ " with ambiguous aggregation representation",
+            refs: []
+        )
+}
+
+rule NonexistentFieldInProjection {
+    when: q: QueryExpression where q.projection != null and q.source.entity != null
+    for pf in q.projection.fields:
+        requires: pf.field not in q.source.entity.fields
+        ensures: core/Diagnostic.created(
+            severity: error,
+            code: "query:nonexistent-field",
+            message: "Projected field " ++ pf.field.name ++ " does not exist in source entity " ++ q.source.entity.name,
+            refs: []
+        )
+}
+
+rule FieldFromWrongEntityInPredicate {
+    when: q: QueryExpression where q.predicate != null and q.source.entity != null
+    for ref in q.predicate.refs where ref.kind = "FieldRef":
+        requires: ref.owner.name != q.source.entity.name and not q.joins.any(j => j.target.entity != null and j.target.entity.name = ref.owner.name)
+        ensures: core/Diagnostic.created(
+            severity: error,
+            code: "query:wrong-entity-field",
+            message: "Predicate references field " ++ ref.name ++ " from entity " ++ ref.owner.name ++ " but query source is " ++ q.source.entity.name,
+            refs: []
+        )
+}
+
+-- Surfaces
+
+surface QuerySurface {
+    facing developer: DomainModeler
+
+    exposes:
+        QueryExpressions
+        QueryPlans
+        QueryBackedFields
+        CrossStoreQueries
+
+    provides:
+        BuildQuery(source: QuerySource)
+            when source.entity in Entities or source.subquery in QueryExpressions
+
+        Where(query: QueryExpression, predicate: expression/Predicate)
+            when query.source.entity != null and predicate.input_type.name = query.source.entity.name
+
+        Select(query: QueryExpression, projection: QueryProjection)
+            when query.source.entity != null and projection.fields.all(f => f.field in query.source.entity.fields)
+
+        Join(query: QueryExpression, kind: JoinKind, target: QuerySource, condition: expression/Predicate)
+            when target.entity != null and condition.refs.any(r => r.kind = "FieldRef" and r.owner.name = target.entity.name)
+
+        OrderBy(query: QueryExpression, field: entity/Field, direction: OrderDirection)
+            when query.source.entity != null and field in query.source.entity.fields
+
+        Limit(query: QueryExpression, limit: expression/Expr)
+            when limit.value_type.name = "int"
+
+        PlanQuery(query: QueryExpression, runtimes: List<types/Runtime>)
+            when runtimes.all(r => query.requirements.all(req => req.kind in r.capabilities))
+    }
+}
+
+surface CrossStoreQuerySurface {
+    facing developer: DomainModeler
+
+    exposes:
+        CrossStoreQueries
+        StoreQueryPlans
+
+    provides:
+        ComposeCrossStore(query: QueryExpression, stores: List<storage/Store>)
+            when stores.count > 1 and stores.all(s => s in Stores)
+
+        AssignStorePlan(store: storage/Store, fields: List<entity/Field>, local_query: QueryExpression)
+            when fields.all(f => local_query.projection != null and local_query.projection.fields.any(pf => pf.field = f))
+
+        SetCompositionStrategy(query: CrossStoreQuery, strategy: CompositionStrategy)
+            when strategy in {server_composition, materialized_view, streaming_join}
+    }
+}

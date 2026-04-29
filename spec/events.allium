@@ -1,0 +1,181 @@
+-- Events, Reducers, and Outbox Module
+-- Defines events, event emission, reducers, and optional fact-log integration points.
+
+use "./core.allium" as core
+use "./types.allium" as types
+use "./entity.allium" as entity
+use "./expression.allium" as expression
+use "./function.allium" as function
+
+given {
+    context: core/GenContext
+}
+
+entity Event {
+    name: String
+    payload: EventPayload
+    -- Mutators that emit this event. Populated by EmitEvent. The
+    -- EmittedByMatchesEmissions invariant ensures consistency with EventEmissions.
+    emitted_by: List<function/ActionFunction>
+}
+
+-- Concrete record that an action emits an event somewhere in its body.
+-- Codegen may produce one EventEmission per gen.events.emit() call discovered
+-- when traversing the action's body. The invariant
+-- EmittedByMatchesEmissions ensures Event.emitted_by is consistent with EventEmissions.
+entity EventEmission {
+    action: function/ActionFunction
+    event: Event
+    payload_expr: expression/Expr?
+}
+
+entity EventPayload {
+    fields: List<EventField>
+}
+
+entity EventField {
+    name: String
+    field_type: types/SemanticType
+    source_field: entity/Field?
+}
+
+entity Reducer {
+    name: String
+    target_field: entity/Field
+    events: List<Event>
+    combine: MonoidOp
+    empty_value: expression/Expr?
+}
+
+entity MonoidOp {
+    name: String
+    input_type: types/SemanticType
+    output_type: types/SemanticType
+    associative: Boolean
+    commutative: Boolean
+    idempotent: Boolean
+}
+
+entity OutboxEntry {
+    event: Event
+    payload: EventPayload
+    emitted_at: Timestamp
+    processed: Boolean
+}
+
+entity Subscription {
+    name: String
+    event: Event
+    handler: function/StaticFunction
+    -- The handler's input type must be assignable from the event's payload.
+    -- Enforced by SubscriptionHandlerInputMatchesEvent.
+    payload_type: types/SemanticType
+}
+
+-- Invariants
+
+invariant EventPayloadFieldsUnique {
+    for e in Events:
+        for f in e.payload.fields:
+            for g in e.payload.fields where g != f:
+                not (f.name = g.name)
+}
+
+-- Each ActionFunction listed in Event.emitted_by must have at least one
+-- EventEmission for that event, and every EventEmission must round-trip
+-- to the event's emitted_by list.
+invariant EmittedByMatchesEmissions {
+    for e in Events:
+        for a in e.emitted_by:
+            EventEmissions.any(em => em.action = a and em.event = e)
+}
+
+invariant EventEmissionListed {
+    for em in EventEmissions:
+        em.event.emitted_by.any(a => a = em.action)
+}
+
+invariant ReducerEventsMatchTarget {
+    for r in Reducers:
+        for e in r.events:
+            e.payload.fields.any(f => f.source_field = r.target_field)
+}
+
+-- Non-associative reducers can produce inconsistent results under reordered/replayed
+-- event streams. Warn if a reducer's combine op is not associative; users may suppress
+-- this if their event delivery is strictly ordered.
+rule NonAssociativeReducer {
+    when: r: Reducer
+    requires: not r.combine.associative
+    ensures: core/Diagnostic.created(
+        severity: warning,
+        code: "events:non-associative-reducer",
+        message: "Reducer " ++ r.name ++ " uses non-associative combine; replay/reorder may yield inconsistent state",
+        refs: []
+    )
+}
+
+-- Rules
+
+rule EventEmittedByMutator {
+    when: e: Event where e.emitted_by.count > 0
+    for emitter in e.emitted_by:
+        requires: emitter.body.effects.any(effect => effect.kind = "email" or effect.kind = "network")
+        ensures: core/Diagnostic.created(
+            severity: warning,
+            code: "events:effectful-emission",
+            message: "Event " ++ e.name ++ " emitted by effectful mutator may require outbox pattern",
+            refs: []
+        )
+}
+
+rule ReducerTypeMismatch {
+    when: r: Reducer
+    requires: r.combine.input_type != r.target_field.semantic_type
+    ensures: core/Diagnostic.created(
+        severity: error,
+        code: "events:reducer-type-mismatch",
+        message: "Reducer " ++ r.name ++ " combine input type does not match target field type",
+        refs: []
+    )
+}
+
+rule SubscriptionHandlerInputMatchesEvent {
+    when: s: Subscription
+    requires: s.handler.input_type != s.payload_type
+    ensures: core/Diagnostic.created(
+        severity: error,
+        code: "events:subscription-input-mismatch",
+        message: "Subscription " ++ s.name ++ " handler input does not match event " ++ s.event.name ++ " payload type",
+        refs: []
+    )
+}
+
+-- Surfaces
+
+surface EventSurface {
+    facing developer: DomainModeler
+
+    exposes:
+        Events
+        EventEmissions
+        Reducers
+        Subscriptions
+
+    provides:
+        DefineEvent(name: String, payload: EventPayload)
+            when not Events.any(e => e.name = name)
+
+        -- Records that mutator emits event in its body. Codegen creates an
+        -- EventEmission and adds the mutator to event.emitted_by atomically
+        -- so the EmittedByMatchesEmissions invariant holds.
+        EmitEvent(event: Event, mutator: function/ActionFunction)
+            when mutator in ActionFunctions
+
+        DefineReducer(name: String, target_field: entity/Field, events: List<Event>)
+            when target_field in Fields and events.all(e => e in Events)
+
+        Subscribe(subscription: Subscription)
+            when subscription.event in Events and subscription.handler in StaticFunctions
+    }
+}

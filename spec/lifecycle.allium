@@ -1,0 +1,242 @@
+-- Check and Generate Lifecycle Module
+
+use "./core.allium" as core
+use "./types.allium" as types
+use "./entity.allium" as entity
+use "./expression.allium" as expression
+use "./query.allium" as query
+use "./storage.allium" as storage
+use "./api.allium" as api
+
+given {
+    context: core/GenContext
+}
+
+entity LifecyclePhase {
+    name: String
+    order: Integer
+    status: pending | running | completed | failed
+}
+
+entity LifecycleRule {
+    phase: LifecyclePhase
+    action: String
+    target_kind: String
+}
+
+-- Cross-store planning
+
+entity CrossStorePlanner {
+    name: String
+    query: query/QueryExpression
+    store_assignments: List<StoreAssignment>
+    composition_strategy: CompositionStrategy
+    fallback_policy: expression/FallbackPolicy
+}
+
+entity StoreAssignment {
+    store: storage/Store
+    fields: List<entity/Field>
+    local_query: query/QueryExpression
+    runtime: types/Runtime
+}
+
+entity CompositionStrategy {
+    kind: server_composition | materialized_view | streaming_join | event_sourced
+    coordinator: types/Runtime?
+    timeout: Duration?
+}
+
+-- Invariants
+
+invariant LifecycleOrderUnique {
+    for p in LifecyclePhases:
+        for q in LifecyclePhases where q != p:
+            not (p.order = q.order)
+}
+
+invariant CheckBeforeGenerate {
+    for c in LifecyclePhases where c.name = "check":
+        for g in LifecyclePhases where g.name = "generate":
+            c.order < g.order
+}
+
+invariant CrossStorePlannerAssignmentsCoverFields {
+    for csp in CrossStorePlanners where csp.query.projection != null:
+        for field in csp.query.projection.fields:
+            csp.store_assignments.any(sa => sa.fields.any(f => f = field.field))
+}
+
+-- A CrossStorePlanner is meaningful only when it spans more than one distinct store.
+-- Two assignments to the same store are not "cross-store".
+invariant CrossStorePlannerDistinctStores {
+    for csp in CrossStorePlanners:
+        csp.store_assignments.count > 1 and
+        csp.store_assignments.all(sa => csp.store_assignments.none(sb => sb != sa and sb.store = sa.store))
+}
+
+-- Rules
+
+rule CollectRefsPhase {
+    when: phase: LifecyclePhase where phase.name = "collect_refs" and phase.status becomes running
+    ensures:
+        for ref in core/Refs:
+            ref.status = "collected"
+}
+
+rule ResolvePluginDependenciesPhase {
+    when: phase: LifecyclePhase where phase.name = "resolve_plugins" and phase.status becomes running
+    ensures:
+        for plugin in core/Plugins:
+            for dep in plugin.required_plugins:
+                if dep not in core/Plugins:
+                    core/Diagnostic.created(
+                        severity: error,
+                        code: "lifecycle:missing-plugin-dependency",
+                        message: "Plugin " ++ plugin.id ++ " requires missing plugin " ++ dep.id,
+                        refs: []
+                    )
+}
+
+rule CheckTargetCompatibilityPhase {
+    when: phase: LifecyclePhase where phase.name = "check_targets" and phase.status becomes running
+    ensures:
+        for target in core/Targets:
+            for input in target.inputs:
+                if input.kind not in target.accepts_inputs:
+                    core/Diagnostic.created(
+                        severity: error,
+                        code: "lifecycle:target-incompatible-input",
+                        message: "Target " ++ target.name ++ " does not accept input kind " ++ input.kind,
+                        refs: []
+                    )
+}
+
+rule RunChecksPhase {
+    when: phase: LifecyclePhase where phase.name = "run_checks" and phase.status becomes running
+    ensures:
+        for target in core/Targets where target.check_result != null:
+            if target.check_result.diagnostics.any(d => d.severity = error):
+                target.check_result.status = has_errors
+            else:
+                target.check_result.status = ok
+}
+
+rule GenerateArtifactsPhase {
+    when: phase: LifecyclePhase where phase.name = "generate" and phase.status becomes running
+    for target in core/Targets:
+        requires: target.check_result != null and target.check_result.status = ok and target.generate_result != null
+        ensures:
+            for artifact in target.generate_result.artifacts:
+                artifact.status = "generated"
+}
+
+rule FailOnGenerateError {
+    when: phase: LifecyclePhase where phase.name = "generate" and phase.status becomes running
+    requires: core/Targets.any(t => t.generate_result != null and t.generate_result.diagnostics.any(d => d.severity = error))
+    ensures: phase.status = failed
+}
+
+rule CrossStoreReadCompositionRequired {
+    when: q: query/QueryExpression where q.target_stores.count > 1
+    requires: not CrossStorePlanners.any(csp => csp.query = q)
+    ensures: core/Diagnostic.created(
+        severity: error,
+        code: "lifecycle:cross-store-read-unplanned",
+        message: "Cross-store query requires explicit composition plan",
+        refs: []
+    )
+}
+
+rule CrossStoreWriteCoordinatorRequired {
+    when: m: api/Mutator where m.written_stores.count > 1
+    requires: m.consistency = transactional
+    ensures: core/Diagnostic.created(
+        severity: error,
+        code: "lifecycle:cross-store-write-no-coordinator",
+        message: "Cross-store transactional write requires coordinator; use saga or eventual consistency",
+        refs: []
+    )
+}
+
+-- Surfaces
+
+surface LifecycleSurface {
+    facing developer: DomainModeler
+    facing tool: GenCLI
+
+    exposes:
+        LifecyclePhases
+        LifecycleRules
+        CrossStorePlanners
+        StoreAssignments
+
+    provides:
+        RunPhase(phase: LifecyclePhase)
+            when phase.status = pending
+
+        RunFullLifecycle()
+            when context.status = idle
+
+        InspectPhase(phase: LifecyclePhase)
+            when phase.status = completed or phase.status = failed
+
+        RetryPhase(phase: LifecyclePhase)
+            when phase.status = failed
+
+        PlanCrossStoreQuery(query: query/QueryExpression, assignments: List<StoreAssignment>)
+            when query.target_stores.count > 1 and assignments.count > 1
+    }
+}
+
+-- TS Inference Notes (Section 32 from spec.md)
+-- The following compile-time inference requirements are implementation notes for TypeScript type system authors:
+-- - entity value types: InferEntity<E> = { [K in E.fields]: E.fields[K].value_type }
+-- - field names and field value types: via const generics and FieldShape
+-- - field owner/nullability/optionality/defaults: FieldRef metadata
+-- - store/dialect-specific column types: StoreRef + dialect capabilities
+-- - mapping read/create/update types: Mapping projection inference
+-- - read-only/write-only/hidden fields: FieldMapping flags
+-- - projection output types: InferProjection<M> = { [K in M.fields]: K.value_type }
+-- - relation include output types: InferEntity<E, { include: [R] }>
+-- - nested include output types: recursive Include<Relation, { include: [...] }>
+-- - function input/output/body/effects/requirements: StaticFunction generics
+-- - query function input/output/error/effects: QueryFunction generics
+-- - action function input/output/error/effects: ActionFunction generics
+-- - patch function input/output/reconciliation requirements: PatchFunction generics
+-- - form values and submit types: InferFormValues<F>, InferFormSubmit<F>
+-- - UI slot maps: View<Slots> generic
+-- - slot element capabilities: SlotRef<Capability> generic
+-- - style handle names: Style<SlotName, TokenName> generic
+-- - style token names: Theme<TokenName, Value> generic
+-- - behavior slot requirements: Behavior<SlotName, Capability> generic
+-- - component requirements/errors/bindings: Component<Props, Req, Err, Bindings, Slots>
+-- - platform event/attribute types: Platform<EventName, AttributeName> generic
+-- - collection slot item types: CollectionSlot<ItemCapability>
+-- - slot remapping compatibility: Remap<SourceSlot, TargetSlot> where capabilities match
+-- - component prop compatibility: Bind<FieldRef, ComponentProp> where types match
+-- - operation runtime requirements: Operation<RuntimeCapabilities> generic
+-- - expression input/output types: Expr<T, Requirements, Effects> generic
+-- - representation storage/wire types: Representation<Ts, Wire> generic
+-- - trait applicability: Trait<TargetType> generic constraint
+-- - store/runtime capabilities: Store<Capabilities> generic, Runtime<Capabilities> generic
+-- - target compatibility where practical: Target<InputShape> generic constraint
+
+-- Testing Requirements Notes (Section 33 from spec.md)
+-- Type tests must cover: field ref inference, entity inference, invalid field refs,
+-- relation inference, invalid relation includes, FK action compatibility, mapping compatibility,
+-- read-only write rejection, multi-store type availability, plugin helper availability,
+-- component prop mismatch, runtime unsupported operation, representation inference,
+-- staged expression type checking, trait applicability, static function inference,
+-- query/action/patch body compatibility, getter/mutator inference, UI slot inference,
+-- style attachment type errors, behavior attachment type errors, theme token type errors,
+-- slot remapping compatibility, collection slot behavior compatibility, platform renderer diagnostics,
+-- unsafe HTML branded type checks.
+
+-- Runtime tests must cover: entity metadata, ref identity, plugin registration, plugin conflicts,
+-- mapping dependency collection, relation graph construction, runtime planning, diagnostics, artifact generation.
+
+-- Golden tests must cover: Drizzle schemas, Prisma schemas, Hono routes, React forms,
+-- OpenAPI documents, Zod schemas, migration files, client SDKs.
+
+-- Law tests may provide property tests for operations declaring laws via gen.testing.testLaws().

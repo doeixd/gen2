@@ -1,0 +1,424 @@
+-- Expression and Operation Algebra Module
+-- Defines the static typed AST system, expression builders, and type-checking rules.
+
+use "./core.allium" as core
+use "./types.allium" as types
+use "./entity.allium" as entity
+use "./storage.allium" as storage
+use "./relation.allium" as relation
+
+given {
+    context: core/GenContext
+}
+
+-- Expression node kinds. Each represents a static, typed, analyzable computation.
+
+entity StaticNode {
+    kind: String
+    output_type: types/SemanticType
+    requirements: List<types/Requirement>
+    effects: List<types/Effect>
+}
+
+entity Expr {
+    kind: ExprKind
+    value_type: types/SemanticType
+    requirements: List<types/Requirement>
+    effects: List<types/Effect>
+    ast: ExprAstNode
+    phase: schema | query | mutation | client | server
+    contains_opaque_js: Boolean
+    -- Flattened collection of all core/Ref instances found anywhere in the AST subtree.
+    -- Populated by the expression builder; used by rules that need ref-level checks
+    -- without recursive AST traversal.
+    refs: List<core/Ref>
+}
+
+entity ExprAstNode {
+    kind: AstNodeKind
+    children: List<ExprAstNode>
+    ref: core/Ref?
+    literal: LiteralValue?
+    op: OperationRef?
+}
+
+entity Predicate {
+    kind: PredicateKind
+    input_type: types/SemanticType
+    value_type: types/SemanticType
+    requirements: List<types/Requirement>
+    effects: List<types/Effect>
+    ast: ExprAstNode
+    -- Flattened collection of all core/Ref instances in the AST subtree.
+    refs: List<core/Ref>
+}
+
+entity QueryExpr {
+    kind: QueryExprKind
+    phase: schema | query | mutation | client | server
+    result_type: types/SemanticType
+    source: QuerySource
+    predicate: Predicate?
+    projection: ProjectionExpr?
+    order_by: List<OrderExpr>
+    limit: Expr?
+    offset: Expr?
+    requirements: List<types/Requirement>
+    effects: List<types/Effect>
+}
+
+entity ActionExpr {
+    kind: ActionExprKind
+    phase: schema | query | mutation | client | server
+    target_entity: entity/Entity
+    operations: List<WriteOperation>
+    effects: List<types/Effect>
+    requirements: List<types/Requirement>
+}
+
+entity PatchExpr {
+    kind: PatchExprKind
+    phase: schema | query | mutation | client | server
+    target_query: QueryExpr
+    patch_items: List<PatchItemExpr>
+    reconcile_field: entity/Field
+    rollback_strategy: inverse | custom
+}
+
+entity PlanExpr {
+    kind: PlanExprKind
+    phase: schema | query | mutation | client | server
+    primary: Expr
+    fallback: PlanExpr?
+    fallback_policy: FallbackPolicy
+    runtime_assignments: List<RuntimeAssignment>
+}
+
+-- Operation references within expression trees
+
+entity OperationRef {
+    operation: types/Operation
+    args: Map<String, Expr>
+}
+
+-- Literal values that can appear in expression trees
+
+value LiteralValue {
+    kind: string | integer | decimal | boolean | timestamp | date | json | bytes | null_value
+    string_value: String?
+    integer_value: Integer?
+    decimal_value: String?
+    boolean_value: Boolean?
+}
+
+-- Expression kinds
+
+value ExprKind {
+    kind: literal | field_ref | op_call | param_ref | conditional | let_binding | collection_expr | query_expr
+}
+
+value PredicateKind {
+    kind: comparison | membership | boolean_logic | null_check | exists | forall
+}
+
+value QueryExprKind {
+    kind: select | from | where | order_by | limit | offset | join | aggregate | subquery
+}
+
+value ActionExprKind {
+    kind: insert | update | delete | custom | sequence
+}
+
+value PatchExprKind {
+    kind: optimistic_insert | optimistic_update | optimistic_delete
+}
+
+value PlanExprKind {
+    kind: runtime_split | store_split | fallback
+}
+
+value AstNodeKind {
+    kind: literal | field_ref | param_ref | op_call | conditional | let_binding | collection_expr
+}
+
+-- Query sub-expressions
+
+entity QuerySource {
+    kind: entity_source | relation_source | subquery_source | service_source
+    entity: entity/Entity?
+    relation: relation/Relation?
+    subquery: QueryExpr?
+    service_call: ServiceCall?
+}
+
+entity ProjectionExpr {
+    fields: List<ProjectedField>
+}
+
+entity ProjectedField {
+    field: entity/Field
+    alias: String?
+    expression: Expr?
+}
+
+entity OrderExpr {
+    expression: Expr
+    direction: asc | desc
+}
+
+entity WriteOperation {
+    kind: insert_op | update_op | delete_op
+    target: entity/Entity
+    values: Map<entity/Field, Expr>
+    condition: Predicate?
+}
+
+entity PatchItemExpr {
+    kind: patch_insert | patch_update | patch_delete
+    values: Map<entity/Field, Expr>
+    temp_id: Expr?
+}
+
+entity ServiceCall {
+    service_name: String
+    method: String
+    args: Map<String, Expr>
+    return_type: types/SemanticType
+}
+
+-- Runtime planning
+
+entity RuntimeAssignment {
+    field: entity/Field
+    assigned_runtime: types/Runtime
+    assigned_store: storage/Store?
+    operation: Expr
+}
+
+value FallbackPolicy {
+    kind: allow | deny
+    pure_only: Boolean
+    deterministic_only: Boolean
+    effectful_ok: Boolean
+}
+
+-- Note: the previously separate UnaryOp / BinaryOp / ComparisonOp / AggregateOp
+-- entities were folded into types/Operation (with kind = unary/binary/comparison/
+-- aggregate). To find an operation's typing rule, look up types/Operation by name
+-- and dispatch on Operation.kind. FieldOp and EntityOp remain here because they
+-- reference entity/Field and entity/Entity which would create a circular import in types.allium.
+
+-- Field operations: project a field from an entity value.
+entity FieldOp {
+    name: String
+    target_field: entity/Field
+    output_type: types/SemanticType
+}
+
+-- Entity operations: project an entire entity (used for existence/identity checks).
+entity EntityOp {
+    name: String
+    target_entity: entity/Entity
+    output_type: types/SemanticType
+}
+
+-- Invariants
+
+invariant ExprTypeMatchesOperation {
+    for e in Exprs where e.ast.op != null:
+        e.value_type = e.ast.op.operation.output_type
+}
+
+-- A PlanExpr without any assignments is meaningless; the planner must place
+-- at least one operation on a runtime.
+invariant PlanExprHasAssignments {
+    for plan in PlanExprs:
+        plan.runtime_assignments.count > 0
+}
+
+invariant PredicateReturnsBoolean {
+    for p in Predicates:
+        p.value_type.name = "boolean"
+}
+
+invariant SchemaExpressionNoOpaqueJs {
+    for e in Exprs where e.phase = schema:
+        not e.contains_opaque_js
+}
+
+invariant QueryExpressionPhaseCorrect {
+    for q in QueryExprs:
+        q.phase = query
+}
+
+invariant ActionExpressionPhaseCorrect {
+    for a in ActionExprs:
+        a.phase = mutation or a.phase = server
+}
+
+-- Client-phase expressions must not contain effects that can only run server-side.
+-- "Server-only" effects are those that touch databases, filesystem, secrets, or payment
+-- providers — none of which are safe to bundle to the client.
+invariant ClientExpressionNoServerEffects {
+    for e in Exprs where e.phase = client:
+        e.effects.all(effect => effect.kind not in {"db_read", "db_write", "fs_read", "fs_write", "payment", "queue"})
+}
+
+-- Per-kind structural invariants for op_call expressions. Each invariant inspects
+-- the operation referenced by the AST node and checks that the children match
+-- the operation's typing contract for its kind.
+
+invariant UnaryOpInputTypeMatches {
+    for e in Exprs where e.ast.op != null and e.ast.op.operation.kind = unary:
+        e.ast.children.count = 1 and
+        e.ast.children.any(child => child.value_type = e.ast.op.operation.input_type)
+}
+
+invariant BinaryOpOperandsMatch {
+    for e in Exprs where e.ast.op != null and e.ast.op.operation.kind = binary:
+        e.ast.children.count = 2 and
+        e.ast.children.any(c => c.value_type = e.ast.op.operation.left_type) and
+        e.ast.children.any(c => c.value_type = e.ast.op.operation.right_type)
+}
+
+invariant ComparisonOpSameType {
+    for e in Exprs where e.ast.op != null and e.ast.op.operation.kind = comparison:
+        e.ast.children.count = 2 and
+        e.ast.children.all(c => c.value_type = e.ast.op.operation.operand_type)
+}
+
+invariant AggregateOpNumericWhenRequired {
+    for e in Exprs where e.ast.op != null and e.ast.op.operation.kind = aggregate and e.ast.op.operation.requires_numeric:
+        e.ast.children.count = 1 and
+        e.ast.children.any(c => c.value_type.kind = "numeric")
+}
+
+invariant AggregateOpOrderableWhenRequired {
+    for e in Exprs where e.ast.op != null and e.ast.op.operation.kind = aggregate and e.ast.op.operation.requires_orderable:
+        e.ast.children.count = 1 and
+        e.ast.children.any(c => c.value_type.storage_repr.compare != null and c.value_type.storage_repr.compare.total_ordering)
+}
+
+-- Rules
+
+rule StringOperationOnNonString {
+    when: e: Expr where e.kind.kind = op_call and e.ast.op != null and e.ast.op.operation.name in {"lower", "upper", "trim", "length", "concat", "contains", "replace"}
+    for child in e.ast.children:
+        requires: child.value_type.name != "string"
+        ensures: core/Diagnostic.created(
+            severity: error,
+            code: "expression:string-op-on-non-string",
+            message: "String operation " ++ e.ast.op.operation.name ++ " applied to non-string type " ++ child.value_type.name,
+            refs: []
+        )
+}
+
+rule NumericOperationOnNonNumeric {
+    when: e: Expr where e.kind.kind = op_call and e.ast.op != null and e.ast.op.operation.name in {"add", "sub", "mul", "div", "mod", "abs", "round", "floor", "ceil"}
+    for child in e.ast.children:
+        requires: child.value_type.kind != "numeric"
+        ensures: core/Diagnostic.created(
+            severity: error,
+            code: "expression:numeric-op-on-non-numeric",
+            message: "Numeric operation " ++ e.ast.op.operation.name ++ " applied to non-numeric type " ++ child.value_type.name,
+            refs: []
+        )
+}
+
+rule OpaqueJsInSchemaExpression {
+    when: e: Expr where e.phase = schema
+    requires: e.contains_opaque_js
+    ensures: core/Diagnostic.created(
+        severity: error,
+        code: "expression:opaque-js-in-schema",
+        message: "Schema expression contains opaque JavaScript; use static AST nodes only",
+        refs: []
+    )
+}
+
+-- Note: the effectful-fallback check is owned by function.allium's
+-- EffectfulOperationNoSilentFallback rule, which checks both the primary and the
+-- fallback expression's effects against fallback_policy.effectful_ok.
+-- Keeping the rule in one place avoids duplicate diagnostics with conflicting codes.
+
+rule AggregationOverAmbiguousType {
+    when: e: Expr where e.ast.op != null and e.ast.op.operation.kind = aggregate
+    requires: e.ast.children.count = 1 and e.ast.children.any(c => c.value_type.storage_repr.aggregate = null)
+    ensures: core/Diagnostic.created(
+        severity: error,
+        code: "expression:ambiguous-aggregation",
+        message: "Aggregation " ++ e.ast.op.operation.name ++ " over type without defined aggregation representation",
+        refs: []
+    )
+}
+
+-- An operation explicitly assigned to a runtime via PlanExpr must have an
+-- implementation for that runtime. Catches spec.md §31 #9.
+rule MissingOperationImplementationForAssignedRuntime {
+    when: plan: PlanExpr
+    for assignment in plan.runtime_assignments where assignment.operation.ast.op != null:
+        requires: not assignment.operation.ast.op.operation.implementations.any(impl => impl.runtime = assignment.assigned_runtime.name)
+        ensures: core/Diagnostic.created(
+            severity: error,
+            code: "expression:missing-operation-implementation",
+            message: "Operation " ++ assignment.operation.ast.op.operation.name ++ " has no implementation for runtime " ++ assignment.assigned_runtime.name,
+            refs: []
+        )
+}
+
+-- Surfaces
+
+surface ExpressionSurface {
+    facing developer: DomainModeler
+
+    exposes:
+        Exprs
+        Predicates
+        types/Operations
+        FieldOps
+        EntityOps
+
+    provides:
+        BuildExpr(type: types/SemanticType, phase: schema | query | mutation | client | server, ast: ExprAstNode)
+
+        BuildPredicate(input_type: types/SemanticType, ast: ExprAstNode)
+
+        ApplyUnary(op: types/Operation, operand: Expr)
+            when op.kind = unary and operand.value_type = op.input_type
+
+        ApplyBinary(op: types/Operation, left: Expr, right: Expr)
+            when op.kind = binary and left.value_type = op.left_type and right.value_type = op.right_type
+
+        ApplyComparison(op: types/Operation, left: Expr, right: Expr)
+            when op.kind = comparison and left.value_type = op.operand_type and right.value_type = op.operand_type
+
+        ApplyAggregate(op: types/Operation, operand: Expr)
+            when op.kind = aggregate and ((not op.requires_numeric) or (operand.value_type.kind = "numeric"))
+
+        ApplyFieldOp(op: FieldOp, operand: Expr)
+            when operand.value_type.name = op.target_field.owning_entity.name
+
+        ApplyEntityOp(op: EntityOp, operand: Expr)
+            when operand.value_type.name = op.target_entity.name
+    }
+}
+
+surface PlanSurface {
+    facing developer: DomainModeler
+
+    exposes:
+        PlanExprs
+        RuntimeAssignments
+        FallbackPolicies
+
+    provides:
+        PlanExecution(expr: Expr, runtimes: List<types/Runtime>)
+            when runtimes.all(r => expr.requirements.all(req => req.kind in r.capabilities))
+
+        AssignFallback(plan: PlanExpr, fallback: PlanExpr, policy: FallbackPolicy)
+            when policy.pure_only implies plan.primary.effects.count = 0
+
+        AssignRuntime(field: entity/Field, runtime: types/Runtime, operation: Expr)
+            when operation.requirements.all(req => req.kind in runtime.capabilities)
+    }
+}

@@ -1,0 +1,230 @@
+-- API Module
+
+use "./core.allium" as core
+use "./entity.allium" as entity
+use "./types.allium" as types
+use "./storage.allium" as storage
+use "./function.allium" as function
+
+given {
+    context: core/GenContext
+}
+
+entity Resource {
+    target_entity: entity/Entity
+    path: String
+    operations: List<OperationRef>
+}
+
+entity Route {
+    method: HttpMethod
+    path: RoutePath
+    handler: RouteHandler
+    runtime: String?
+    target: String?
+    parameters: List<RouteParameter>
+}
+
+-- A route may wrap a query, action, or static function. Exactly one of the
+-- *_func fields is populated, matching kind. Enforced by RouteHandlerKindMatches.
+value RouteHandler {
+    kind: query | action | static
+    query_func: function/QueryFunction?
+    action_func: function/ActionFunction?
+    static_func: function/StaticFunction?
+}
+
+entity Getter {
+    name: String
+    target_entity: entity/Entity
+    by_field: entity/Field
+    projection: storage/Projection
+    auth: core/PolicyAction?
+    errors: List<function/ErrorType>
+}
+
+entity ListGetter {
+    name: String
+    target_entity: entity/Entity
+    projection: storage/Projection
+    filter_fields: List<entity/Field>
+    search_field: entity/Field?
+    pagination_kind: cursor | offset | none
+    pagination_field: entity/Field?
+    default_limit: Integer?
+    auth: core/PolicyAction?
+}
+
+entity Mutator {
+    name: String
+    target_entity: entity/Entity
+    input_fields: List<entity/Field>
+    mapping: storage/Mapping
+    returns: storage/Projection
+    auth: core/PolicyAction?
+    consistency: transactional | eventual | best_effort
+    written_stores: List<storage/Store>
+    after: List<function/ActionFunction>
+    errors: List<function/ErrorType>
+    invalidates: List<function/QueryFunction>
+    optimistic: function/PatchFunction?
+}
+
+entity OperationRef {
+    kind: String
+    route: Route
+    handler: RouteHandler
+}
+
+entity RouteParameter {
+    name: String
+    param_type: types/SemanticType
+    kind: path | query | body | header
+}
+
+value RoutePath {
+    segments: List<PathSegment>
+    template: String
+}
+
+value PathSegment {
+    kind: literal | parameter
+    value: String
+    field_ref: entity/Field?
+}
+
+value HttpMethod {
+    kind: GET | POST | PUT | PATCH | DELETE
+}
+
+-- Invariants
+
+invariant MutatorMappingCoversInput {
+    for m in Mutators:
+        for f in m.input_fields:
+            f in m.mapping.target_entity.fields
+}
+
+invariant MutatorWrittenStoresConsistent {
+    for m in Mutators where m.consistency = transactional:
+        m.written_stores.count <= 1
+}
+
+invariant RouteHandlerKindMatches {
+    for r in Routes:
+        if r.handler.kind = query:
+            r.handler.query_func != null and r.handler.action_func = null and r.handler.static_func = null
+        if r.handler.kind = action:
+            r.handler.action_func != null and r.handler.query_func = null and r.handler.static_func = null
+        if r.handler.kind = static:
+            r.handler.static_func != null and r.handler.query_func = null and r.handler.action_func = null
+}
+
+invariant RouteParameterTypesMatchEntity {
+    for r in Routes:
+        for seg in r.path.segments where seg.kind = parameter and seg.field_ref != null:
+            (r.handler.kind = query and r.handler.query_func.input_fields.any(f => f.owning_entity = seg.field_ref.owning_entity)) or
+            (r.handler.kind = action and r.handler.action_func.input_fields.any(f => f.owning_entity = seg.field_ref.owning_entity)) or
+            (r.handler.kind = static and r.handler.static_func.input_fields.any(f => f.owning_entity = seg.field_ref.owning_entity))
+}
+
+-- Rules
+
+rule CrossStoreTransactionalMutator {
+    when: m: Mutator where m.consistency = transactional
+    requires: m.written_stores.count > 1
+    ensures: core/Diagnostic.created(
+        severity: error,
+        code: "api:cross-store-transaction",
+        message: "Cannot generate transactional mutator " ++ m.name ++ " across multiple stores without coordinator",
+        refs: []
+    )
+}
+
+rule ReadOnlyFieldInMutatorInput {
+    when: m: Mutator where m.input_fields.count > 0
+    for f in m.input_fields:
+        requires: f.read_only
+        ensures: core/Diagnostic.created(
+            severity: error,
+            code: "api:readonly-field-in-mutator-input",
+            message: "Read-only field " ++ f.name ++ " cannot appear in mutator input",
+            refs: []
+        )
+}
+
+rule UnserializableTypeInOpenAPI {
+    when: r: Route where r.target = "openapi"
+    for param in r.parameters:
+        requires: param.param_type.wire_repr = null and not param.param_type.has_serializer
+        ensures: core/Diagnostic.created(
+            severity: error,
+            code: "api:unserializable-openapi-type",
+            message: "Field " ++ param.name ++ " has no serializer for OpenAPI target",
+            refs: []
+        )
+}
+
+rule ServerOnlyFieldExposedToClient {
+    when: r: Route where r.target = "client"
+    for param in r.parameters:
+        requires: param.param_type.server_only
+        ensures: core/Diagnostic.created(
+            severity: error,
+            code: "api:server-only-field-exposed",
+            message: "Server-only field " ++ param.name ++ " exposed to client route",
+            refs: []
+        )
+}
+
+rule MongoStorageToSQLTarget {
+    when: r: Route where r.target in {"drizzle", "prisma", "kysely"}
+    for param in r.parameters:
+        requires: param.param_type.storage_repr.kind.kind = document
+        ensures: core/Diagnostic.created(
+            severity: error,
+            code: "api:mongo-to-sql-target",
+            message: "MongoDB document storage passed to SQL-only target " ++ r.target,
+            refs: []
+        )
+}
+
+rule UnsupportedStoreDialectInTarget {
+    when: t: core/Target where t.name in {"drizzle", "prisma"}
+    for input in t.inputs:
+        requires: input.kind = "mongo_collection" or input.kind = "redis_keyspace"
+        ensures: core/Diagnostic.created(
+            severity: error,
+            code: "api:unsupported-store-dialect",
+            message: "Target " ++ t.name ++ " does not support store dialect " ++ input.kind,
+            refs: []
+        )
+}
+
+-- Surfaces
+
+surface ResourceSurface {
+    facing developer: DomainModeler
+
+    exposes:
+        Resources
+        Routes
+        Getters
+        Mutators
+
+    provides:
+        DefineResource(entity: entity/Entity, path: String)
+            when entity in entity/Entities
+
+        ExposeGetter(resource: Resource, getter: Getter)
+            when getter.target_entity = resource.target_entity
+
+        ExposeMutator(resource: Resource, mutator: Mutator)
+            when mutator.target_entity = resource.target_entity
+
+        DefineRoute(method: HttpMethod, path: RoutePath, handler: RouteHandler)
+            when (handler.kind = query and handler.query_func != null and handler.query_func in function/QueryFunctions) or
+                 (handler.kind = action and handler.action_func != null and handler.action_func in function/ActionFunctions) or
+                 (handler.kind = static and handler.static_func != null and handler.static_func in function/StaticFunctions)
+    }
+}

@@ -1,0 +1,281 @@
+-- Functions Module
+
+use "./core.allium" as core
+use "./types.allium" as types
+use "./entity.allium" as entity
+use "./expression.allium" as expression
+use "./query.allium" as query
+use "./storage.allium" as storage
+
+given {
+    context: core/GenContext
+}
+
+-- Static function kinds, aligned with expression.allium node taxonomy
+
+entity StaticFunction {
+    name: String
+    input_type: types/SemanticType
+    input_fields: List<entity/Field>
+    output_type: types/SemanticType
+    body: expression/StaticNode
+    requirements: List<types/Requirement>
+    effects: List<types/Effect>
+    capabilities: List<types/Capability>
+    laws: List<types/Law>
+    target_runtimes: List<types/Runtime>
+}
+
+entity ExprFunction {
+    name: String
+    input_type: types/SemanticType
+    output_type: types/SemanticType
+    body: expression/Expr
+    requirements: List<types/Requirement>
+    effects: List<types/Effect>
+    capabilities: List<types/Capability>
+    laws: List<types/Law>
+    target_runtimes: List<types/Runtime>
+}
+
+entity PredicateFunction {
+    name: String
+    input_type: types/SemanticType
+    body: expression/Predicate
+    requirements: List<types/Requirement>
+    effects: List<types/Effect>
+    target_runtimes: List<types/Runtime>
+}
+
+entity QueryFunction {
+    name: String
+    input_type: types/SemanticType
+    input_fields: List<entity/Field>
+    returns: types/SemanticType
+    body: query/QueryExpression
+    auth: core/PolicyAction?
+    errors: List<ErrorType>
+    target_runtimes: List<types/Runtime>
+}
+
+entity ActionFunction {
+    name: String
+    input_type: types/SemanticType
+    input_fields: List<entity/Field>
+    returns: types/SemanticType
+    body: expression/ActionExpr
+    auth: core/PolicyAction?
+    errors: List<ErrorType>
+    invalidates: List<QueryFunction>
+    optimistic: PatchFunction?
+    consistency: transactional | eventual | best_effort
+    written_stores: List<storage/Store>
+    -- Declared effects of the action. The body's effects must be a subset of these
+    -- (enforced by ActionFunctionEffectsDeclared) so callers know what side effects to expect.
+    effects: List<types/Effect>
+    target_runtimes: List<types/Runtime>
+}
+
+entity PatchFunction {
+    name: String
+    input_type: types/SemanticType
+    returns: types/SemanticType
+    body: expression/PatchExpr
+    reconcile_field: entity/Field?
+    rollback_strategy: inverse | custom?
+}
+
+entity PlanFunction {
+    name: String
+    input_type: types/SemanticType
+    output_type: types/SemanticType
+    body: expression/PlanExpr
+    fallback_policy: expression/FallbackPolicy
+}
+
+value ErrorType {
+    code: String
+    kind: conflict | validation | auth | not_found | forbidden
+    field_name: String?
+}
+
+-- Invariants
+
+invariant FunctionBodyMatchesReturn {
+    for f in StaticFunctions:
+        f.body.output_type = f.output_type
+}
+
+invariant QueryFunctionBodyIsQuery {
+    for q in QueryFunctions:
+        q.body.kind.kind = select or q.body.kind.kind = from or q.body.kind.kind = subquery
+}
+
+invariant ActionFunctionEffectsDeclared {
+    for a in ActionFunctions:
+        a.body.effects.all(e => e in a.effects)
+}
+
+invariant PatchFunctionReconcilable {
+    for p in Patches:
+        p.reconcile_field != null
+}
+
+invariant PlanFunctionFallbackPolicy {
+    for p in PlanFunctions:
+        p.fallback_policy.pure_only implies p.body.primary.effects.count = 0
+}
+
+-- Rules
+
+rule UnsupportedRuntimeEffect {
+    when: f: StaticFunction where f.effects.count > 0
+    for effect in f.effects:
+        for runtime in f.target_runtimes:
+            requires: effect.kind not in runtime.capabilities
+            ensures: core/Diagnostic.created(
+                severity: error,
+                code: "runtime:unsupported-operation",
+                message: "Effect " ++ effect.kind ++ " not supported by runtime " ++ runtime.name,
+                refs: []
+            )
+}
+
+rule UnsupportedRuntimeEffectExpr {
+    when: f: ExprFunction where f.effects.count > 0
+    for effect in f.effects:
+        for runtime in f.target_runtimes:
+            requires: effect.kind not in runtime.capabilities
+            ensures: core/Diagnostic.created(
+                severity: error,
+                code: "runtime:unsupported-operation",
+                message: "Effect " ++ effect.kind ++ " not supported by runtime " ++ runtime.name,
+                refs: []
+            )
+}
+
+rule UnsupportedRuntimeEffectPredicate {
+    when: f: PredicateFunction where f.effects.count > 0
+    for effect in f.effects:
+        for runtime in f.target_runtimes:
+            requires: effect.kind not in runtime.capabilities
+            ensures: core/Diagnostic.created(
+                severity: error,
+                code: "runtime:unsupported-operation",
+                message: "Effect " ++ effect.kind ++ " not supported by runtime " ++ runtime.name,
+                refs: []
+            )
+}
+
+rule UnsupportedRuntimeEffectAction {
+    when: a: ActionFunction where a.effects.count > 0
+    for effect in a.effects:
+        for runtime in a.target_runtimes:
+            requires: effect.kind not in runtime.capabilities
+            ensures: core/Diagnostic.created(
+                severity: error,
+                code: "runtime:unsupported-operation",
+                message: "Effect " ++ effect.kind ++ " not supported by runtime " ++ runtime.name,
+                refs: []
+            )
+}
+
+rule EffectfulOperationNoSilentFallback {
+    when: plan: expression/PlanExpr where plan.fallback != null
+    requires: not plan.fallback_policy.effectful_ok and (plan.primary.effects.count > 0 or plan.fallback.primary.effects.count > 0)
+    ensures: core/Diagnostic.created(
+        severity: warning,
+        code: "runtime:silent-effectful-fallback",
+        message: "Effectful operations should not silently fallback",
+        refs: []
+    )
+}
+
+rule QueryUsesUnsupportedOperation {
+    when: q: QueryFunction
+    for runtime in q.target_runtimes:
+        for req in q.body.requirements:
+            requires: req.kind not in runtime.supported_operations and req.kind not in runtime.capabilities
+            ensures: core/Diagnostic.created(
+                severity: error,
+                code: "function:unsupported-query-operation",
+                message: "Query " ++ q.name ++ " requires " ++ req.kind ++ " unsupported by runtime " ++ runtime.name,
+                refs: []
+            )
+}
+
+rule ActionWritesNonWritableField {
+    when: a: ActionFunction where a.body.operations.count > 0
+    for op in a.body.operations:
+        for field in op.values:
+            requires: field.read_only
+            ensures: core/Diagnostic.created(
+                severity: error,
+                code: "function:non-writable-field",
+                message: "Action " ++ a.name ++ " writes read-only field " ++ field.name,
+                refs: []
+            )
+}
+
+rule OptimisticPatchNotReconcilable {
+    when: a: ActionFunction where a.optimistic != null
+    requires: a.optimistic.reconcile_field = null
+    ensures: core/Diagnostic.created(
+        severity: error,
+        code: "function:unreconcilable-patch",
+        message: "Optimistic patch for action " ++ a.name ++ " has no reconcile field",
+        refs: []
+    )
+}
+
+rule FunctionBodyOutputMismatch {
+    when: f: StaticFunction where f.body != null
+    requires: f.body.output_type != f.output_type
+    ensures: core/Diagnostic.created(
+        severity: error,
+        code: "expression:function-output-mismatch",
+        message: "Function " ++ f.name ++ " body output type does not match declared return type",
+        refs: []
+    )
+}
+
+-- Surfaces
+
+surface FunctionSurface {
+    facing developer: DomainModeler
+
+    exposes:
+        StaticFunctions
+        ExprFunctions
+        PredicateFunctions
+        QueryFunctions
+        ActionFunctions
+        Patches
+        PlanFunctions
+
+    provides:
+        -- Function names are globally unique across all function kinds. A QueryFunction
+        -- and an ActionFunction cannot share a name because both compile to the same
+        -- generated identifier in the runtime's function registry.
+        DefineExprFunction(name: String, input: types/SemanticType, returns: types/SemanticType, body: expression/Expr)
+            when not StaticFunctions.any(f => f.name = name) and not ExprFunctions.any(f => f.name = name) and not PredicateFunctions.any(f => f.name = name) and not QueryFunctions.any(f => f.name = name) and not ActionFunctions.any(f => f.name = name) and not Patches.any(f => f.name = name) and not PlanFunctions.any(f => f.name = name)
+
+        DefinePredicateFunction(name: String, input: types/SemanticType, body: expression/Predicate)
+            when not StaticFunctions.any(f => f.name = name) and not ExprFunctions.any(f => f.name = name) and not PredicateFunctions.any(f => f.name = name) and not QueryFunctions.any(f => f.name = name) and not ActionFunctions.any(f => f.name = name) and not Patches.any(f => f.name = name) and not PlanFunctions.any(f => f.name = name)
+
+        DefineQuery(name: String, input: types/SemanticType, returns: types/SemanticType)
+            when not StaticFunctions.any(f => f.name = name) and not ExprFunctions.any(f => f.name = name) and not PredicateFunctions.any(f => f.name = name) and not QueryFunctions.any(f => f.name = name) and not ActionFunctions.any(f => f.name = name) and not Patches.any(f => f.name = name) and not PlanFunctions.any(f => f.name = name)
+
+        DefineAction(name: String, input: types/SemanticType, returns: types/SemanticType)
+            when not StaticFunctions.any(f => f.name = name) and not ExprFunctions.any(f => f.name = name) and not PredicateFunctions.any(f => f.name = name) and not QueryFunctions.any(f => f.name = name) and not ActionFunctions.any(f => f.name = name) and not Patches.any(f => f.name = name) and not PlanFunctions.any(f => f.name = name)
+
+        DefinePatch(name: String, input: types/SemanticType)
+            when not StaticFunctions.any(f => f.name = name) and not ExprFunctions.any(f => f.name = name) and not PredicateFunctions.any(f => f.name = name) and not QueryFunctions.any(f => f.name = name) and not ActionFunctions.any(f => f.name = name) and not Patches.any(f => f.name = name) and not PlanFunctions.any(f => f.name = name)
+
+        DefinePlan(name: String, input: types/SemanticType, returns: types/SemanticType, body: expression/PlanExpr)
+            when not StaticFunctions.any(f => f.name = name) and not ExprFunctions.any(f => f.name = name) and not PredicateFunctions.any(f => f.name = name) and not QueryFunctions.any(f => f.name = name) and not ActionFunctions.any(f => f.name = name) and not Patches.any(f => f.name = name) and not PlanFunctions.any(f => f.name = name)
+
+        AttachOptimistic(action: ActionFunction, patch: PatchFunction)
+            when patch.input_type = action.input_type and patch.returns = action.returns
+    }
+}

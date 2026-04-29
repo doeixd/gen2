@@ -1,0 +1,175 @@
+-- Storage and Mapping Module
+
+use "./core.allium" as core
+use "./types.allium" as types
+use "./entity.allium" as entity
+
+given {
+    context: core/GenContext
+}
+
+entity Store {
+    name: String
+    dialect: String
+    version: String
+    capabilities: List<String>
+    tables: List<Table>
+    collections: List<Collection>
+    keyspaces: List<Keyspace>
+}
+
+entity Table {
+    name: String
+    store: Store
+    columns: List<Column>
+    indexes: List<Index>
+}
+
+entity Column {
+    name: String
+    owning_table: Table
+    physical_type: String
+    semantic_type: types/SemanticType
+    nullable: Boolean
+    default_value: String?
+}
+
+entity Collection {
+    name: String
+    store: Store
+    fields: List<DocumentField>
+}
+
+entity DocumentField {
+    name: String
+    owning_collection: Collection
+    physical_type: String
+    semantic_type: types/SemanticType
+}
+
+entity Keyspace {
+    name: String
+    store: Store
+    key_type: String
+    value_type: String
+}
+
+entity Index {
+    name: String
+    owning_table: Table
+    columns: List<Column>
+    unique: Boolean
+}
+
+entity Mapping {
+    target_entity: entity/Entity
+    field_mappings: List<FieldMapping>
+}
+
+value MappingSource {
+    kind: column | expression | query | hidden | read_only
+    semantic_type: types/SemanticType
+    column: Column?
+    expression: String?
+    dependencies: List<Column>?
+    query: String?
+}
+
+value MappingTarget {
+    kind: column | expression | computed
+    column: Column?
+    expression: String?
+    derived_expression: String?
+    dependencies: List<Column>?
+}
+
+entity FieldMapping {
+    field: entity/Field
+    read_source: MappingSource?
+    write_target: MappingTarget?
+    type_compatible: Boolean
+    read_only: Boolean
+}
+
+entity Projection {
+    mapping: Mapping
+    fields: List<entity/Field>
+}
+
+-- Invariants
+
+invariant ColumnNamesUniqueWithinTable {
+    for t in Tables:
+        for c in t.columns:
+            for d in t.columns where d != c:
+                not (c.name = d.name)
+}
+
+invariant MappingTypeCompatibility {
+    for m in Mappings:
+        for fm in m.field_mappings:
+            if fm.read_source != null:
+                fm.type_compatible = (fm.field.semantic_type.name = fm.read_source.semantic_type.name)
+}
+
+-- Rules
+
+rule MappingTypeMismatch {
+    when: fm: FieldMapping where fm.read_source != null
+    requires: not fm.type_compatible
+    ensures: core/Diagnostic.created(
+        severity: error,
+        code: "mapping:incompatible-field-column",
+        message: "Field " ++ fm.field.name ++ " and mapping source have incompatible types",
+        refs: []
+    )
+}
+
+rule ReadOnlyFieldMappedWritable {
+    when: fm: FieldMapping where fm.read_only and fm.write_target != null
+    ensures: core/Diagnostic.created(
+        severity: error,
+        code: "mapping:readonly-field-writable",
+        message: "Read-only field " ++ fm.field.name ++ " has a write mapping",
+        refs: []
+    )
+}
+
+-- Store dialects are extensible via plugin contributions (core/PluginContributions.stores).
+-- The set below is what core ships with. Plugins may register additional dialects.
+rule UnknownStoreDialect {
+    when: s: Store
+    requires: s.dialect not in {"postgres", "sqlite", "mongo", "redis", "clickhouse"} and not core/Plugins.any(p => p.contributions.stores.any(d => d = s.dialect))
+    ensures: core/Diagnostic.created(
+        severity: warning,
+        code: "storage:unknown-dialect",
+        message: "Store " ++ s.name ++ " uses dialect " ++ s.dialect ++ " not provided by core or any registered plugin",
+        refs: []
+    )
+}
+
+-- Surfaces
+
+surface MappingSurface {
+    facing developer: DomainModeler
+
+    exposes:
+        Stores
+        Tables
+        Mappings
+        Projections
+
+    provides:
+        DefineStore(name: String, dialect: String)
+            when not Stores.any(s => s.name = name)
+
+        DefineTable(store: Store, name: String, columns: List<Column>)
+            when not store.tables.any(t => t.name = name)
+
+        DefineMapping(entity: entity/Entity, field_mappings: List<FieldMapping>)
+            when entity in Entities
+
+        DefineProjection(entity: entity/Entity, mapping: Mapping, fields: List<entity/Field>)
+            when fields.all(f => mapping.field_mappings.any(fm => fm.field = f))
+    }
+}

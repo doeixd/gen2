@@ -1,0 +1,165 @@
+-- Relations and Graphs Module
+
+use "./core.allium" as core
+use "./entity.allium" as entity
+
+given {
+    context: core/GenContext
+}
+
+entity Relation {
+    name: String
+    kind: one_to_one | one_to_many | many_to_one | many_to_many
+    from_entity: entity/Entity
+    to_entity: entity/Entity
+    from_field: entity/Field
+    to_field: entity/Field
+    inverse: Relation?
+    required: Boolean
+    integrity: IntegrityMode
+    foreign_key: ForeignKey?
+    deletion_behavior: AppDeletionBehavior?
+    -- For many_to_many relations, this is the backing join entity that maps
+    -- from_entity to to_entity. For other relation kinds it is null.
+    link_entity: entity/Entity?
+}
+
+entity RelationEntity {
+    name: String
+    roles: List<Role>
+    fields: List<entity/Field>
+}
+
+entity Role {
+    name: String
+    target_entity: entity/Entity
+    cardinality: one | many
+}
+
+entity Graph {
+    name: String
+    entities: List<entity/Entity>
+    relations: List<Relation>
+}
+
+value IntegrityMode {
+    kind: database_foreign_key | application_checked | eventual | unchecked | external
+}
+
+value ForeignKey {
+    on_delete: ReferentialAction
+    on_update: ReferentialAction
+    indexed: Boolean
+}
+
+value ReferentialAction {
+    kind: cascade | restrict | no_action | set_null | set_default
+}
+
+value AppDeletionBehavior {
+    kind: database_cascade | service_cascade | soft_delete_children | archive_children | prevent_if_related | orphan_children
+    message: String?
+}
+
+-- Invariants
+
+invariant RelationFieldTypesMatch {
+    for r in Relations:
+        r.from_field.semantic_type.name = r.to_field.semantic_type.name
+}
+
+invariant ManyToManyRequiresLinkEntity {
+    for r in Relations where r.kind = many_to_many:
+        r.link_entity != null
+}
+
+invariant NonM2MHasNoLinkEntity {
+    for r in Relations where r.kind != many_to_many:
+        r.link_entity = null
+}
+
+invariant InverseConsistency {
+    for r in Relations where r.inverse != null:
+        r.inverse.inverse = r
+}
+
+invariant CrossStoreNoDatabaseFK {
+    for r in Relations:
+        if r.from_entity.store_name != null and r.to_entity.store_name != null:
+            if r.from_entity.store_name != r.to_entity.store_name:
+                not (r.integrity.kind = database_foreign_key)
+}
+
+invariant SetNullRequiresNullable {
+    for r in Relations where r.foreign_key != null:
+        if r.foreign_key.on_delete = set_null or r.foreign_key.on_update = set_null:
+            r.from_field.nullable
+}
+
+invariant SetDefaultRequiresDefault {
+    for r in Relations where r.foreign_key != null:
+        if r.foreign_key.on_delete = set_default or r.foreign_key.on_update = set_default:
+            r.from_field.default_value != null
+}
+
+-- Rules
+
+rule CrossStoreDatabaseFK {
+    when: r: Relation where r.integrity.kind = database_foreign_key
+    requires: r.from_entity.store_name != null and r.to_entity.store_name != null and r.from_entity.store_name != r.to_entity.store_name
+    ensures: core/Diagnostic.created(
+        severity: error,
+        code: "relations:cross-store-fk",
+        message: "Database foreign key cannot span stores",
+        refs: []
+    )
+}
+
+rule SetNullOnNonNullable {
+    when: r: Relation where r.foreign_key != null
+    requires: (r.foreign_key.on_delete = set_null or r.foreign_key.on_update = set_null) and not r.from_field.nullable
+    ensures: core/Diagnostic.created(
+        severity: error,
+        code: "relations:set-null-non-nullable",
+        message: "setNull referential action requires nullable field " ++ r.from_field.name,
+        refs: []
+    )
+}
+
+rule SetDefaultOnNoDefault {
+    when: r: Relation where r.foreign_key != null
+    requires: (r.foreign_key.on_delete = set_default or r.foreign_key.on_update = set_default) and r.from_field.default_value = null
+    ensures: core/Diagnostic.created(
+        severity: error,
+        code: "relations:set-default-no-default",
+        message: "setDefault referential action requires field " ++ r.from_field.name ++ " to declare a default value",
+        refs: []
+    )
+}
+
+-- Note: DatabaseFKRequiresCompatibleStore was removed as a duplicate of CrossStoreDatabaseFK.
+-- Both checked the same condition (database FK across stores). The invariant
+-- CrossStoreNoDatabaseFK already asserts the property must hold; CrossStoreDatabaseFK
+-- produces the diagnostic when violated.
+
+-- Surfaces
+
+surface RelationSurface {
+    facing developer: DomainModeler
+
+    exposes:
+        Relations
+        Graphs
+        RelationEntities
+
+    provides:
+        DefineRelation(name: String, kind: RelationKind, from: entity/Entity, to: entity/Entity)
+            when not Relations.any(r => r.name = name)
+
+        DefineRelationEntity(name: String, roles: List<Role>)
+            when not RelationEntities.any(e => e.name = name) and not Entities.any(e => e.name = name)
+
+        DefineGraph(name: String, entities: List<entity/Entity>, relations: List<Relation>)
+            when relations.all(r => r.from_entity in entities and r.to_entity in entities)
+    }
+}
