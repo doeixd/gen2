@@ -3,6 +3,7 @@
  * Constructed via type-only stubs so we don't need a real Expr body for the
  * inference contract.
  */
+import type { InferNodeInput, InferNodeOutput } from "../src/core/index.ts";
 import type {
   ExprFunction,
   QueryFunction,
@@ -66,6 +67,12 @@ void specificQueryError;
 
 const specificActionError: InferActionErrors<CreateUserAction>["code"] = "user.email_taken";
 void specificActionError;
+
+const genericNodeInput: InferNodeInput<ListUsersQuery> = { q: "alice" };
+void genericNodeInput;
+
+const genericNodeOutput: InferNodeOutput<CreateUserAction> = { id: "u_1" };
+void genericNodeOutput;
 
 // @ts-expect-error — wrong literal for the conflict code
 const wrongCode: InferFunctionErrors<CreateUserAction>["code"] = "other";

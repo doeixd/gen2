@@ -6,7 +6,7 @@
  * devtools layers. They intentionally do not close over runtime code.
  */
 
-import type { Entity } from "../entity/index.ts";
+import type { Entity, Field } from "../entity/index.ts";
 import type {
   ActionFunction,
   ErrorType,
@@ -14,30 +14,70 @@ import type {
   QueryFunction,
   StaticFunction,
 } from "../function/index.ts";
-import {
-  buildPatchDelete,
-  buildPatchInsert,
-  buildPatchUpdate,
-} from "../function/index.ts";
+import { buildPatchDelete, buildPatchInsert, buildPatchUpdate } from "../function/index.ts";
 import {
   diagnostic,
+  hasTrait,
+  keyFamilyId as makeKeyFamilyId,
+  type KeyFamilyId,
+  type KeyFamilyRef,
   makeArtifact,
+  makeRef,
   type Artifact,
   type Diagnostic,
   type GenContext,
+  type TraitKind,
 } from "../core/index.ts";
 import type { FallbackPlan } from "../rules/placement.ts";
 import type { Event, Subscription } from "../events/index.ts";
 import type { Form } from "../ui/index.ts";
 import type { AppRoute } from "../router/index.ts";
+import type { SemanticType } from "../types/index.ts";
+import { object, json } from "../types/semantic.ts";
+import type { EnhancementPlan } from "../core/index.ts";
+
+export const defineTrackingScope = <O = unknown>(
+  name: string,
+  scope_kind: TrackingScopeKind,
+  reads: readonly (KeyExpression | ReactiveResource | QueryFunction)[],
+  owner?: string,
+): TrackingScope<O> => ({
+  kind: "tracking_scope",
+  name,
+  scope_kind,
+  reads,
+  owner,
+});
 
 export type KeyPayload = Record<string, unknown>;
 
+export type KeyFamilyHierarchy = "entity" | "collection" | "field" | "relation" | "view" | "custom";
+
+export interface KeyInvalidationSemantics {
+  readonly propagates_to_parents: boolean;
+  readonly propagates_to_children: boolean;
+  readonly batch: "microtask" | "transaction" | "target_decides";
+}
+
 export interface KeyFamily<Payload extends KeyPayload = KeyPayload> {
   readonly kind: "key_family";
+  readonly id?: KeyFamilyId;
+  readonly ref: KeyFamilyRef<Payload>;
   readonly name: string;
+  readonly input_type?: SemanticType<Payload>;
+  readonly hierarchy: KeyFamilyHierarchy;
+  readonly semantics?: KeyInvalidationSemantics;
   readonly description?: string;
   readonly _payload?: Payload;
+}
+
+export interface ReactiveRegistry<
+  Families extends Record<string, KeyFamily> = Record<string, KeyFamily>,
+> {
+  readonly kind: "reactive_registry";
+  readonly name: string;
+  readonly families: Families;
+  readonly _families?: Families;
 }
 
 export interface ReactiveKey<Payload extends KeyPayload = KeyPayload> {
@@ -52,12 +92,13 @@ export interface ReactiveKeyPattern<Payload extends KeyPayload = KeyPayload> {
   readonly match: Partial<Payload> | "any";
 }
 
-export interface ResourceState<Value = unknown, Err = ErrorType> {
-  readonly status: "idle" | "loading" | "success" | "error";
-  readonly value?: Value;
-  readonly error?: Err;
-  readonly stale: boolean;
-}
+export type ResourceState<Value = unknown, Err = ErrorType> =
+  | { readonly status: "initial"; readonly stale: false }
+  | { readonly status: "loading"; readonly stale: boolean }
+  | { readonly status: "success"; readonly value: Value; readonly stale: boolean }
+  | { readonly status: "refreshing"; readonly value: Value; readonly stale: true }
+  | { readonly status: "failure"; readonly error: Err; readonly stale: boolean }
+  | { readonly status: "defect"; readonly defect: unknown; readonly stale: boolean };
 
 export interface RefreshPlan {
   readonly kind: "manual" | "on_mount" | "on_invalidate" | "interval";
@@ -68,27 +109,64 @@ export interface InvalidationPlan {
   readonly patterns: readonly ReactiveKeyPattern[];
 }
 
-export interface KeyExpression<Input = unknown, Payload extends KeyPayload = KeyPayload> {
-  readonly kind: "key_expression";
+export interface MutationKeyContext<In = unknown, Out = unknown> {
+  readonly input: In;
+  readonly result: Out;
+}
+
+export interface ConstantKeyExpression<Input = unknown, Payload extends KeyPayload = KeyPayload> {
+  readonly kind: "constant_key_expression";
   readonly family: KeyFamily<Payload>;
   readonly payload?: Payload;
   readonly _input?: Input;
   readonly _payload?: Payload;
 }
 
-export interface KeyPatternExpression<Input = unknown, Payload extends KeyPayload = KeyPayload> {
-  readonly kind: "key_pattern_expression";
+export interface StaticKeyExpression<Input = unknown, Payload extends KeyPayload = KeyPayload> {
+  readonly kind: "static_key_expression";
+  readonly family: KeyFamily<Payload>;
+  readonly body: import("../expression/index.ts").Expr;
+  readonly _input?: Input;
+  readonly _payload?: Payload;
+}
+
+export type KeyExpression<Input = unknown, Payload extends KeyPayload = KeyPayload> =
+  | ConstantKeyExpression<Input, Payload>
+  | StaticKeyExpression<Input, Payload>;
+
+export interface ConstantKeyPatternExpression<
+  Input = unknown,
+  Payload extends KeyPayload = KeyPayload,
+> {
+  readonly kind: "constant_key_pattern_expression";
   readonly family: KeyFamily<Payload>;
   readonly patterns: readonly ReactiveKeyPattern<Payload>[];
   readonly _input?: Input;
   readonly _payload?: Payload;
 }
 
+export interface StaticKeyPatternExpression<
+  Input = unknown,
+  Payload extends KeyPayload = KeyPayload,
+> {
+  readonly kind: "static_key_pattern_expression";
+  readonly family: KeyFamily<Payload>;
+  readonly body: import("../expression/index.ts").Expr;
+  readonly _input?: Input;
+  readonly _payload?: Payload;
+}
+
+export type KeyPatternExpression<Input = unknown, Payload extends KeyPayload = KeyPayload> =
+  | ConstantKeyPatternExpression<Input, Payload>
+  | StaticKeyPatternExpression<Input, Payload>;
+
 export interface ReactiveResource<In = unknown, Value = unknown, Err = ErrorType> {
   readonly kind: "reactive_resource";
   readonly name: string;
   readonly query: QueryFunction<In, Value>;
   readonly refresh: readonly RefreshPlan[];
+  readonly enhancement?: EnhancementPlan;
+  readonly traits?: readonly TraitKind[];
   readonly _input?: In;
   readonly _value?: Value;
   readonly _error?: Err;
@@ -100,6 +178,7 @@ export interface ReactiveMutation<In = unknown, Out = unknown, Err = ErrorType> 
   readonly action: ActionFunction<In, Out>;
   readonly invalidates: InvalidationPlan;
   readonly optimistic?: OptimisticPlan<In, Out>;
+  readonly traits?: readonly TraitKind[];
   readonly _input?: In;
   readonly _output?: Out;
   readonly _error?: Err;
@@ -163,27 +242,205 @@ export type ReactiveGraphNodeKind =
   | "app_route"
   | "form"
   | "event"
-  | "subscription";
+  | "subscription"
+  | "tracking_scope";
 
 export interface ReactiveGraphNode {
   readonly id: string;
   readonly kind: ReactiveGraphNodeKind;
   readonly name: string;
+  readonly traits?: readonly string[];
+  readonly stable_id?: string;
+  readonly previous_names?: readonly string[];
+  readonly renamed_from?: readonly string[];
+  readonly scope_kind?: TrackingScopeKind;
+  readonly owner?: string;
 }
 
-export type ReactiveGraphEdgeKind =
-  | "reads"
-  | "writes"
-  | "invalidates"
-  | "binds"
-  | "emits"
-  | "subscribes";
+export type DerivationConfidence = "declared" | "derived" | "conservative";
+export type DerivationPrecision = "exact" | "matched" | "broad" | "unknown";
 
-export interface ReactiveGraphEdge {
+export interface ReadDependency<E extends Entity = Entity, F extends Field = Field> {
+  readonly kind: "read_dependency";
+  readonly source: "query_body" | "projection" | "join";
+  readonly entity: E;
+  readonly fields?: readonly F[];
+}
+
+export interface WriteDependency<E extends Entity = Entity, F extends Field = Field> {
+  readonly kind: "write_dependency";
+  readonly operation: "insert" | "update" | "delete";
+  readonly entity: E;
+  readonly fields?: readonly F[];
+}
+
+export interface DerivedInvalidation<Payload extends KeyPayload = KeyPayload> {
+  readonly kind: "derived_invalidation";
+  readonly family: KeyFamily<Payload>;
+  readonly pattern: ReactiveKeyPattern<Payload>;
+  readonly confidence: DerivationConfidence;
+  readonly precision: DerivationPrecision;
+}
+
+export type TrackingScopeKind =
+  | "render"
+  | "memo"
+  | "loader"
+  | "resource"
+  | "effect"
+  | "action"
+  | "form"
+  | "route";
+
+export interface TrackingScope<Owner = unknown> {
+  readonly kind: "tracking_scope";
+  readonly name: string;
+  readonly scope_kind: TrackingScopeKind;
+  readonly reads: readonly (KeyExpression | ReactiveResource | QueryFunction)[];
+  readonly owner?: string;
+  readonly _owner?: Owner; // Phantom type for type safety
+}
+
+export interface TrackingScopeNode {
+  readonly kind: "tracking_scope";
+  readonly id: string;
+  readonly name: string;
+  readonly scope_kind: TrackingScopeKind;
+  readonly owner?: string;
+}
+
+export interface ScopeReadsKeyEdge {
+  readonly kind: "scope_reads_key";
+  readonly from: string; // scope id
+  readonly to: string; // key id
+}
+
+export interface ScopeReadsQueryEdge {
+  readonly kind: "scope_reads_query";
+  readonly from: string; // scope id
+  readonly to: string; // query id
+}
+
+export interface ScopeReadsKeyEdge {
+  readonly kind: "scope_reads_key";
+  readonly from: string; // scope id
+  readonly to: string; // key id
+}
+
+export interface ScopeReadsQueryEdge {
+  readonly kind: "scope_reads_query";
+  readonly from: string; // scope id
+  readonly to: string; // query id
+}
+
+export interface ReadsKeyEdge {
+  readonly kind: "reads_key";
   readonly from: string;
   readonly to: string;
-  readonly kind: ReactiveGraphEdgeKind;
+  readonly key: KeyExpression;
+  readonly confidence?: DerivationConfidence;
 }
+
+export interface WritesEntityEdge {
+  readonly kind: "writes_entity";
+  readonly from: string;
+  readonly to: string;
+  readonly confidence?: DerivationConfidence;
+}
+
+export interface InvalidatesKeyEdge {
+  readonly kind: "invalidates_key";
+  readonly from: string;
+  readonly to: string;
+  readonly pattern: ReactiveKeyPattern;
+  readonly expression?: KeyPatternExpression;
+  readonly confidence?: DerivationConfidence;
+  readonly precision?: DerivationPrecision;
+}
+
+export interface WrapsQueryEdge {
+  readonly kind: "wraps_query";
+  readonly from: string;
+  readonly to: string;
+}
+
+export interface WrapsActionEdge {
+  readonly kind: "wraps_action";
+  readonly from: string;
+  readonly to: string;
+}
+
+export interface ComposesResourceEdge {
+  readonly kind: "composes_resource";
+  readonly from: string;
+  readonly to: string;
+}
+
+export interface ReadsResourceEdge {
+  readonly kind: "reads_resource";
+  readonly from: string;
+  readonly to: string;
+}
+
+export interface RouteLoadsEdge {
+  readonly kind: "route_loads";
+  readonly from: string;
+  readonly to: string;
+}
+
+export interface RouteSubmitsEdge {
+  readonly kind: "route_submits";
+  readonly from: string;
+  readonly to: string;
+}
+
+export interface FormSubmitsEdge {
+  readonly kind: "form_submits";
+  readonly from: string;
+  readonly to: string;
+}
+
+export interface EmitsEventEdge {
+  readonly kind: "emits_event";
+  readonly from: string;
+  readonly to: string;
+}
+
+export interface SubscribesEventEdge {
+  readonly kind: "subscribes_event";
+  readonly from: string;
+  readonly to: string;
+}
+
+export interface ScopeReadsKeyEdge {
+  readonly kind: "scope_reads_key";
+  readonly from: string; // scope id
+  readonly to: string; // key id
+}
+
+export interface ScopeReadsQueryEdge {
+  readonly kind: "scope_reads_query";
+  readonly from: string; // scope id
+  readonly to: string; // query id
+}
+
+export type ReactiveGraphEdge =
+  | ReadsKeyEdge
+  | WritesEntityEdge
+  | InvalidatesKeyEdge
+  | WrapsQueryEdge
+  | WrapsActionEdge
+  | ComposesResourceEdge
+  | ReadsResourceEdge
+  | RouteLoadsEdge
+  | RouteSubmitsEdge
+  | FormSubmitsEdge
+  | EmitsEventEdge
+  | SubscribesEventEdge
+  | ScopeReadsKeyEdge
+  | ScopeReadsQueryEdge;
+
+export type ReactiveGraphEdgeKind = ReactiveGraphEdge["kind"];
 
 export interface ReactiveGraph {
   readonly kind: "reactive_graph";
@@ -245,14 +502,71 @@ export type InferResourceChainErrors<R> =
     ? SourceErr | NextErr
     : never;
 
+export type InferReactiveRegistryFamilies<R> =
+  R extends ReactiveRegistry<infer Families> ? Families : never;
+
+export type InferRegistryFamily<R, K extends keyof InferReactiveRegistryFamilies<R>> =
+  R extends ReactiveRegistry<infer Families>
+    ? K extends keyof Families
+      ? Families[K]
+      : never
+    : never;
+
+export const defaultKeyInvalidationSemantics = (
+  hierarchy: KeyFamilyHierarchy,
+): KeyInvalidationSemantics => {
+  switch (hierarchy) {
+    case "entity":
+      return { propagates_to_parents: true, propagates_to_children: false, batch: "microtask" };
+    case "collection":
+      return { propagates_to_parents: false, propagates_to_children: true, batch: "transaction" };
+    case "field":
+      return { propagates_to_parents: true, propagates_to_children: false, batch: "microtask" };
+    case "relation":
+      return { propagates_to_parents: true, propagates_to_children: true, batch: "target_decides" };
+    case "view":
+      return {
+        propagates_to_parents: false,
+        propagates_to_children: false,
+        batch: "target_decides",
+      };
+    case "custom":
+      return {
+        propagates_to_parents: false,
+        propagates_to_children: false,
+        batch: "target_decides",
+      };
+  }
+};
+
 export const defineKeyFamily = <const Payload extends KeyPayload = KeyPayload>(
   name: string,
-  options: { readonly description?: string } = {},
-): KeyFamily<Payload> => ({
-  kind: "key_family",
-  name,
-  description: options.description,
-});
+  options: {
+    readonly id?: KeyFamilyId;
+    readonly description?: string;
+    readonly input?: SemanticType<Payload>;
+    readonly hierarchy?: KeyFamilyHierarchy;
+    readonly semantics?: KeyInvalidationSemantics;
+  } = {},
+): KeyFamily<Payload> => {
+  const hierarchy = options.hierarchy ?? "custom";
+  return {
+    kind: "key_family",
+    id: options.id,
+    ref: makeRef<Payload>({
+      kind: "KeyFamilyRef",
+      id: options.id,
+      owner: { kind: "KeyFamily", name },
+      name,
+      value_type: "key_family",
+    }) as KeyFamilyRef<Payload>,
+    name,
+    input_type: options.input,
+    hierarchy,
+    semantics: options.semantics ?? defaultKeyInvalidationSemantics(hierarchy),
+    description: options.description,
+  };
+};
 
 export const key = <const Payload extends KeyPayload>(
   family: KeyFamily<Payload>,
@@ -280,15 +594,38 @@ export const matchKey = <Payload extends KeyPayload>(
   match,
 });
 
-export const entityKeyFamily = <E extends Entity>(entity: E): KeyFamily<{ readonly id: string }> =>
-  defineKeyFamily<{ readonly id: string }>(`${entity.name}:entity`);
+export const entityKeyFamily = <E extends Entity>(
+  entity: E,
+): KeyFamily<{ readonly id: string }> => {
+  const idField = entity.fields["id"];
+  return defineKeyFamily<{ readonly id: string }>(`${entity.name}:entity`, {
+    id: makeKeyFamilyId(`key.${entity.ref.id ?? entity.name}.entity`),
+    hierarchy: "entity",
+    input: idField ? object({ id: idField.semantic_type as SemanticType<string> }) : undefined,
+    ...({ _entity: entity } as any),
+  });
+};
 
 export const collectionKeyFamily = <E extends Entity>(
   entity: E,
 ): KeyFamily<{ readonly filters?: KeyPayload }> =>
-  defineKeyFamily<{ readonly filters?: KeyPayload }>(`${entity.name}:collection`);
+  defineKeyFamily<{ readonly filters?: KeyPayload }>(`${entity.name}:collection`, {
+    id: makeKeyFamilyId(`key.${entity.ref.id ?? entity.name}.collection`),
+    hierarchy: "collection",
+    input: object({ filters: json() }),
+    ...({ _entity: entity } as any),
+  });
 
 export const customKeyFamily = defineKeyFamily;
+
+export const defineReactiveRegistry = <const Families extends Record<string, KeyFamily>>(
+  name: string,
+  families: Families,
+): ReactiveRegistry<Families> => ({
+  kind: "reactive_registry",
+  name,
+  families,
+});
 
 export const refreshManual = (): RefreshPlan => ({ kind: "manual" });
 
@@ -308,8 +645,8 @@ export const invalidates = (patterns: readonly ReactiveKeyPattern[]): Invalidati
 export const keyExpr = <Input = unknown, Payload extends KeyPayload = KeyPayload>(
   family: KeyFamily<Payload>,
   payload?: Payload,
-): KeyExpression<Input, Payload> => ({
-  kind: "key_expression",
+): ConstantKeyExpression<Input, Payload> => ({
+  kind: "constant_key_expression",
   family,
   payload,
 });
@@ -317,8 +654,8 @@ export const keyExpr = <Input = unknown, Payload extends KeyPayload = KeyPayload
 export const keyPatternExpr = <Input = unknown, Payload extends KeyPayload = KeyPayload>(
   family: KeyFamily<Payload>,
   patterns: readonly ReactiveKeyPattern<Payload>[],
-): KeyPatternExpression<Input, Payload> => ({
-  kind: "key_pattern_expression",
+): ConstantKeyPatternExpression<Input, Payload> => ({
+  kind: "constant_key_pattern_expression",
   family,
   patterns,
 });
@@ -327,11 +664,14 @@ export const defineReactiveResource = <In = unknown, Value = unknown, Err = Erro
   readonly name: string;
   readonly query: QueryFunction<In, Value>;
   readonly refresh?: readonly RefreshPlan[];
+  readonly enhancement?: EnhancementPlan;
 }): ReactiveResource<In, Value, Err> => ({
   kind: "reactive_resource",
   name: input.name,
   query: input.query,
   refresh: input.refresh ?? [refreshOnInvalidate()],
+  enhancement: input.enhancement,
+  traits: ["named", "readable", "reactive"],
 });
 
 export const defineReactiveMutation = <In = unknown, Out = unknown, Err = ErrorType>(input: {
@@ -342,13 +682,16 @@ export const defineReactiveMutation = <In = unknown, Out = unknown, Err = ErrorT
 }): ReactiveMutation<In, Out, Err> => {
   const patterns: readonly ReactiveKeyPattern[] =
     input.invalidates?.patterns ??
-    (input.action.reactivity?.invalidates ?? []).flatMap((expr) => expr.patterns);
+    (input.action.reactivity?.invalidates ?? []).flatMap((expr) =>
+      expr.kind === "constant_key_pattern_expression" ? expr.patterns : [],
+    );
   return {
     kind: "reactive_mutation",
     name: input.name,
     action: input.action,
     invalidates: { patterns },
     optimistic: input.optimistic,
+    traits: ["named", "writable", "effectful", "reactive"],
   };
 };
 
@@ -381,6 +724,8 @@ export const deriveDefaultOptimisticPlan = <In = unknown, Out = unknown>(
   if (ops.length !== 1) return undefined;
 
   const op = ops[0]!;
+  if (op.kind === "invalidate_op") return undefined;
+
   const query = findEntityQuery(op.target, ctx.query_functions);
   if (query === undefined) return undefined;
 
@@ -478,10 +823,12 @@ export const defineResourceChain = <
   next_resource: input.next_resource,
 });
 
-const keyFamilyId = (family: KeyFamily): string => `key:${family.name}`;
-const entityId = (entity: Entity): string => `entity:${entity.name}`;
-const queryId = (query: QueryFunction): string => `query:${query.name}`;
-const actionId = (action: ActionFunction): string => `action:${action.name}`;
+const keyFamilyGraphId = (family: KeyFamily): string => family.ref.id ?? `key:${family.name}`;
+const entityId = (entity: Entity): string => entity.ref.id ?? `entity:${entity.name}`;
+const queryId = (query: QueryFunction): string => query.ref?.id ?? `query:${query.name}`;
+const actionId = (action: ActionFunction): string => action.ref?.id ?? `action:${action.name}`;
+const nodeGraphId = (node: { name?: string; ref?: { id?: string }; id?: string }): string =>
+  node.ref?.id ?? node.id ?? `node:${node.name ?? "unknown"}`;
 const resourceId = (resource: ReactiveResource): string => `resource:${resource.name}`;
 const mutationId = (mutation: ReactiveMutation): string => `mutation:${mutation.name}`;
 const resourceAllId = (ra: ResourceAll): string => `resource_all:${ra.name}`;
@@ -514,7 +861,7 @@ export const deriveReactiveGraph = (ctx: GenContext): ReactiveGraph => {
   const edges: ReactiveGraphEdge[] = [];
 
   for (const family of ctx.key_families) {
-    addNode(nodes, { id: keyFamilyId(family), kind: "key_family", name: family.name });
+    addNode(nodes, { id: keyFamilyGraphId(family), kind: "key_family", name: family.name });
   }
 
   for (const query of ctx.query_functions) {
@@ -522,32 +869,119 @@ export const deriveReactiveGraph = (ctx: GenContext): ReactiveGraph => {
     const declaredKey = query.reactivity?.key;
     if (declaredKey !== undefined) {
       const family = declaredKey.family;
-      addNode(nodes, { id: keyFamilyId(family), kind: "key_family", name: family.name });
-      edges.push({ from: queryId(query), to: keyFamilyId(family), kind: "reads" });
+      addNode(nodes, { id: keyFamilyGraphId(family), kind: "key_family", name: family.name });
+      edges.push({
+        kind: "reads_key",
+        from: queryId(query),
+        to: keyFamilyGraphId(family),
+        key: declaredKey,
+        confidence: "declared",
+      });
+    }
+    // DERI1: derived read dependencies from query body (only when no declared key)
+    if (declaredKey === undefined) {
+      const readDeps = deriveQueryReadDependencies(query);
+      for (const dep of readDeps) {
+        const family = ctx.key_families.find((kf) => kf.name === dep.entity.name);
+        if (
+          family &&
+          !edges.some(
+            (e) =>
+              e.kind === "reads_key" &&
+              e.from === queryId(query) &&
+              e.to === keyFamilyGraphId(family),
+          )
+        ) {
+          addNode(nodes, { id: keyFamilyGraphId(family), kind: "key_family", name: family.name });
+          edges.push({
+            kind: "reads_key",
+            from: queryId(query),
+            to: keyFamilyGraphId(family),
+            key: { kind: "constant_key_expression", family },
+            confidence: "derived",
+          });
+        }
+      }
     }
   }
 
   for (const action of ctx.action_functions) {
     addNode(nodes, { id: actionId(action), kind: "action_function", name: action.name });
     for (const operation of action.body.operations) {
+      if (operation.kind === "invalidate_op") {
+        for (const pattern of operation.patterns) {
+          if (pattern.kind !== "constant_key_pattern_expression") continue;
+          for (const p of pattern.patterns) {
+            addNode(nodes, {
+              id: keyFamilyGraphId(p.family),
+              kind: "key_family",
+              name: p.family.name,
+            });
+            edges.push({
+              kind: "invalidates_key",
+              from: actionId(action),
+              to: keyFamilyGraphId(p.family),
+              pattern: p,
+              expression: pattern,
+              confidence: "declared",
+            });
+          }
+        }
+        continue;
+      }
       addNode(nodes, {
         id: entityId(operation.target),
         kind: "entity",
         name: operation.target.name,
       });
-      edges.push({ from: actionId(action), to: entityId(operation.target), kind: "writes" });
+      edges.push({
+        kind: "writes_entity",
+        from: actionId(action),
+        to: entityId(operation.target),
+        confidence: "derived",
+      });
     }
     for (const expr of action.reactivity?.invalidates ?? []) {
+      if (expr.kind !== "constant_key_pattern_expression") continue;
       for (const pattern of expr.patterns) {
         addNode(nodes, {
-          id: keyFamilyId(pattern.family),
+          id: keyFamilyGraphId(pattern.family),
           kind: "key_family",
           name: pattern.family.name,
         });
         edges.push({
+          kind: "invalidates_key",
           from: actionId(action),
-          to: keyFamilyId(pattern.family),
-          kind: "invalidates",
+          to: keyFamilyGraphId(pattern.family),
+          pattern,
+          expression: expr,
+          confidence: "declared",
+        });
+      }
+    }
+    // DERI1: conservative derived invalidations from write dependencies
+    const derivedInvalidations = deriveConservativeInvalidations(ctx, action);
+    for (const inv of derivedInvalidations) {
+      addNode(nodes, {
+        id: keyFamilyGraphId(inv.family),
+        kind: "key_family",
+        name: inv.family.name,
+      });
+      if (
+        !edges.some(
+          (e) =>
+            e.kind === "invalidates_key" &&
+            e.from === actionId(action) &&
+            e.to === keyFamilyGraphId(inv.family),
+        )
+      ) {
+        edges.push({
+          kind: "invalidates_key",
+          from: actionId(action),
+          to: keyFamilyGraphId(inv.family),
+          pattern: inv.pattern,
+          confidence: inv.confidence,
+          precision: inv.precision,
         });
       }
     }
@@ -560,7 +994,11 @@ export const deriveReactiveGraph = (ctx: GenContext): ReactiveGraph => {
       kind: "query_function",
       name: resource.query.name,
     });
-    edges.push({ from: resourceId(resource), to: queryId(resource.query), kind: "binds" });
+    edges.push({
+      kind: "wraps_query",
+      from: resourceId(resource),
+      to: queryId(resource.query),
+    });
   }
 
   for (const mutation of ctx.reactive_mutations) {
@@ -570,18 +1008,50 @@ export const deriveReactiveGraph = (ctx: GenContext): ReactiveGraph => {
       kind: "action_function",
       name: mutation.action.name,
     });
-    edges.push({ from: mutationId(mutation), to: actionId(mutation.action), kind: "binds" });
+    edges.push({
+      kind: "wraps_action",
+      from: mutationId(mutation),
+      to: actionId(mutation.action),
+    });
     for (const pattern of mutation.invalidates.patterns) {
       addNode(nodes, {
-        id: keyFamilyId(pattern.family),
+        id: keyFamilyGraphId(pattern.family),
         kind: "key_family",
         name: pattern.family.name,
       });
       edges.push({
+        kind: "invalidates_key",
         from: mutationId(mutation),
-        to: keyFamilyId(pattern.family),
-        kind: "invalidates",
+        to: keyFamilyGraphId(pattern.family),
+        pattern,
+        confidence: "declared",
       });
+    }
+    // DERI1: conservative derived invalidations from wrapped action
+    const derivedInvalidations = deriveConservativeInvalidations(ctx, mutation.action);
+    for (const inv of derivedInvalidations) {
+      addNode(nodes, {
+        id: keyFamilyGraphId(inv.family),
+        kind: "key_family",
+        name: inv.family.name,
+      });
+      if (
+        !edges.some(
+          (e) =>
+            e.kind === "invalidates_key" &&
+            e.from === mutationId(mutation) &&
+            e.to === keyFamilyGraphId(inv.family),
+        )
+      ) {
+        edges.push({
+          kind: "invalidates_key",
+          from: mutationId(mutation),
+          to: keyFamilyGraphId(inv.family),
+          pattern: inv.pattern,
+          confidence: inv.confidence,
+          precision: inv.precision,
+        });
+      }
     }
   }
 
@@ -589,7 +1059,46 @@ export const deriveReactiveGraph = (ctx: GenContext): ReactiveGraph => {
     addNode(nodes, { id: resourceAllId(ra), kind: "resource_all", name: ra.name });
     for (const branch of Object.values(ra.branches)) {
       addNode(nodes, { id: resourceId(branch), kind: "resource", name: branch.name });
-      edges.push({ from: resourceAllId(ra), to: resourceId(branch), kind: "binds" });
+      edges.push({
+        kind: "composes_resource",
+        from: resourceAllId(ra),
+        to: resourceId(branch),
+      });
+    }
+  }
+
+  for (const scope of ctx.tracking_scopes) {
+    const scopeId = `scope:${scope.name}`;
+    addNode(nodes, {
+      id: scopeId,
+      kind: "tracking_scope",
+      name: scope.name,
+      scope_kind: scope.scope_kind,
+      owner: scope.owner,
+    });
+    for (const read of scope.reads) {
+      if ("family" in read) {
+        // Assume KeyExpression
+        edges.push({
+          kind: "scope_reads_key",
+          from: scopeId,
+          to: keyFamilyGraphId(read.family),
+        });
+      } else if ("query" in read) {
+        // Assume ReactiveResource
+        edges.push({
+          kind: "scope_reads_query",
+          from: scopeId,
+          to: queryId(read.query),
+        });
+      } else {
+        // Assume QueryFunction
+        edges.push({
+          kind: "scope_reads_query",
+          from: scopeId,
+          to: queryId(read),
+        });
+      }
     }
   }
 
@@ -601,16 +1110,20 @@ export const deriveReactiveGraph = (ctx: GenContext): ReactiveGraph => {
       kind: "resource",
       name: rc.next_resource.name,
     });
-    edges.push({ from: resourceChainId(rc), to: resourceId(rc.source), kind: "binds" });
     edges.push({
+      kind: "composes_resource",
       from: resourceChainId(rc),
-      to: resourceId(rc.next_resource),
-      kind: "binds",
+      to: resourceId(rc.source),
     });
     edges.push({
+      kind: "composes_resource",
+      from: resourceChainId(rc),
+      to: resourceId(rc.next_resource),
+    });
+    edges.push({
+      kind: "reads_resource",
       from: resourceId(rc.source),
       to: resourceId(rc.next_resource),
-      kind: "reads",
     });
   }
 
@@ -622,9 +1135,9 @@ export const deriveReactiveGraph = (ctx: GenContext): ReactiveGraph => {
       name: form.source_function.name,
     });
     edges.push({
+      kind: "form_submits",
       from: formId(form),
       to: actionId(form.source_function),
-      kind: "binds",
     });
   }
 
@@ -636,7 +1149,11 @@ export const deriveReactiveGraph = (ctx: GenContext): ReactiveGraph => {
         kind: "action_function",
         name: action.name,
       });
-      edges.push({ from: actionId(action), to: eventId(event), kind: "emits" });
+      edges.push({
+        kind: "emits_event",
+        from: actionId(action),
+        to: eventId(event),
+      });
     }
   }
 
@@ -652,9 +1169,9 @@ export const deriveReactiveGraph = (ctx: GenContext): ReactiveGraph => {
       name: emission.action.name,
     });
     edges.push({
+      kind: "emits_event",
       from: actionId(emission.action),
       to: eventId(emission.event),
-      kind: "emits",
     });
   }
 
@@ -670,66 +1187,106 @@ export const deriveReactiveGraph = (ctx: GenContext): ReactiveGraph => {
       name: subscription.event.name,
     });
     edges.push({
+      kind: "subscribes_event",
       from: subscriptionId(subscription),
       to: eventId(subscription.event),
-      kind: "subscribes",
     });
   }
 
   for (const route of ctx.routes) {
     addNode(nodes, { id: routeId(route), kind: "route", name: route.path.template });
-    if (route.handler.kind === "query" && isQueryFunction(route.handler.query_func)) {
-      addNode(nodes, {
-        id: queryId(route.handler.query_func),
-        kind: "query_function",
-        name: route.handler.query_func.name,
-      });
-      edges.push({ from: routeId(route), to: queryId(route.handler.query_func), kind: "binds" });
+    if (route.handler.kind === "query" && route.handler.query_func) {
+      const queryFunc = route.handler.query_func as QueryFunction;
+      if (hasTrait(queryFunc, "readable") && hasTrait(queryFunc, "callable")) {
+        addNode(nodes, {
+          id: queryId(queryFunc),
+          kind: "query_function",
+          name: queryFunc.name,
+        });
+        edges.push({
+          kind: "route_loads",
+          from: routeId(route),
+          to: queryId(queryFunc),
+        });
+      }
     }
-    if (route.handler.kind === "action" && isActionFunction(route.handler.action_func)) {
-      addNode(nodes, {
-        id: actionId(route.handler.action_func),
-        kind: "action_function",
-        name: route.handler.action_func.name,
-      });
-      edges.push({ from: routeId(route), to: actionId(route.handler.action_func), kind: "binds" });
+    if (route.handler.kind === "action" && route.handler.action_func) {
+      const actionFunc = route.handler.action_func as ActionFunction;
+      if (hasTrait(actionFunc, "writable") && hasTrait(actionFunc, "callable")) {
+        addNode(nodes, {
+          id: actionId(actionFunc),
+          kind: "action_function",
+          name: actionFunc.name,
+        });
+        edges.push({
+          kind: "route_submits",
+          from: routeId(route),
+          to: actionId(actionFunc),
+        });
+      }
     }
   }
 
   for (const route of ctx.app_routes) {
     addNode(nodes, { id: appRouteId(route), kind: "app_route", name: route.path });
     for (const loader of route.loaders) {
-      if (isQueryFunction(loader)) {
+      if (hasTrait(loader, "readable") && hasTrait(loader, "callable")) {
+        const id = nodeGraphId(loader);
         addNode(nodes, {
-          id: queryId(loader),
+          id,
           kind: "query_function",
-          name: loader.name,
+          name: loader.name ?? "unknown",
         });
-        edges.push({ from: appRouteId(route), to: queryId(loader), kind: "binds" });
-      } else {
+        edges.push({
+          kind: "route_loads",
+          from: appRouteId(route),
+          to: id,
+        });
+      } else if (hasTrait(loader, "readable")) {
+        const id =
+          "kind" in loader && loader.kind === "reactive_resource"
+            ? resourceId(loader as ReactiveResource)
+            : nodeGraphId(loader);
         addNode(nodes, {
-          id: resourceId(loader),
+          id,
           kind: "resource",
-          name: loader.name,
+          name: loader.name ?? "unknown",
         });
-        edges.push({ from: appRouteId(route), to: resourceId(loader), kind: "binds" });
+        edges.push({
+          kind: "route_loads",
+          from: appRouteId(route),
+          to: id,
+        });
       }
     }
     if (route.action) {
-      if (isActionFunction(route.action)) {
+      if (hasTrait(route.action, "writable") && hasTrait(route.action, "callable")) {
+        const id = nodeGraphId(route.action);
         addNode(nodes, {
-          id: actionId(route.action),
+          id,
           kind: "action_function",
-          name: route.action.name,
+          name: route.action.name ?? "unknown",
         });
-        edges.push({ from: appRouteId(route), to: actionId(route.action), kind: "binds" });
-      } else {
+        edges.push({
+          kind: "route_submits",
+          from: appRouteId(route),
+          to: id,
+        });
+      } else if (hasTrait(route.action, "writable")) {
+        const id =
+          "kind" in route.action && route.action.kind === "reactive_mutation"
+            ? mutationId(route.action as ReactiveMutation)
+            : nodeGraphId(route.action);
         addNode(nodes, {
-          id: mutationId(route.action),
+          id,
           kind: "mutation",
-          name: route.action.name,
+          name: route.action.name ?? "unknown",
         });
-        edges.push({ from: appRouteId(route), to: mutationId(route.action), kind: "binds" });
+        edges.push({
+          kind: "route_submits",
+          from: appRouteId(route),
+          to: id,
+        });
       }
     }
   }
@@ -750,7 +1307,7 @@ export const affectedResourcesForMutation = (
   );
   const affectedResourceIds = new Set(
     graph.edges
-      .filter((edge) => edge.kind === "binds" && staleQueries.has(edge.to))
+      .filter((edge) => edge.kind === "wraps_query" && staleQueries.has(edge.to))
       .map((edge) => edge.from),
   );
 
@@ -766,7 +1323,7 @@ export const affectedRoutesForMutation = (
   );
   const affectedRouteIds = new Set(
     graph.edges
-      .filter((edge) => edge.kind === "binds" && staleQueries.has(edge.to))
+      .filter((edge) => edge.kind === "route_loads" && staleQueries.has(edge.to))
       .map((edge) => edge.from),
   );
 
@@ -782,7 +1339,7 @@ export const affectedKeysForMutation = (
   const mutationNodeId = typeof mutation === "string" ? mutation : mutationId(mutation);
   const keyIds = new Set(
     graph.edges
-      .filter((edge) => edge.from === mutationNodeId && edge.kind === "invalidates")
+      .filter((edge) => edge.from === mutationNodeId && edge.kind === "invalidates_key")
       .map((edge) => edge.to),
   );
   return graph.nodes.filter((node) => node.kind === "key_family" && keyIds.has(node.id));
@@ -795,13 +1352,13 @@ export const staleQueriesForKeys = (
   const keyIds = new Set(
     keys.map((key) => {
       if (typeof key === "string") return key;
-      if ("id" in key) return key.id;
-      return keyFamilyId(key);
+      if (key.kind === "key_family" && "ref" in key) return keyFamilyGraphId(key);
+      return key.id;
     }),
   );
   const queryIds = new Set(
     graph.edges
-      .filter((edge) => edge.kind === "reads" && keyIds.has(edge.to))
+      .filter((edge) => edge.kind === "reads_key" && keyIds.has(edge.to))
       .map((edge) => edge.from),
   );
   return graph.nodes.filter((node) => node.kind === "query_function" && queryIds.has(node.id));
@@ -814,13 +1371,12 @@ export const affectedFormsForMutation = (
   const mutationNodeId = typeof mutation === "string" ? mutation : mutationId(mutation);
   const actionIds = new Set(
     graph.edges
-      .filter((edge) => edge.from === mutationNodeId && edge.kind === "binds")
-      .map((edge) => edge.to)
-      .filter((id) => id.startsWith("action:")),
+      .filter((edge) => edge.from === mutationNodeId && edge.kind === "wraps_action")
+      .map((edge) => edge.to),
   );
   const formIds = new Set(
     graph.edges
-      .filter((edge) => edge.kind === "binds" && actionIds.has(edge.to))
+      .filter((edge) => edge.kind === "form_submits" && actionIds.has(edge.to))
       .map((edge) => edge.from)
       .filter((id) => id.startsWith("form:")),
   );
@@ -834,18 +1390,17 @@ export const affectedSubscriptionsForMutation = (
   const mutationNodeId = typeof mutation === "string" ? mutation : mutationId(mutation);
   const actionIds = new Set(
     graph.edges
-      .filter((edge) => edge.from === mutationNodeId && edge.kind === "binds")
-      .map((edge) => edge.to)
-      .filter((id) => id.startsWith("action:")),
+      .filter((edge) => edge.from === mutationNodeId && edge.kind === "wraps_action")
+      .map((edge) => edge.to),
   );
   const eventIds = new Set(
     graph.edges
-      .filter((edge) => edge.kind === "emits" && actionIds.has(edge.from))
+      .filter((edge) => edge.kind === "emits_event" && actionIds.has(edge.from))
       .map((edge) => edge.to),
   );
   const subscriptionIds = new Set(
     graph.edges
-      .filter((edge) => edge.kind === "subscribes" && eventIds.has(edge.to))
+      .filter((edge) => edge.kind === "subscribes_event" && eventIds.has(edge.to))
       .map((edge) => edge.from),
   );
   return graph.nodes.filter((node) => node.kind === "subscription" && subscriptionIds.has(node.id));
@@ -858,7 +1413,7 @@ export const entitiesWrittenByAction = (
   const actionNodeId = typeof action === "string" ? action : actionId(action);
   const entityIds = new Set(
     graph.edges
-      .filter((edge) => edge.from === actionNodeId && edge.kind === "writes")
+      .filter((edge) => edge.from === actionNodeId && edge.kind === "writes_entity")
       .map((edge) => edge.to),
   );
   return graph.nodes.filter((node) => node.kind === "entity" && entityIds.has(node.id));
@@ -871,7 +1426,7 @@ export const actionsWritingEntity = (
   const entityNodeId = typeof entity === "string" ? entity : entityId(entity);
   const actionIds = new Set(
     graph.edges
-      .filter((edge) => edge.kind === "writes" && edge.to === entityNodeId)
+      .filter((edge) => edge.kind === "writes_entity" && edge.to === entityNodeId)
       .map((edge) => edge.from),
   );
   return graph.nodes.filter((node) => node.kind === "action_function" && actionIds.has(node.id));
@@ -884,7 +1439,7 @@ export const mutationsWritingEntity = (
   const writingActions = new Set(actionsWritingEntity(graph, entity).map((n) => n.id));
   const mutationIds = new Set(
     graph.edges
-      .filter((edge) => edge.kind === "binds" && writingActions.has(edge.to))
+      .filter((edge) => edge.kind === "wraps_action" && writingActions.has(edge.to))
       .map((edge) => edge.from)
       .filter((id) => id.startsWith("mutation:")),
   );
@@ -897,9 +1452,8 @@ export const entitiesWrittenByMutation = (
 ): readonly ReactiveGraphNode[] => {
   const mutationNodeId = typeof mutation === "string" ? mutation : mutationId(mutation);
   const actionIds = graph.edges
-    .filter((edge) => edge.from === mutationNodeId && edge.kind === "binds")
-    .map((edge) => edge.to)
-    .filter((id) => id.startsWith("action:"));
+    .filter((edge) => edge.from === mutationNodeId && edge.kind === "wraps_action")
+    .map((edge) => edge.to);
   const seen = new Map<string, ReactiveGraphNode>();
   for (const id of actionIds) {
     for (const node of entitiesWrittenByAction(graph, id)) {
@@ -909,16 +1463,148 @@ export const entitiesWrittenByMutation = (
   return [...seen.values()].sort((a, b) => a.id.localeCompare(b.id));
 };
 
+// ---------------------------------------------------------------------------
+// Conservative derived dependency pass (DERI1)
+// ---------------------------------------------------------------------------
+
+export const deriveQueryReadDependencies = <E extends Entity = Entity>(
+  query: QueryFunction,
+): readonly ReadDependency<E>[] => {
+  const deps: ReadDependency<E>[] = [];
+  const body = query.body;
+  if (body.source.kind === "entity_source" && body.source.entity) {
+    deps.push({
+      kind: "read_dependency",
+      source: "query_body",
+      entity: body.source.entity as E,
+    });
+  }
+  for (const join of body.joins) {
+    if (join.target.entity) {
+      deps.push({
+        kind: "read_dependency",
+        source: "join",
+        entity: join.target.entity as E,
+      });
+    }
+  }
+  return deps;
+};
+
+export const deriveActionWriteDependencies = <E extends Entity = Entity, F extends Field = Field>(
+  action: ActionFunction,
+): readonly WriteDependency<E, F>[] =>
+  action.body.operations
+    .filter(
+      (op): op is import("../function/index.ts").WriteOperation => op.kind !== "invalidate_op",
+    )
+    .map((op) => ({
+      kind: "write_dependency",
+      operation: op.kind === "insert_op" ? "insert" : op.kind === "update_op" ? "update" : "delete",
+      entity: op.target as E,
+      fields: op.values ? ([...op.values.keys()] as F[]) : undefined,
+    }));
+
+export const deriveConservativeInvalidations = <Payload extends KeyPayload = KeyPayload>(
+  ctx: GenContext,
+  action: ActionFunction,
+): readonly DerivedInvalidation<Payload>[] => {
+  const writes = deriveActionWriteDependencies(action);
+  const invalidations: DerivedInvalidation<Payload>[] = [];
+  for (const write of writes) {
+    const family = ctx.key_families.find((kf) => kf.name === write.entity.name);
+    if (family) {
+      invalidations.push({
+        kind: "derived_invalidation",
+        family: family as KeyFamily<Payload>,
+        pattern: {
+          kind: "reactive_key_pattern",
+          family: family as KeyFamily<Payload>,
+          match: "any",
+        },
+        confidence: "conservative",
+        precision: "broad",
+      });
+    }
+  }
+  return invalidations;
+};
+
+const enrichGraphNode = (node: ReactiveGraphNode, ctx: GenContext): ReactiveGraphNode => {
+  const enrichment: { stable_id?: string; traits?: readonly string[] } = {};
+  switch (node.kind) {
+    case "entity": {
+      const entity = ctx.entities.find((e) => e.ref.id === node.id || e.name === node.name);
+      if (entity) {
+        enrichment.stable_id = entity.ref.id;
+      }
+      break;
+    }
+    case "query_function": {
+      const query = ctx.query_functions.find((q) => q.ref?.id === node.id || q.name === node.name);
+      if (query) {
+        enrichment.traits = query.traits;
+        enrichment.stable_id = query.ref?.id ?? query.id;
+      }
+      break;
+    }
+    case "action_function": {
+      const action = ctx.action_functions.find(
+        (a) => a.ref?.id === node.id || a.name === node.name,
+      );
+      if (action) {
+        enrichment.traits = action.traits;
+        enrichment.stable_id = action.ref?.id ?? action.id;
+      }
+      break;
+    }
+    case "resource": {
+      const resource = ctx.reactive_resources.find((r) => r.name === node.name);
+      if (resource) {
+        enrichment.traits = resource.traits;
+      }
+      break;
+    }
+    case "mutation": {
+      const mutation = ctx.reactive_mutations.find((m) => m.name === node.name);
+      if (mutation) {
+        enrichment.traits = mutation.traits;
+      }
+      break;
+    }
+    case "key_family": {
+      const family = ctx.key_families.find((f) => f.ref.id === node.id || f.name === node.name);
+      if (family) {
+        enrichment.stable_id = family.ref.id;
+      }
+      break;
+    }
+    case "app_route": {
+      const route = ctx.app_routes.find((r) => r.path === node.name);
+      if (route) {
+        // AppRoute does not yet carry traits or stable IDs
+      }
+      break;
+    }
+  }
+  return Object.keys(enrichment).length > 0 ? { ...node, ...enrichment } : node;
+};
+
 export const reactiveGraphArtifact = (
   graph: ReactiveGraph,
   path = "reactive-graph.json",
-): Artifact =>
-  makeArtifact({
+  ctx?: GenContext,
+): Artifact => {
+  const enrichedGraph = ctx
+    ? { ...graph, nodes: graph.nodes.map((node) => enrichGraphNode(node, ctx)) }
+    : graph;
+  return makeArtifact({
     path,
     kind: "asset",
     language: "json",
-    content: `${JSON.stringify(graph, null, 2)}\n`,
+    content: `${JSON.stringify(enrichedGraph, null, 2)}\n`,
   });
+};
 
 export interface LoaderBundle {
   readonly kind: "loader_bundle";
@@ -957,32 +1643,6 @@ export const createSingleFlightPlan = (
   mutations,
 });
 
-const isQueryFunction = (value: unknown): value is QueryFunction => {
-  if (typeof value !== "object" || value === null) return false;
-  if (!("name" in value) || !("body" in value)) return false;
-  const body = (value as { body: unknown }).body;
-  return (
-    typeof body === "object" &&
-    body !== null &&
-    "kind" in body &&
-    "source" in body &&
-    "result_type" in body
-  );
-};
-
-const isActionFunction = (value: unknown): value is ActionFunction => {
-  if (typeof value !== "object" || value === null) return false;
-  if (!("name" in value) || !("body" in value)) return false;
-  const body = (value as { body: unknown }).body;
-  return (
-    typeof body === "object" &&
-    body !== null &&
-    "phase" in body &&
-    (body as { phase: unknown }).phase === "mutation" &&
-    "operations" in body
-  );
-};
-
 /**
  * Derives a SingleFlightPlan from the reactive graph and registered mutations.
  * Each mutation gets bundled with the routes and resources that become stale
@@ -1009,6 +1669,15 @@ export const deriveSingleFlightPlan = (ctx: GenContext, graph: ReactiveGraph): S
 
 // --- Reactivity invariants -------------------------------------------------
 
+const keyPayloadFields = (family: KeyFamily): readonly string[] | undefined => {
+  const input = family.input_type;
+  if (input === undefined) return undefined;
+  if (input.kind === "struct") {
+    return input.storage_repr.kind.struct_fields?.map((f) => f.name);
+  }
+  return undefined;
+};
+
 /**
  * Validates reactivity invariants from spec section 0.7:
  *
@@ -1030,6 +1699,8 @@ export const checkReactivity = (input: {
   readonly key_families: readonly KeyFamily[];
   readonly reactive_resources: readonly ReactiveResource[];
   readonly reactive_mutations: readonly ReactiveMutation[];
+  readonly query_functions?: readonly QueryFunction[];
+  readonly action_functions?: readonly ActionFunction[];
 }): readonly Diagnostic[] => {
   const out: Diagnostic[] = [];
 
@@ -1052,14 +1723,27 @@ export const checkReactivity = (input: {
   const resourceNames = new Map<string, number>();
   for (const resource of input.reactive_resources) {
     resourceNames.set(resource.name, (resourceNames.get(resource.name) ?? 0) + 1);
-    if (!isQueryFunction(resource.query)) {
+    if (!hasTrait(resource.query, "readable") || !hasTrait(resource.query, "callable")) {
       out.push(
         diagnostic({
           severity: "error",
           code: "reactivity:resource-source-not-query",
-          message: `Reactive resource ${resource.name} does not reference a query function`,
+          message: `Reactive resource ${resource.name} does not reference a readable+callable query function`,
         }),
       );
+    }
+    const hasKey = resource.query.reactivity?.key !== undefined;
+    if (!hasKey) {
+      const hasInvalidateRefresh = resource.refresh.some((r) => r.kind === "on_invalidate");
+      if (hasInvalidateRefresh) {
+        out.push(
+          diagnostic({
+            severity: "warning",
+            code: "reactivity:resource-query-unkeyed",
+            message: `Reactive resource ${resource.name} has refresh-on-invalidate but its query ${resource.query.name} has no reactivity key`,
+          }),
+        );
+      }
     }
   }
   for (const [name, count] of resourceNames) {
@@ -1077,12 +1761,12 @@ export const checkReactivity = (input: {
   const mutationNames = new Map<string, number>();
   for (const mutation of input.reactive_mutations) {
     mutationNames.set(mutation.name, (mutationNames.get(mutation.name) ?? 0) + 1);
-    if (!isActionFunction(mutation.action)) {
+    if (!hasTrait(mutation.action, "writable") || !hasTrait(mutation.action, "callable")) {
       out.push(
         diagnostic({
           severity: "error",
           code: "reactivity:mutation-source-not-action",
-          message: `Reactive mutation ${mutation.name} does not reference an action function`,
+          message: `Reactive mutation ${mutation.name} does not reference a writable+callable action function`,
         }),
       );
     }
@@ -1097,8 +1781,6 @@ export const checkReactivity = (input: {
         );
       }
       if (typeof pattern.match === "object" && pattern.match !== null) {
-        // Best-effort structural check: pattern keys should be a subset of family payload keys.
-        // Since families carry phantom types, we only check that the match is a plain object.
         const matchKeys = Object.keys(pattern.match);
         if (matchKeys.length === 0) {
           out.push(
@@ -1108,6 +1790,21 @@ export const checkReactivity = (input: {
               message: `Mutation ${mutation.name} match pattern on family ${pattern.family.name} is empty`,
             }),
           );
+        } else {
+          const knownFields = keyPayloadFields(pattern.family);
+          if (knownFields !== undefined) {
+            for (const key of matchKeys) {
+              if (!knownFields.includes(key)) {
+                out.push(
+                  diagnostic({
+                    severity: "error",
+                    code: "reactivity:key-match-unknown-field",
+                    message: `Mutation ${mutation.name} match pattern on family ${pattern.family.name} references unknown field "${key}" (known fields: ${knownFields.join(", ")})`,
+                  }),
+                );
+              }
+            }
+          }
         }
       }
     }
@@ -1121,6 +1818,61 @@ export const checkReactivity = (input: {
           message: `Reactive mutation ${name} is defined ${count} times`,
         }),
       );
+    }
+  }
+
+  for (const query of input.query_functions ?? []) {
+    const keyExpr = query.reactivity?.key;
+    if (keyExpr?.kind === "constant_key_expression" && keyExpr.payload !== undefined) {
+      const knownFields = keyPayloadFields(keyExpr.family);
+      if (knownFields !== undefined) {
+        for (const key of Object.keys(keyExpr.payload)) {
+          if (!knownFields.includes(key)) {
+            out.push(
+              diagnostic({
+                severity: "error",
+                code: "reactivity:key-payload-mismatch",
+                message: `Query ${query.name} key payload on family ${keyExpr.family.name} contains unknown field "${key}" (known fields: ${knownFields.join(", ")})`,
+              }),
+            );
+          }
+        }
+      }
+    }
+  }
+
+  for (const action of input.action_functions ?? []) {
+    for (const expr of action.reactivity?.invalidates ?? []) {
+      if (expr.kind !== "constant_key_pattern_expression") continue;
+      for (const pattern of expr.patterns) {
+        if (typeof pattern.match === "object" && pattern.match !== null) {
+          const matchKeys = Object.keys(pattern.match);
+          if (matchKeys.length === 0) {
+            out.push(
+              diagnostic({
+                severity: "warning",
+                code: "reactivity:key-match-unknown-field",
+                message: `Action ${action.name} invalidation pattern on family ${pattern.family.name} is empty`,
+              }),
+            );
+          } else {
+            const knownFields = keyPayloadFields(pattern.family);
+            if (knownFields !== undefined) {
+              for (const key of matchKeys) {
+                if (!knownFields.includes(key)) {
+                  out.push(
+                    diagnostic({
+                      severity: "error",
+                      code: "reactivity:key-match-unknown-field",
+                      message: `Action ${action.name} invalidation pattern on family ${pattern.family.name} references unknown field "${key}" (known fields: ${knownFields.join(", ")})`,
+                    }),
+                  );
+                }
+              }
+            }
+          }
+        }
+      }
     }
   }
 

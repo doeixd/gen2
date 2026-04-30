@@ -26,7 +26,9 @@ test("hydration plan derives keys from query function loaders", () => {
   expect(plan.kind).toBe("hydration_snapshot");
   expect(plan.route_path).toBe("/users/:id");
   expect(plan.loaders).toEqual(["getUser"]);
-  expect(plan.keys).toEqual([{ kind: "key_expression", family: UserKey, payload: undefined }]);
+  expect(plan.keys).toEqual([
+    { kind: "constant_key_expression", family: UserKey, payload: undefined },
+  ]);
 });
 
 test("hydration plan derives keys from reactive resource loaders", () => {
@@ -53,7 +55,9 @@ test("hydration plan derives keys from reactive resource loaders", () => {
   const plan = gen.hydration.plan(route);
 
   expect(plan.loaders).toEqual(["userResource"]);
-  expect(plan.keys).toEqual([{ kind: "key_expression", family: UserKey, payload: undefined }]);
+  expect(plan.keys).toEqual([
+    { kind: "constant_key_expression", family: UserKey, payload: undefined },
+  ]);
 });
 
 test("hydration plan includes multiple loaders and keys", () => {
@@ -91,8 +95,8 @@ test("hydration plan includes multiple loaders and keys", () => {
 
   expect(plan.loaders).toEqual(["getUser", "getOrg"]);
   expect(plan.keys).toEqual([
-    { kind: "key_expression", family: UserKey, payload: undefined },
-    { kind: "key_expression", family: OrgKey, payload: undefined },
+    { kind: "constant_key_expression", family: UserKey, payload: undefined },
+    { kind: "constant_key_expression", family: OrgKey, payload: undefined },
   ]);
 });
 

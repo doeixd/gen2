@@ -3,7 +3,7 @@
  * refs, name collision detection with ordinary entities, and type inference helpers.
  */
 import { expect, test } from "vite-plus/test";
-import { createGen } from "../src/index.ts";
+import { core, createGen } from "../src/index.ts";
 import type { InferRelationFrom, InferRelationTo } from "../src/relation/index.ts";
 
 test("relations have auto-populated refs", () => {
@@ -26,6 +26,41 @@ test("relations have auto-populated refs", () => {
   expect(ctx.refs).toContain(rel.ref);
 });
 
+test("relations preserve explicit stable IDs", () => {
+  const { ctx, gen } = createGen();
+  const User = gen.entity("User", { id: gen.types.uuid(), org_id: gen.types.uuid() });
+  const Org = gen.entity("Org", { id: gen.types.uuid() });
+
+  const rel = gen.relation({
+    id: core.relationId("relation.user.org"),
+    name: "user_org",
+    kind: "many_to_one",
+    from_entity: User,
+    to_entity: Org,
+    from_field: User.fields.org_id,
+    to_field: Org.fields.id,
+  });
+
+  expect(rel.id).toBe("relation.user.org");
+  expect(rel.ref.id).toBe(rel.id);
+  expect(core.refIdentity(rel.ref)).toBe("relation.user.org");
+  expect(ctx.refs).toContain(rel.ref);
+});
+
+test("relation shorthand constructors register refs", () => {
+  const { ctx, gen } = createGen();
+  const User = gen.entity("User", { id: gen.types.uuid(), org_id: gen.types.uuid() });
+  const Org = gen.entity("Org", { id: gen.types.uuid() });
+
+  const rel = gen.rel.manyToOne(User, Org, User.fields.org_id, Org.fields.id, {
+    id: core.relationId("relation.user.org.short"),
+  });
+
+  expect(rel.ref.id).toBe("relation.user.org.short");
+  expect(ctx.relations).toContain(rel);
+  expect(ctx.refs).toContain(rel.ref);
+});
+
 test("defineRelationEntity creates a RelationEntity with ref", () => {
   const { ctx, gen } = createGen();
   const User = gen.entity("User", { id: gen.types.uuid() });
@@ -38,8 +73,10 @@ test("defineRelationEntity creates a RelationEntity with ref", () => {
       { name: "role", target_entity: Role, cardinality: "one" },
     ],
     [User.fields.id, Role.fields.id],
+    { id: core.relationId("relation.user_role") },
   );
 
+  expect(re.id).toBe("relation.user_role");
   expect(re.name).toBe("UserRole");
   expect(re.roles).toHaveLength(2);
   expect(re.ref.kind).toBe("RelationRef");

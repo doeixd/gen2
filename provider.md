@@ -1,4 +1,3 @@
-
 Yes — this architecture can absolutely cover **client state**, **typed context**, and a lot of what people normally use DI for.
 
 But I would frame it carefully:
@@ -153,9 +152,7 @@ const TenantRoute = gen.route({
   params: gen.types.object({
     tenantId: Tenant.fields.id.type,
   }),
-  provides: [
-    gen.context.fromParams(TenantContext, ({ tenantId }) => ({ tenantId })),
-  ],
+  provides: [gen.context.fromParams(TenantContext, ({ tenantId }) => ({ tenantId }))],
   loader: listProjects,
 });
 ```
@@ -195,7 +192,7 @@ const service = container.get(ProjectService);
 They write:
 
 ```ts id="jmly9s"
-requires: [ProjectService]
+requires: [ProjectService];
 ```
 
 And the target generates the wiring.
@@ -747,9 +744,9 @@ This becomes excellent for tests.
 Because requirements are explicit, test targets can generate mocks:
 
 ```ts id="37q2n7"
-gen.test.provide(CurrentActor, fakeActor)
-gen.test.provide(EmailService, fakeEmailService)
-gen.test.provide(FeatureFlags, { newBilling: true })
+gen.test.provide(CurrentActor, fakeActor);
+gen.test.provide(EmailService, fakeEmailService);
+gen.test.provide(FeatureFlags, { newBilling: true });
 ```
 
 And the compiler knows which tests need which providers.

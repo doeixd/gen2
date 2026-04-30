@@ -101,7 +101,10 @@ describe("deriveCrud", () => {
 
     expect(crud.update.name).toBe("User.update");
     expect(crud.update.body.kind.kind).toBe("update");
-    expect(crud.update.body.operations[0]!.condition).toBeDefined();
+    expect(
+      (crud.update.body.operations[0] as import("../src/function/index.ts").WriteOperation)!
+        .condition,
+    ).toBeDefined();
     expect(crud.update.input_fields).toContain(User.fields.id);
     expect(crud.update.input_fields).toContain(User.fields.name);
     expect(crud.update.input_fields).toContain(User.fields.age);
@@ -118,7 +121,10 @@ describe("deriveCrud", () => {
 
     expect(crud.delete.name).toBe("User.delete");
     expect(crud.delete.body.kind.kind).toBe("delete");
-    expect(crud.delete.body.operations[0]!.condition).toBeDefined();
+    expect(
+      (crud.delete.body.operations[0] as import("../src/function/index.ts").WriteOperation)!
+        .condition,
+    ).toBeDefined();
     expect(crud.delete.input_fields).toContain(User.fields.id);
   });
 
@@ -345,5 +351,45 @@ describe("checkCrud", () => {
 
     expect(diagnostics.some((d) => d.code === "crud:query-name-collision")).toBe(true);
     expect(diagnostics.some((d) => d.code === "crud:action-name-collision")).toBe(true);
+  });
+
+  test("deriveCrud does not duplicate default key families on multiple calls", () => {
+    const { gen, ctx } = createGen();
+    const User = gen.entity("User", {
+      id: gen.types.uuid(),
+      name: gen.types.string(),
+    });
+
+    gen.crud.derive(User);
+    const initialKeyCount = ctx.key_families.length;
+
+    gen.crud.derive(User); // Called twice
+    expect(ctx.key_families.length).toBe(initialKeyCount);
+  });
+
+  test("deriveCrud accepts custom key families and does not create defaults", () => {
+    const { gen, ctx } = createGen();
+    const User = gen.entity("User", {
+      id: gen.types.uuid(),
+      name: gen.types.string(),
+    });
+
+    const customGetByIdKey = gen.key.custom("CustomGetById", {
+      input: gen.types.object({ id: gen.types.uuid() }),
+    });
+    const customListKey = gen.key.custom("CustomList");
+
+    const crud = gen.crud.derive(User, {
+      getByIdKey: customGetByIdKey,
+      listKey: customListKey,
+    });
+
+    expect(crud.getById.reactivity?.key.family).toBe(customGetByIdKey);
+    expect(crud.list.reactivity?.key.family).toBe(customListKey);
+
+    const isDefaultCreated = ctx.key_families.some(
+      (kf) => kf.name === "User:entity" || kf.name === "User:collection",
+    );
+    expect(isDefaultCreated).toBe(false);
   });
 });

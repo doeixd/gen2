@@ -11,8 +11,28 @@ import type { SemanticType } from "../types/index.ts";
 import type { QueryFunction, ActionFunction } from "../function/index.ts";
 import type { ReactiveResource, ReactiveMutation } from "../reactivity/index.ts";
 import { diagnostic, type Diagnostic } from "../core/index.ts";
+import type {
+  CallableNode,
+  ReadableNode,
+  EffectfulNode,
+  ServerPlaceableNode,
+} from "../core/index.ts";
 
+/** Port type for route loaders: anything callable, readable, and server-placeable. */
+export type RouteLoader<I = unknown, O = unknown> =
+  | (CallableNode<I, O> & ReadableNode & ServerPlaceableNode)
+  | QueryFunction<I, O>
+  | ReactiveResource<I, O>;
+
+/** Port type for mutation handlers: anything callable, effectful, and server-placeable. */
+export type MutationHandler<I = unknown, O = unknown> =
+  | (CallableNode<I, O> & EffectfulNode & ServerPlaceableNode)
+  | ActionFunction<I, O>
+  | ReactiveMutation<I, O>;
+
+/** Backward-compatible concrete union for loaders stored on AppRoute. */
 export type AppRouteLoader = QueryFunction | ReactiveResource;
+/** Backward-compatible concrete union for actions stored on AppRoute. */
 export type AppRouteAction = ActionFunction | ReactiveMutation;
 
 export interface AppRoute<

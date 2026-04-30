@@ -1367,10 +1367,16 @@ crud:delete-policy-not-enforced
 | `src/crud/`       | Strong  | `deriveCrud(entity)` produces typed `QueryFunction` and `ActionFunction` records. Auto-registered in `GenContext`.                                                                   |
 | `src/editor/`     | Strong  | `defineEditor` and `autoEditor`. WYSIWYG with sections, field overrides, nested editors, commands, hooks.                                                                            |
 | `src/list/`       | Strong  | `defineList`, `autoList`, `listColumn`, pagination (offset/cursor), row actions, bulk actions. Bound in `gen.list.*`.                                                                |
+| `src/reactivity/` | Strong  | `ReactiveKey`, `KeyFamily`, `ReactiveResource`, `ReactiveMutation`, `ReactiveGraph`. Static key derivation and rule-derived reactivity safety, `TargetAdapter` diagnostics.          |
+| `src/router/`     | Good    | Typed routes with loaders, actions, guards, error boundaries. Reactivity edges for `route_loads` and `route_submits`.                                                                |
+| `src/hydration/`  | Good    | SSR snapshot dehydration, client rehydration plans.                                                                                                                                  |
+| `src/services/`   | Good    | Generic service refs, modules, requirement bubbling, scoped cleanup.                                                                                                                 |
+| `src/rules/`      | Strong  | Datalog-style typed rules, predicates, rule-to-SQL evaluation, and IVM delta capability placeholders.                                                                                |
+| `src/admin/`      | Good    | Admin shell, generated dashboard, lists, and editors into navigation.                                                                                                                |
 | `src/lifecycle/`  | Good    | `check()` and `generate()` runners. `moduleCheckers` and `builtInModuleCheckersRegistered` live on `GenContext` (no global singleton). 35 test files.                                |
-| `src/adapters/`   | Good    | `standard-schema` adapter with per-entity validator generation. `relational` adapter with DDL generation. `debug` adapter.                                                           |
+| `src/adapters/`   | Good    | `standard-schema` adapter with per-entity validator generation. `relational` adapter with DDL generation. `debug` adapter. Reactivity targets `effect-atom` and `tanstack-query`.    |
 | `src/db/`         | Partial | DB plugin exists and contributes `gen.db.*` helpers through the plugin system. Needs dialect-aware helper typing and capability diagnostics.                                         |
-| Tests             | Good    | 35 runtime test files. 4 type-level `.test-d.ts` files (`entity-infer`, `function-infer`, `storage-generics`, `types`).                                                              |
+| Tests             | Good    | 65+ runtime test files. Type-level `.test-d.ts` files for all core semantic types. Over 670 passing tests.                                                                           |
 
 ### What Is Partially Implemented / Has Gaps
 
@@ -1379,7 +1385,6 @@ crud:delete-policy-not-enforced
 | `Operation` is NOT a discriminated union             | `src/types/operation.ts`          | Medium   |
 | `createUiNamespace` uses `as unknown as` casts       | `src/gen/ui-backends.ts`          | Medium   |
 | `gen.db.*` exists only as a plugin surface           | `src/db/db.ts`                    | Medium   |
-| Action DSL lacks staged builders                     | `src/function/function.ts`        | Medium   |
 | Query builder O(n²) allocations                      | `src/query/query.ts`              | Medium   |
 | `bindFromEntity` reconstructs closures per call      | `src/gen/binders.ts`              | Medium   |
 | Standard-schema adapter lacks enum/nested validation | `src/adapters/standard-schema.ts` | Low      |
@@ -1390,28 +1395,31 @@ crud:delete-policy-not-enforced
 
 ### What Is Spec'd But Not Built
 
-- **Reactive state layer** (`@gen/reactivity`): Typed keys, key families, invalidation plans, resource states
-- **Key namespace** (`gen.key.*`): Entity keys, collection keys, custom keys, key families, `.any()`, `.match(partial)`
-- **Function-level reactivity metadata**: Query keys and typed action invalidation expressions
-- **Reactivity action nodes**: `gen.reactivity.invalidate(...)` as a static `ActionExpr` node
-- **Reactive resources/mutations**: Wrappers over query/action functions with portable state semantics
-- **Reactive graph / dataflow graph**: A derived graph of funcs, keys, resources, boundaries, UI dependencies, invalidation, patches, events, and requirements
-- **Semantic tracking scopes**: Runtime-independent model for render/memo/loader/resource scopes that track semantic key reads
-- **Effect Atom target** (`@gen/effect-atom`): Generation for `Atom.make`, `Atom.family`, `Atom.fn`, `Atom.runtime`, `Atom.withReactivity`, `Atom.pull`, `Atom.searchParam`, `Atom.kvs`
-- **Other reactive targets**: TanStack Query, SWR, Vue Query, Svelte stores, Solid resources
 - **Client state store adapters**: URL search params, local storage, session storage, key-value stores
 - **Stream/pull resources**: Paginated, infinite, and stream-backed generated resources
-- **SingleFlight** (`@gen/singleflight`): Route loader bundling and mutation + affected-loader refresh
+- **SingleFlight** (`@gen/singleflight`): Route loader bundling and mutation + affected-loader refresh (Stubs exist)
 - **Devtools/visualizer targets**: Dependency graphs, runtime boundary graphs, impact analysis, generated docs, and test plans
 - **Cross-boundary transports**: RPC, HTTP, WebSocket mutations, offline command envelopes, queues, OpenAPI, Effect RPC groups
-- **Router** (`@gen/router`): Typed routes with loaders, guards, error boundaries, single-flight
-- **Hydration** (`@gen/hydration`): SSR snapshot dehydration, client rehydration
-- **Services/Modules** (`@gen/services`): Generic service refs, requirement bubbling, scoped cleanup
-- **Rules engine** (`@gen/rules`): Datalog-style typed rules for derived relations, auth predicates, IVM
-- **Progressive enhancement** (`@gen/enhancement`): Capability tiers, fallback plans, degradation diagnostics
-- **Admin shell**: No `gen.admin.define()` for composing lists + editors into navigation
-- **Advanced CRUD factory**: Relation-aware CRUD, includes, count/exists/getMany, soft delete, versioning, generated clients/routes/forms
-- **IVM**: Incremental view maintenance from rules
+- **Advanced CRUD factory**: Includes, getMany, soft delete, versioning, generated clients/routes/forms
+- **IVM**: Incremental view maintenance from rules (Stubs exist)
+
+---
+
+## Current Hardening Priority
+
+The current active work is defined in `atom_plan_agent_implementation_guide.md`. That document captures the prioritized hardening path to align the reactivity IR with the original `spec/atom.txt` design.
+
+**Key principles from `spec/atom.txt` driving current development:**
+
+1. **Atoms as Target:** Effect Atom is an inspiration and target, not the core model.
+2. **Derived-First Reactivity:** The compiler derives conservative read/write/invalidation edges.
+3. **Typed Manual Keys:** Manual keys are typed refinements for opaque boundaries.
+4. **Hierarchy & Batching:** Address spaces have intrinsic invalidation semantics.
+5. **Tracking Scopes:** Resources, forms, loaders, and components own their reads.
+6. **Result-Like States:** Resource states are discriminated unions (`initial`, `loading`, `success`, `failure`).
+7. **Progressive Enhancement:** Targets declare capabilities and degrade gracefully.
+
+> **Note:** Many sections below outline ambitious future work (like IVM, cross-boundary transports, and SingleFlight). The immediate focus remains on executing the agent implementation guide to stabilize the core IR before expanding target ambition.
 
 ---
 

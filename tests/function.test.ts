@@ -4,7 +4,7 @@
  * restrictions.
  */
 import { expect, test } from "vite-plus/test";
-import { createGen, fn } from "../src/index.ts";
+import { core, createGen, fn } from "../src/index.ts";
 
 test("emptyFunctionCatalog starts empty", () => {
   const cat = fn.emptyFunctionCatalog();
@@ -28,10 +28,33 @@ test("query functions can declare reactivity keys", () => {
   });
 
   expect(query.reactivity?.key).toEqual({
-    kind: "key_expression",
+    kind: "constant_key_expression",
     family: UserKey,
     payload: undefined,
   });
+});
+
+test("function constructors attach refs, stable IDs, traits, and call plans", () => {
+  const { ctx, gen } = createGen();
+  const User = gen.entity("User", { id: gen.types.uuid() });
+  const query = gen.func.query({
+    id: core.functionId("function.getUser"),
+    name: "getUser",
+    input_type: gen.types.uuid(),
+    returns: User,
+    body: gen.query.build({
+      source: { kind: "entity_source", entity: User },
+      result_type: gen.types.uuid(),
+    }),
+  });
+
+  expect(query.id).toBe("function.getUser");
+  expect(query.ref?.kind).toBe("FunctionRef");
+  expect(query.ref?.id).toBe(query.id);
+  expect(query.traits).toContain("callable");
+  expect(query.traits).toContain("readable");
+  expect(query.callPlan?.target).toBe(query.ref);
+  expect(ctx.refs).toContain(query.ref);
 });
 
 test("legacy query invalidations lower to key patterns", () => {
@@ -58,7 +81,7 @@ test("legacy query invalidations lower to key patterns", () => {
 
   expect(action.reactivity?.invalidates).toEqual([
     {
-      kind: "key_pattern_expression",
+      kind: "constant_key_pattern_expression",
       family: UserKey,
       patterns: [gen.key.any(UserKey)],
     },

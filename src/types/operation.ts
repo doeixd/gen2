@@ -380,6 +380,8 @@ export type Operation =
 export interface Requirement {
   /** Requirement category or name. */
   readonly kind: string;
+  /** Optional typed ref for semantic requirements (e.g., a ServiceRef). */
+  readonly ref?: import("../core/refs.ts").Ref;
 }
 
 // --- Constructors ----------------------------------------------------------

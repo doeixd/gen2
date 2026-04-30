@@ -3,7 +3,7 @@
  * read-only field constraints, and field ownership validation.
  */
 import { expect, test } from "vite-plus/test";
-import { createGen, entity } from "../src/index.ts";
+import { core, createGen, entity } from "../src/index.ts";
 
 test("gen.entity creates fields with FieldRefs", () => {
   const { gen } = createGen();
@@ -13,9 +13,37 @@ test("gen.entity creates fields with FieldRefs", () => {
     displayName: gen.types.string(),
   });
   expect(User.name).toBe("User");
+  expect(User.ref.kind).toBe("EntityRef");
+  expect(User.ref.owner.name).toBe("User");
   expect(User.fields.id.ref.kind).toBe("FieldRef");
   expect(User.fields.id.ref.owner.name).toBe("User");
   expect(User.fields.email.semantic_type.name).toBe("email");
+});
+
+test("gen.entity preserves explicit stable entity and field IDs", () => {
+  const { ctx, gen } = createGen();
+  const Project = gen.entity(
+    "Project",
+    {
+      id: { type: gen.types.uuid(), id: core.fieldId("field.project.id") },
+      status: {
+        type: gen.types.string(),
+        id: core.fieldId("field.project.status"),
+        renamedFrom: ["state"],
+        external_name: "project_status",
+      },
+    },
+    { id: core.entityId("entity.project") },
+  );
+
+  expect(Project.id).toBe("entity.project");
+  expect(Project.ref.id).toBe(Project.id);
+  expect(Project.fields.status.id).toBe("field.project.status");
+  expect(Project.fields.status.ref.id).toBe(Project.fields.status.id);
+  expect(Project.fields.status.renamed_from).toEqual(["state"]);
+  expect(Project.fields.status.external_name).toBe("project_status");
+  expect(ctx.refs).toContain(Project.ref);
+  expect(ctx.refs).toContain(Project.fields.status.ref);
 });
 
 test("EntityNameUnique flags duplicate entity names", () => {

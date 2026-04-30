@@ -5,7 +5,10 @@
       "Bash(pnpm test *)",
       "WebFetch(domain:standardschema.dev)",
       "Bash(pnpm check *)",
-      "Bash(node_modules/.bin/tsgo --noEmit)"
+      "Bash(node_modules/.bin/tsgo --noEmit)",
+      "Bash(git stash *)",
+      "Bash(vp check *)",
+      "Bash(vp test *)"
     ]
   }
 }

@@ -20,12 +20,25 @@ import type {
   Table,
 } from "../storage/index.ts";
 import type { SemanticType } from "../types/index.ts";
+import type { SqlDialectCapabilities } from "../rules/index.ts";
 
 // --- Dialect classification -----------------------------------------------
 
 export type RelationalDialect = "postgres" | "sqlite" | "mysql" | "clickhouse";
 export type DocumentDialect = "mongo";
 export type KvDialect = "redis";
+
+export const sqlCapabilitiesForDialect = (dialect: StoreDialect): SqlDialectCapabilities => {
+  switch (dialect) {
+    case "redis":
+    case "mongo":
+      return { supportsExists: false, supportsNot: false, supportsCrossTableJoin: false };
+    case "clickhouse":
+      return { supportsExists: true, supportsNot: true, supportsCrossTableJoin: false };
+    default:
+      return { supportsExists: true, supportsNot: true, supportsCrossTableJoin: true };
+  }
+};
 
 /** The kind of physical surface a dialect exposes. */
 export type DialectKind<D extends StoreDialect> = D extends RelationalDialect

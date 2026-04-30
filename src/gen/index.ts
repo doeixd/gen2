@@ -59,12 +59,14 @@ import {
   createServicesNamespace,
   createRulesNamespace,
   createReactionNamespace,
+  createNodeNamespace,
 } from "./namespaces.ts";
 import { createUiNamespace } from "./ui-backends.ts";
 
 // Re-exports for public API
 export * from "./types.ts";
 export * from "./namespaces.ts";
+export * from "./builder.ts";
 export { jsxUiNamespaceFactory, tuiUiNamespaceFactory, createUiNamespace } from "./ui-backends.ts";
 
 /**
@@ -116,6 +118,7 @@ const buildGenNamespace = <C extends GenConfig = GenConfig>(
 ): Gen<C> => ({
   types: createTypesNamespace<C>(ctx),
   entity: bindEntity(ctx),
+  node: createNodeNamespace<C>(ctx),
   key: createKeyNamespace<C>(ctx),
   reactivity: createReactivityNamespace<C>(ctx),
   router: createRouterNamespace<C>(ctx),

@@ -9,11 +9,15 @@
 
 import type { SemanticType, Capability, Requirement } from "../types/index.ts";
 import type { GenContext, Diagnostic } from "../core/index.ts";
-import { diagnostic } from "../core/index.ts";
+import { diagnostic, makeRef } from "../core/index.ts";
+import type { MethodId, ServiceId, MethodRefValue, ServiceRefValue } from "../core/index.ts";
+import type { QueryFunction, ActionFunction } from "../function/index.ts";
 
 /** A single method on a service with typed input/output and required capabilities. */
 export interface MethodRef<In = unknown, Out = unknown> {
   readonly kind: "method_ref";
+  readonly id?: MethodId;
+  readonly ref: MethodRefValue<unknown, In, Out>;
   readonly name: string;
   readonly input_type: SemanticType<In>;
   readonly output_type: SemanticType<Out>;
@@ -25,6 +29,8 @@ export interface MethodRef<In = unknown, Out = unknown> {
 /** A service reference exposing named methods. */
 export interface ServiceRef<Methods extends readonly MethodRef[] = readonly MethodRef[]> {
   readonly kind: "service_ref";
+  readonly id?: ServiceId;
+  readonly ref: ServiceRefValue<Methods>;
   readonly name: string;
   readonly methods: Methods;
   readonly _methods?: Methods;
@@ -54,37 +60,69 @@ export interface ModuleGraph {
 }
 
 export const defineMethodRef = <In = unknown, Out = unknown>(input: {
+  readonly id?: MethodId;
   readonly name: string;
   readonly input_type: SemanticType<In>;
   readonly output_type: SemanticType<Out>;
   readonly capabilities?: readonly Capability[];
-}): MethodRef<In, Out> => ({
-  kind: "method_ref",
-  name: input.name,
-  input_type: input.input_type,
-  output_type: input.output_type,
-  capabilities: input.capabilities ?? [],
-});
+}): MethodRef<In, Out> => {
+  const id = input.id;
+  return {
+    kind: "method_ref",
+    id,
+    ref: makeRef<{ service: unknown; input: In; output: Out }>({
+      kind: "MethodRef",
+      id,
+      owner: { kind: "Service", name: "unknown" },
+      name: input.name,
+      value_type: `${input.input_type.name}->${input.output_type.name}`,
+    }) as MethodRefValue<unknown, In, Out>,
+    name: input.name,
+    input_type: input.input_type,
+    output_type: input.output_type,
+    capabilities: input.capabilities ?? [],
+  };
+};
 
 export const defineServiceRef = <
   const Methods extends readonly MethodRef[] = readonly MethodRef[],
 >(input: {
+  readonly id?: ServiceId;
   readonly name: string;
   readonly methods?: Methods;
-}): ServiceRef<Methods> => ({
-  kind: "service_ref",
-  name: input.name,
-  methods: (input.methods ?? []) as Methods,
-});
+}): ServiceRef<Methods> => {
+  const id = input.id;
+  return {
+    kind: "service_ref",
+    id,
+    ref: makeRef<Methods>({
+      kind: "ServiceRef",
+      id,
+      owner: { kind: "Service", name: input.name },
+      name: input.name,
+      value_type: "service",
+    }) as ServiceRefValue<Methods>,
+    name: input.name,
+    methods: (input.methods ?? []) as Methods,
+  };
+};
+
+const serviceIdFrom = (s: ServiceRef): string | undefined => s.id ?? s.ref.id;
 
 const checkNode = (
   id: string,
   kind: string,
   name: string,
   reqs: readonly Requirement[],
+  serviceIds: ReadonlySet<string>,
   serviceNames: ReadonlySet<string>,
 ): ModuleGraphNode => {
-  const missing = reqs.filter((r) => !serviceNames.has(r.kind)).map((r) => r.kind);
+  const missing = reqs
+    .filter((r) => {
+      if (r.ref?.id) return !serviceIds.has(r.ref.id);
+      return !serviceNames.has(r.kind);
+    })
+    .map((r) => r.kind);
   return { id, kind, name, requirements: reqs, missing_services: [...new Set(missing)] };
 };
 
@@ -96,6 +134,9 @@ const checkNode = (
  * @returns A module graph with requirement and missing-provider information.
  */
 export const deriveModuleGraph = (ctx: GenContext): ModuleGraph => {
+  const serviceIds = new Set(
+    ctx.services.map((s) => serviceIdFrom(s)).filter((id): id is string => id !== undefined),
+  );
   const serviceNames = new Set(ctx.services.map((s) => s.name));
   const nodes: ModuleGraphNode[] = [];
 
@@ -106,6 +147,7 @@ export const deriveModuleGraph = (ctx: GenContext): ModuleGraph => {
         "resource",
         resource.name,
         resource.query.requirements,
+        serviceIds,
         serviceNames,
       ),
     );
@@ -118,6 +160,7 @@ export const deriveModuleGraph = (ctx: GenContext): ModuleGraph => {
         "mutation",
         mutation.name,
         mutation.action.requirements,
+        serviceIds,
         serviceNames,
       ),
     );
@@ -129,17 +172,19 @@ export const deriveModuleGraph = (ctx: GenContext): ModuleGraph => {
       if ("query" in loader) {
         reqs.push(...loader.query.requirements);
       } else {
-        reqs.push(...loader.requirements);
+        reqs.push(...(loader as QueryFunction).requirements);
       }
     }
     if (route.action) {
       if ("action" in route.action) {
         reqs.push(...route.action.action.requirements);
       } else {
-        reqs.push(...route.action.requirements);
+        reqs.push(...(route.action as ActionFunction).requirements);
       }
     }
-    nodes.push(checkNode(`app_route:${route.path}`, "app_route", route.path, reqs, serviceNames));
+    nodes.push(
+      checkNode(`app_route:${route.path}`, "app_route", route.path, reqs, serviceIds, serviceNames),
+    );
   }
 
   for (const form of ctx.forms) {
@@ -150,6 +195,7 @@ export const deriveModuleGraph = (ctx: GenContext): ModuleGraph => {
           "form",
           form.name,
           form.source_function.requirements,
+          serviceIds,
           serviceNames,
         ),
       );

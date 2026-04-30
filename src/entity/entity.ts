@@ -13,6 +13,10 @@
 import {
   type Diagnostic,
   diagnostic,
+  type EntityId,
+  type EntityRef,
+  type FieldId,
+  type FieldRef,
   makeRef,
   type MetadataEntry,
   type Ref,
@@ -118,6 +122,8 @@ export interface Field<Ts = unknown> {
   readonly _ts?: Ts;
   /** Human-readable name of the field (e.g., `"email"`). */
   readonly name: string;
+  /** Stable persisted identity for this field, when explicitly declared. */
+  readonly id?: FieldId;
   /** The {@link Entity} that owns this field. */
   readonly owning_entity: Entity;
   /** Semantic type governing runtime behaviour and storage representation. */
@@ -134,8 +140,12 @@ export interface Field<Ts = unknown> {
   readonly traits: readonly Trait[];
   /** Presence condition that controls when this field is visible/required. */
   readonly present_when?: FieldPresenceCondition;
+  /** Previous field names that share this field's stable identity. */
+  readonly renamed_from: readonly string[];
+  /** Target-specific physical/external name, distinct from semantic identity. */
+  readonly external_name?: string;
   /** Auto-populated FieldRef for typed citation in expressions and queries. */
-  readonly ref: Ref<Ts>;
+  readonly ref: FieldRef<Entity, string, Ts>;
 }
 
 /**
@@ -189,8 +199,12 @@ export interface TransitionGraph {
  * ```
  */
 export interface Entity {
+  /** Stable persisted identity for this entity, when explicitly declared. */
+  readonly id?: EntityId;
   /** Domain name of the entity (e.g., `"User"`, `"BlogPost"`). */
   readonly name: string;
+  /** Auto-populated EntityRef for typed citation and registry lookup. */
+  readonly ref: EntityRef<Entity>;
   /**
    * Field lookup by name. Matches spec.md's `User.fields.id` user-facing API.
    * Treated as immutable after construction.
@@ -228,6 +242,9 @@ export type FieldShapeInput =
       read_only?: boolean;
       default?: DefaultValue;
       traits?: readonly Trait[];
+      id?: FieldId;
+      renamedFrom?: readonly string[];
+      external_name?: string;
     };
 
 /** Record of field names to their input shapes. */
@@ -254,12 +271,20 @@ export type FieldsRecord = Readonly<Record<string, FieldShapeInput>>;
 export const defineEntity = <F extends FieldsRecord>(
   name: string,
   fields: F,
-  options: { store_name?: string; metadata?: readonly MetadataEntry[] } = {},
+  options: { id?: EntityId; store_name?: string; metadata?: readonly MetadataEntry[] } = {},
 ): Entity & { readonly fields: { readonly [K in keyof F]: InferFieldFromInput<F[K]> } } => {
   // Use a mutable builder so fields can reference the entity from the start
   // without post-hoc mutation.
   const entity: MutableEntity = {
+    id: options.id,
     name,
+    ref: makeRef<Entity>({
+      kind: "EntityRef",
+      id: options.id,
+      owner: { kind: "Entity", name },
+      name,
+      value_type: "entity",
+    }) as EntityRef<Entity>,
     fields: {},
     fieldList: [],
     store_name: options.store_name,
@@ -297,6 +322,9 @@ function makeField<Ts = unknown>(
         read_only?: boolean;
         default?: DefaultValue;
         traits?: readonly Trait[];
+        id?: FieldId;
+        renamedFrom?: readonly string[];
+        external_name?: string;
       },
 ): Field<Ts> {
   const shapeObj = shape as object;
@@ -309,11 +337,15 @@ function makeField<Ts = unknown>(
           read_only?: boolean;
           default?: DefaultValue;
           traits?: readonly Trait[];
+          id?: FieldId;
+          renamedFrom?: readonly string[];
+          external_name?: string;
         })
       : { type: shape as SemanticType<Ts> };
   const semantic_type = opts.type;
   const f: Field<Ts> = {
     name,
+    id: opts.id,
     owning_entity: entity,
     semantic_type,
     nullable: opts.nullable ?? false,
@@ -321,12 +353,15 @@ function makeField<Ts = unknown>(
     default_value: opts.default,
     read_only: opts.read_only ?? false,
     traits: opts.traits ?? [],
+    renamed_from: opts.renamedFrom ?? [],
+    external_name: opts.external_name,
     ref: makeRef<Ts>({
       kind: "FieldRef",
+      id: opts.id,
       owner: { kind: "Entity", name: entity.name },
       name,
       value_type: semantic_type.name,
-    }),
+    }) as FieldRef<Entity, string, Ts>,
   };
   return f;
 }

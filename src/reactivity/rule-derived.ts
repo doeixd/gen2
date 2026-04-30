@@ -26,6 +26,7 @@ const extractWriteSet = (action: ActionFunction): WriteSet => {
   const fields = new Set<Field>();
   let hasCondition = false;
   for (const op of action.body.operations) {
+    if (op.kind === "invalidate_op") continue;
     entities.add(op.target);
     for (const field of op.values.keys()) {
       fields.add(field);
@@ -174,6 +175,7 @@ export interface DerivedInvalidationPlan {
   readonly affectedRules: readonly Rule[];
   readonly invalidates: readonly ReactiveKeyPattern[];
   readonly precision: InvalidationPrecision;
+  readonly appliedPrecision: InvalidationPrecision;
   readonly confidence: InvalidationConfidence;
 }
 
@@ -232,6 +234,7 @@ export const deriveRuleInvalidationPlans = (ctx: GenContext): DerivedInvalidatio
         affectedRules,
         invalidates,
         precision: overallPrecision,
+        appliedPrecision: "broad",
         confidence: overallConfidence,
       });
     }
@@ -288,8 +291,8 @@ export const checkRuleReactivity = (ctx: GenContext): readonly Diagnostic[] => {
       out.push(
         diagnostic({
           severity: "info",
-          code: "rules-reactivity:affected-set-unknown",
-          message: `Mutation "${plan.mutation.name}" could use patchable invalidation, but affected-set determination is not yet implemented`,
+          code: "rules-reactivity:patchable-advisory-only",
+          message: `Mutation "${plan.mutation.name}" could use patchable invalidation, but this is currently advisory as exact affected-set determination is not fully implemented`,
         }),
       );
     }
@@ -322,14 +325,14 @@ export const checkRuleReactivity = (ctx: GenContext): readonly Diagnostic[] => {
     }
   }
 
-  // Dependency-not-extractable (exists is complex)
+  // Complex dependency reduces precision (exists is complex)
   for (const rule of ctx.rules) {
     if (ruleHasExists(rule.body)) {
       out.push(
         diagnostic({
           severity: "info",
-          code: "rules-reactivity:dependency-not-extractable",
-          message: `Rule "${rule.name}" contains 'exists' which may hide dependencies from static analysis`,
+          code: "rules-reactivity:complex-dependency-reduces-precision",
+          message: `Rule "${rule.name}" contains 'exists' which may hide dependencies from static analysis, reducing invalidation precision`,
         }),
       );
     }

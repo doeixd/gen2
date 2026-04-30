@@ -8,6 +8,23 @@
  */
 
 import type { CheckResult, GenerateResult } from "./artifacts.ts";
+import type { Capability } from "../types/operation.ts";
+
+export type CapabilityTier =
+  | "static"
+  | "server_form"
+  | "enhanced_client"
+  | "reactive"
+  | "optimistic_offline"
+  | "realtime";
+
+export interface EnhancementPlan {
+  readonly kind: "enhancement_plan";
+  readonly baseline: CapabilityTier;
+  readonly preferred: CapabilityTier;
+  readonly fallbacks: readonly CapabilityTier[];
+  readonly required_capabilities: readonly Capability[];
+}
 
 /** A concrete input supplied to a target during generation. */
 export interface TargetInput {

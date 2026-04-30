@@ -40,6 +40,66 @@ gen.key.key(AccountKey, { accountId: "acct_1" });
 // @ts-expect-error — gen.key preserves family payload type
 gen.key.key(AccountKey, { accountId: 123 });
 
+// --- Schema-driven key family inference ---
+
+const SchemaUserSchema = gen.types.object({ id: gen.types.uuid() });
+const SchemaUserKey = gen.key.family("SchemaUser", {
+  input: SchemaUserSchema,
+  hierarchy: "entity",
+});
+
+type SchemaUserPayload = InferKeyFamilyInput<typeof SchemaUserKey>;
+const schemaPayload: SchemaUserPayload = { id: "u_1" };
+void schemaPayload;
+
+// @ts-expect-error — inferred payload requires id
+const badSchemaPayload: SchemaUserPayload = {};
+void badSchemaPayload;
+
+// --- Registry inference ---
+
+import type {
+  InferReactiveRegistryFamilies,
+  InferRegistryFamily,
+} from "../src/reactivity/index.ts";
+
+const { gen: gen4 } = createGen();
+const RegistryUserKey = gen4.key.family<{ readonly id: string }>("RegistryUser");
+const RegistryOrgKey = gen4.key.family<{ readonly slug: string }>("RegistryOrg");
+const AppRegistry = gen4.reactivity.registry("app", { user: RegistryUserKey, org: RegistryOrgKey });
+
+type AppFamilies = InferReactiveRegistryFamilies<typeof AppRegistry>;
+const _appFamilies: AppFamilies = { user: RegistryUserKey, org: RegistryOrgKey };
+void _appFamilies;
+
+type UserFamilyFromRegistry = InferRegistryFamily<typeof AppRegistry, "user">;
+const _userFamily: UserFamilyFromRegistry = RegistryUserKey;
+void _userFamily;
+
+// @ts-expect-error — "unknown" is not a key in the registry
+type BadFamily = InferRegistryFamily<typeof AppRegistry, "unknown">;
+// @ts-expect-error — inferred family is never for unknown key
+const _badFamily: BadFamily = RegistryUserKey;
+void _badFamily;
+
+// --- Action reactivity carries MutationKeyContext ---
+
+import type { MutationKeyContext, KeyPayload } from "../src/reactivity/index.ts";
+
+declare const actionWithResult: import("../src/function/index.ts").ActionFunction<
+  { readonly id: string },
+  { readonly ok: true }
+>;
+
+type ActionInvalidates = NonNullable<typeof actionWithResult.reactivity>["invalidates"];
+type ExpectedInvalidates = readonly import("../src/reactivity/index.ts").KeyPatternExpression<
+  MutationKeyContext<{ readonly id: string }, { readonly ok: true }>,
+  KeyPayload
+>[];
+
+const _invalidatesCheck: ActionInvalidates extends ExpectedInvalidates ? true : false = true;
+void _invalidatesCheck;
+
 declare const resource: import("../src/reactivity/index.ts").ReactiveResource<
   { readonly id: string },
   { readonly name: string }
@@ -127,10 +187,7 @@ import type {
   ReactiveResource,
 } from "../src/reactivity/index.ts";
 
-declare const userResource: ReactiveResource<
-  { readonly id: string },
-  { readonly name: string }
->;
+declare const userResource: ReactiveResource<{ readonly id: string }, { readonly name: string }>;
 
 declare const postResource: ReactiveResource<
   { readonly postId: string },
@@ -150,8 +207,11 @@ type AllValues = InferResourceAllValues<typeof allResource>;
 const _allValues: AllValues = { user: { name: "Alice" }, post: { title: "Hello" } };
 void _allValues;
 
-// @ts-expect-error — branch values are independent; post title must be string
-const _badAllValues: InferResourceAllValues<typeof allResource> = { user: { name: "Alice" }, post: { title: 123 } };
+const _badAllValues: InferResourceAllValues<typeof allResource> = {
+  user: { name: "Alice" },
+  // @ts-expect-error — branch values are independent; post title must be string
+  post: { title: 123 },
+};
 void _badAllValues;
 
 declare const chainResource: ResourceChain<
@@ -181,10 +241,7 @@ void _badChainSource;
 
 import type { OptimisticPlan } from "../src/reactivity/index.ts";
 
-declare const plan: OptimisticPlan<
-  { readonly id: string },
-  { readonly ok: true }
->;
+declare const plan: OptimisticPlan<{ readonly id: string }, { readonly ok: true }>;
 
 const _planApply: typeof plan.apply = {
   kind: { kind: "optimistic_update" },

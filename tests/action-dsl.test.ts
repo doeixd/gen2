@@ -21,7 +21,11 @@ test("buildActionInsert builds an insert ActionExpr", () => {
   expect(expr.target_entity).toBe(User);
   expect(expr.operations).toHaveLength(1);
   expect(expr.operations[0]!.kind).toBe("insert_op");
-  expect(expr.operations[0]!.values.get(User.fields.email)).toBeDefined();
+  expect(
+    (expr.operations[0] as import("../src/function/index.ts").WriteOperation)!.values.get(
+      User.fields.email,
+    ),
+  ).toBeDefined();
 });
 
 test("buildActionUpdate builds an update ActionExpr with condition", () => {
@@ -48,9 +52,10 @@ test("buildActionDelete builds a delete ActionExpr", () => {
   expect(expr.operations[0]!.kind).toBe("delete_op");
 });
 
-test("buildActionSequence composes multiple actions", () => {
+test("buildActionSequence composes multiple actions including invalidation", () => {
   const { gen } = createGen();
   const User = gen.entity("User", { id: gen.types.uuid(), email: gen.types.email() });
+  const UserKey = gen.key.entity(User);
 
   const insert = gen.func.buildActionInsert(User, [
     [
@@ -64,13 +69,17 @@ test("buildActionSequence composes multiple actions", () => {
       gen.expr.literal(gen.types.email(), { kind: "string", string_value: "c@d.com" }),
     ],
   ]);
+  const invalidate = gen.func.buildActionInvalidate(User, [
+    gen.key.patternExpr(UserKey, [gen.key.any(UserKey)]),
+  ]);
 
-  const seq = gen.func.buildActionSequence(User, [insert, update]);
+  const seq = gen.func.buildActionSequence(User, [insert, update, invalidate]);
 
   expect(seq.kind.kind).toBe("sequence");
-  expect(seq.operations).toHaveLength(2);
+  expect(seq.operations).toHaveLength(3);
   expect(seq.operations[0]!.kind).toBe("insert_op");
   expect(seq.operations[1]!.kind).toBe("update_op");
+  expect(seq.operations[2]!.kind).toBe("invalidate_op");
 });
 
 test("action functions accept ActionExpr bodies built with DSL", () => {

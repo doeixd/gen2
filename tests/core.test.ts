@@ -48,7 +48,7 @@ test("context-bound gen constructors register created objects", () => {
   });
 
   expect(ctx.entities).toContain(User);
-  expect(ctx.refs).toEqual([User.fields.id.ref, User.fields.email.ref]);
+  expect(ctx.refs).toEqual([User.ref, User.fields.id.ref, User.fields.email.ref]);
   expect(ctx.stores).toContain(store);
   expect(ctx.runtimes).toContain(runtime);
   expect(ctx.queries).toContain(query);

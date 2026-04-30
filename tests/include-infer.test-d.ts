@@ -101,8 +101,8 @@ void profile;
 const author: IncludeValue<typeof postAuthor> = { id: "u_1", name: "alice" };
 void author;
 
-// @ts-expect-error — userPosts is many-cardinality; expects an array
 const postsAsSingle: IncludeValue<typeof userPosts> = {
+  // @ts-expect-error — userPosts is many-cardinality; expects an array
   id: "p_1",
   user_id: "u_1",
   title: "hi",
@@ -127,10 +127,10 @@ const uwp: UserWithPosts = {
 };
 void uwp;
 
-// @ts-expect-error — posts must be an array
 const uwpBad: UserWithPosts = {
   id: "u_1",
   name: "alice",
+  // @ts-expect-error — posts must be an array
   posts: { id: "p_1", user_id: "u_1", title: "hi", views: 0 },
 };
 void uwpBad;
@@ -149,10 +149,10 @@ const uwpp: UserWithProfileAndPosts = {
 };
 void uwpp;
 
-// @ts-expect-error — profile must be a single object, not an array
 const uwppBad: UserWithProfileAndPosts = {
   id: "u_1",
   name: "alice",
+  // @ts-expect-error — profile must be a single object, not an array
   profile: [{ id: "pf_1", user_id: "u_1", bio: "..." }],
   posts: [],
 };

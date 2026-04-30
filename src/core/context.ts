@@ -19,7 +19,7 @@ import {
   type PluginContributions,
   type TargetContribution,
 } from "./plugin.ts";
-import type { Ref } from "./refs.ts";
+import { refEquals, refIdentity, type Ref, type StableId } from "./refs.ts";
 import { makeTarget, type Target } from "./target.ts";
 import type { Entity } from "../entity/index.ts";
 import type { QueryExpression } from "../query/index.ts";
@@ -55,6 +55,7 @@ import type { CrossStorePlanner } from "../lifecycle/index.ts";
 import type {
   KeyFamily,
   ReactiveMutation,
+  ReactiveRegistry,
   ReactiveResource,
   ResourceAll,
   ResourceChain,
@@ -63,6 +64,7 @@ import type { AppRoute } from "../router/index.ts";
 import type { ServiceRef } from "../services/index.ts";
 import type { Rule } from "../rules/index.ts";
 import type { Reaction } from "../reaction/index.ts";
+import type { TraitMetadata, StaticNode } from "./node.ts";
 
 /** Lifecycle status of a GenContext. */
 export type ContextStatus = "idle" | "checking" | "generating" | "ready" | "failed";
@@ -126,14 +128,20 @@ export interface GenContext {
   readonly reactive_mutations: ReactiveMutation[];
   readonly resource_alls: ResourceAll<Record<string, ReactiveResource<any, any, any>>>[];
   readonly resource_chains: ResourceChain<any, any, any, any, any, any>[];
+  readonly reactive_registries: ReactiveRegistry[];
+  readonly tracking_scopes: import("../reactivity/index.ts").TrackingScope[];
   readonly services: ServiceRef[];
   readonly rules: Rule[];
   readonly reactions: Reaction[];
+  /** Plugin-defined and custom application-level static nodes. */
+  readonly nodes: StaticNode[];
   status: ContextStatus;
   /** Plugin-contributed helper namespaces, indexed by namespace name. */
   readonly helpers: Map<string, Record<string, unknown>>;
   /** Cached PluginContributions, indexed by plugin id. */
   readonly contributions: Map<string, PluginContributions>;
+  /** Trait metadata registry, indexed by trait name. */
+  readonly trait_metadata: Map<string, TraitMetadata>;
   /** Module-level checkers invoked during the check phase. */
   readonly moduleCheckers: ((ctx: GenContext) => readonly Diagnostic[])[];
   /** Whether built-in module checkers have already been registered. */
@@ -215,12 +223,16 @@ export const createGen = (input: CreateGenInput = {}): GenContext => {
     reactive_mutations: [],
     resource_alls: [],
     resource_chains: [],
+    reactive_registries: [],
+    tracking_scopes: [],
     services: [],
     rules: [],
     reactions: [],
+    nodes: [],
     status: "idle",
     helpers: new Map(),
     contributions: new Map(),
+    trait_metadata: new Map(),
     moduleCheckers: [],
     builtInModuleCheckersRegistered: false,
   };
@@ -277,6 +289,14 @@ const registerPlugin = (ctx: GenContext, plugin: Plugin): void => {
     contributions = plugin.contributions;
   }
   ctx.contributions.set(plugin.id, contributions);
+
+  // Auto-register trait metadata contributed by the plugin.
+  if (contributions.trait_metadata) {
+    for (const [trait, metadata] of Object.entries(contributions.trait_metadata)) {
+      ctx.trait_metadata.set(trait, metadata);
+    }
+  }
+
   (plugin.helpers as Helper[]).push(...contributions.helpers);
 
   // Materialize the plugin's contributed targets into kernel Target records.
@@ -477,6 +497,58 @@ export const getQueries = (ctx: GenContext): readonly QueryExpression[] => ctx.q
  */
 export const getStaticFunctions = (ctx: GenContext): readonly StaticFunction[] =>
   ctx.static_functions;
+
+/** Finds a registered ref by typed ref identity. */
+export const getRef = <R extends Ref>(ctx: GenContext, ref: R): R | undefined =>
+  ctx.refs.find((registered): registered is R => refEquals(registered, ref));
+
+/** True when a ref is present in the context registry. */
+export const hasRef = (ctx: GenContext, ref: Ref): boolean => getRef(ctx, ref) !== undefined;
+
+/** Explicit stable-ID lookup boundary for tooling, imports, and persisted IR. */
+export const lookupById = (ctx: GenContext, id: StableId<string> | string): Ref | undefined =>
+  ctx.refs.find((ref) => ref.id === id);
+
+/** Validates that every referenced ref is registered in the context. */
+export const checkRegisteredRefs = (
+  ctx: GenContext,
+  refs: readonly Ref[],
+): readonly Diagnostic[] => {
+  const out: Diagnostic[] = [];
+  const seenMissing = new Set<string>();
+
+  for (const ref of refs) {
+    if (hasRef(ctx, ref)) continue;
+
+    const identity = refIdentity(ref);
+    if (seenMissing.has(identity)) continue;
+    seenMissing.add(identity);
+
+    out.push(
+      diagnostic({
+        severity: "error",
+        code: "ref:unregistered-ref",
+        message: `Reference ${identity} is not registered in this context`,
+        refs: [ref],
+      }),
+    );
+  }
+
+  return out;
+};
+
+/** Register metadata for a typed trait. Overwrites existing metadata. */
+export const registerTraitMetadata = (
+  ctx: GenContext,
+  trait: string,
+  metadata: TraitMetadata,
+): void => {
+  ctx.trait_metadata.set(trait, metadata);
+};
+
+/** Look up metadata for a trait, if registered. */
+export const getTraitMetadata = (ctx: GenContext, trait: string): TraitMetadata | undefined =>
+  ctx.trait_metadata.get(trait);
 
 /**
  * Convenience accessor that aggregates GenerateResult diagnostics with context-level ones.

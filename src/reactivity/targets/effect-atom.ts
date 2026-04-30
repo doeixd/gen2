@@ -48,7 +48,9 @@ export const generateEffectAtomArtifacts = (
   const resourceCode = resourceNodes.map((node) => {
     // Find the actual resource from context - we only have node IDs here
     // For now, generate a placeholder that uses the query name
-    const queryEdge = graph.edges.find((edge) => edge.from === node.id && edge.kind === "binds");
+    const queryEdge = graph.edges.find(
+      (edge) => edge.from === node.id && edge.kind === "wraps_query",
+    );
     const queryNode = queryEdge
       ? graph.nodes.find((n) => n.id === queryEdge.to && n.kind === "query_function")
       : undefined;
@@ -64,6 +66,31 @@ export const generateEffectAtomArtifacts = (
       return `// ERROR: Resource ${node.name} has no bound query`;
     }
 
+    const keyEdge = graph.edges.find(
+      (edge) => edge.from === queryNode.id && edge.kind === "reads_key",
+    );
+    if (!keyEdge) {
+      diagnostics.push(
+        diagnostic({
+          severity: "warning",
+          code: "effect-atom:unsupported-key-expression",
+          message: `Resource ${node.name} bound query has no key expression`,
+        }),
+      );
+    }
+
+    // Assume missing symbol metadata if we don't have a stable ID or execution plan.
+    // For now we just emit the warning since we don't actually generate real imports yet.
+    if (!queryNode.stable_id) {
+      diagnostics.push(
+        diagnostic({
+          severity: "warning",
+          code: "effect-atom:missing-symbol-metadata",
+          message: `Resource ${node.name} query lacks symbol metadata for code generation`,
+        }),
+      );
+    }
+
     return `export const ${node.name} = Atom.make((get) => {\n  return ${queryNode.name}(get);\n});`;
   });
 
@@ -77,7 +104,7 @@ export const generateEffectAtomArtifacts = (
       }),
     );
     const branchNames = graph.edges
-      .filter((edge) => edge.from === node.id && edge.kind === "binds")
+      .filter((edge) => edge.from === node.id && edge.kind === "composes_resource")
       .map((edge) => graph.nodes.find((n) => n.id === edge.to))
       .filter((n): n is NonNullable<typeof n> => n !== undefined)
       .map((n) => n.name);
@@ -93,28 +120,24 @@ export const generateEffectAtomArtifacts = (
         message: `Effect-Atom target does not yet generate full code for resource_chain nodes (${node.name})`,
       }),
     );
-    const sourceEdge = graph.edges.find(
-      (edge) => edge.from === node.id && edge.kind === "binds" && edge.to.startsWith("resource:"),
+    const composedEdges = graph.edges.filter(
+      (edge) => edge.from === node.id && edge.kind === "composes_resource",
     );
-    const sourceName = sourceEdge
-      ? graph.nodes.find((n) => n.id === sourceEdge.to)?.name
+    const sourceName = composedEdges[0]
+      ? graph.nodes.find((n) => n.id === composedEdges[0].to)?.name
       : undefined;
-    const nextEdge = graph.edges.find(
-      (edge) =>
-        edge.from === node.id &&
-        edge.kind === "binds" &&
-        edge.to.startsWith("resource:") &&
-        edge.to !== sourceEdge?.to,
-    );
-    const nextName = nextEdge ? graph.nodes.find((n) => n.id === nextEdge.to)?.name : undefined;
+    const nextName = composedEdges[1]
+      ? graph.nodes.find((n) => n.id === composedEdges[1].to)?.name
+      : undefined;
     return `// TODO: Chain ${sourceName ?? "?"} -> ${nextName ?? "?"} for ${node.name}`;
   });
 
   // Build mutation code with invalidation
   const mutationCode = mutationNodes.map((node) => {
-    const actionEdge = graph.edges.find(
-      (edge) => edge.from === node.id && edge.kind === "binds" && edge.to.startsWith("action:"),
-    );
+    const actionEdge = graph.edges.find((edge) => {
+      if (edge.from !== node.id || edge.kind !== "wraps_action") return false;
+      return graph.nodes.some((n) => n.id === edge.to && n.kind === "action_function");
+    });
     const actionNode = actionEdge
       ? graph.nodes.find((n) => n.id === actionEdge.to && n.kind === "action_function")
       : undefined;
@@ -130,28 +153,38 @@ export const generateEffectAtomArtifacts = (
       return `// ERROR: Mutation ${node.name} has no bound action`;
     }
 
+    if (!actionNode.stable_id) {
+      diagnostics.push(
+        diagnostic({
+          severity: "warning",
+          code: "effect-atom:missing-symbol-metadata",
+          message: `Mutation ${node.name} action lacks symbol metadata for code generation`,
+        }),
+      );
+    }
+
     // Find invalidated resources
     const invalidationEdges = graph.edges.filter(
-      (edge) => edge.from === node.id && edge.kind === "invalidates",
+      (edge) => edge.from === node.id && edge.kind === "invalidates_key",
     );
     const invalidatedKeys = invalidationEdges.map((edge) => edge.to);
 
     // Find resources that read these keys
     const affectedResourceIds = new Set(
       graph.edges
-        .filter((edge) => edge.kind === "reads" && invalidatedKeys.includes(edge.to))
+        .filter((edge) => edge.kind === "reads_key" && invalidatedKeys.includes(edge.to))
         .map((edge) => edge.from)
         .filter((fromId) => resourceById.has(fromId)),
     );
 
     // Also find resources via stale queries
     const staleQueries = graph.edges
-      .filter((edge) => edge.kind === "reads" && invalidatedKeys.includes(edge.to))
+      .filter((edge) => edge.kind === "reads_key" && invalidatedKeys.includes(edge.to))
       .map((edge) => edge.from);
 
     for (const queryId of staleQueries) {
       const boundResources = graph.edges
-        .filter((edge) => edge.kind === "binds" && edge.to === queryId)
+        .filter((edge) => edge.kind === "wraps_query" && edge.to === queryId)
         .map((edge) => edge.from);
       for (const rId of boundResources) {
         if (resourceById.has(rId)) {

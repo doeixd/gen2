@@ -15,8 +15,6 @@ import { makeArtifact } from "../../core/artifacts.ts";
 import type { ReactiveGraph } from "../reactivity.ts";
 
 const KEY_FAMILY_PREFIX = "key:";
-const QUERY_PREFIX = "query:";
-const ACTION_PREFIX = "action:";
 
 const stripPrefix = (id: string, prefix: string): string =>
   id.startsWith(prefix) ? id.slice(prefix.length) : id;
@@ -29,15 +27,16 @@ const collectResourceQueryKey = (
   resourceId: string,
   queryName: string,
 ): readonly string[] => {
-  const queryEdge = graph.edges.find(
-    (edge) => edge.from === resourceId && edge.kind === "binds" && edge.to.startsWith(QUERY_PREFIX),
-  );
+  const queryEdge = graph.edges.find((edge) => {
+    if (edge.from !== resourceId || edge.kind !== "wraps_query") return false;
+    return graph.nodes.some((node) => node.id === edge.to && node.kind === "query_function");
+  });
   if (queryEdge === undefined) return [queryName];
   const keyEdges = graph.edges
     .filter(
       (edge) =>
         edge.from === queryEdge.to &&
-        edge.kind === "reads" &&
+        edge.kind === "reads_key" &&
         edge.to.startsWith(KEY_FAMILY_PREFIX),
     )
     .map((edge) => stripPrefix(edge.to, KEY_FAMILY_PREFIX))
@@ -53,7 +52,7 @@ const collectMutationInvalidationKeys = (
     .filter(
       (edge) =>
         edge.from === mutationId &&
-        edge.kind === "invalidates" &&
+        edge.kind === "invalidates_key" &&
         edge.to.startsWith(KEY_FAMILY_PREFIX),
     )
     .map((edge) => stripPrefix(edge.to, KEY_FAMILY_PREFIX))
@@ -86,9 +85,10 @@ export const generateTanstackQueryArtifacts = (
   }
 
   const resourceCode = resourceNodes.map((node) => {
-    const queryEdge = graph.edges.find(
-      (edge) => edge.from === node.id && edge.kind === "binds" && edge.to.startsWith(QUERY_PREFIX),
-    );
+    const queryEdge = graph.edges.find((edge) => {
+      if (edge.from !== node.id || edge.kind !== "wraps_query") return false;
+      return graph.nodes.some((n) => n.id === edge.to && n.kind === "query_function");
+    });
     const queryNode = queryEdge
       ? graph.nodes.find((n) => n.id === queryEdge.to && n.kind === "query_function")
       : undefined;
@@ -102,6 +102,29 @@ export const generateTanstackQueryArtifacts = (
         }),
       );
       return `// ERROR: Resource ${node.name} has no bound query`;
+    }
+
+    const keyEdge = graph.edges.find(
+      (edge) => edge.from === queryNode.id && edge.kind === "reads_key",
+    );
+    if (!keyEdge) {
+      diagnostics.push(
+        diagnostic({
+          severity: "warning",
+          code: "tanstack-query:unsupported-key-expression",
+          message: `Resource ${node.name} bound query has no key expression`,
+        }),
+      );
+    }
+
+    if (!queryNode.stable_id) {
+      diagnostics.push(
+        diagnostic({
+          severity: "warning",
+          code: "tanstack-query:missing-symbol-metadata",
+          message: `Resource ${node.name} query lacks symbol metadata for code generation`,
+        }),
+      );
     }
 
     const queryKey = collectResourceQueryKey(graph, node.id, queryNode.name);
@@ -118,7 +141,7 @@ export const generateTanstackQueryArtifacts = (
       }),
     );
     const branchNames = graph.edges
-      .filter((edge) => edge.from === node.id && edge.kind === "binds")
+      .filter((edge) => edge.from === node.id && edge.kind === "composes_resource")
       .map((edge) => graph.nodes.find((n) => n.id === edge.to))
       .filter((n): n is NonNullable<typeof n> => n !== undefined)
       .map((n) => n.name);
@@ -134,27 +157,23 @@ export const generateTanstackQueryArtifacts = (
         message: `TanStack Query target does not yet generate full code for resource_chain nodes (${node.name})`,
       }),
     );
-    const sourceEdge = graph.edges.find(
-      (edge) => edge.from === node.id && edge.kind === "binds" && edge.to.startsWith("resource:"),
+    const composedEdges = graph.edges.filter(
+      (edge) => edge.from === node.id && edge.kind === "composes_resource",
     );
-    const sourceName = sourceEdge
-      ? graph.nodes.find((n) => n.id === sourceEdge.to)?.name
+    const sourceName = composedEdges[0]
+      ? graph.nodes.find((n) => n.id === composedEdges[0].to)?.name
       : undefined;
-    const nextEdge = graph.edges.find(
-      (edge) =>
-        edge.from === node.id &&
-        edge.kind === "binds" &&
-        edge.to.startsWith("resource:") &&
-        edge.to !== sourceEdge?.to,
-    );
-    const nextName = nextEdge ? graph.nodes.find((n) => n.id === nextEdge.to)?.name : undefined;
+    const nextName = composedEdges[1]
+      ? graph.nodes.find((n) => n.id === composedEdges[1].to)?.name
+      : undefined;
     return `// TODO: Chain ${sourceName ?? "?"} -> ${nextName ?? "?"} for ${node.name}`;
   });
 
   const mutationCode = mutationNodes.map((node) => {
-    const actionEdge = graph.edges.find(
-      (edge) => edge.from === node.id && edge.kind === "binds" && edge.to.startsWith(ACTION_PREFIX),
-    );
+    const actionEdge = graph.edges.find((edge) => {
+      if (edge.from !== node.id || edge.kind !== "wraps_action") return false;
+      return graph.nodes.some((n) => n.id === edge.to && n.kind === "action_function");
+    });
     const actionNode = actionEdge
       ? graph.nodes.find((n) => n.id === actionEdge.to && n.kind === "action_function")
       : undefined;
@@ -168,6 +187,16 @@ export const generateTanstackQueryArtifacts = (
         }),
       );
       return `// ERROR: Mutation ${node.name} has no bound action`;
+    }
+
+    if (!actionNode.stable_id) {
+      diagnostics.push(
+        diagnostic({
+          severity: "warning",
+          code: "tanstack-query:missing-symbol-metadata",
+          message: `Mutation ${node.name} action lacks symbol metadata for code generation`,
+        }),
+      );
     }
 
     const invalidationKeys = collectMutationInvalidationKeys(graph, node.id);

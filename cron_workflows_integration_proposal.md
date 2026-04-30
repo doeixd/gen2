@@ -335,8 +335,13 @@ const weekdaysAtNine = gen.schedule.weekly({
 A cron job binds a schedule to a typed callable.
 
 ```ts
-interface CronJob<In = void, Out = unknown, Err = never, Req = never, Eff = never>
-  extends StaticNode<"cron_job", In, Out, Err, Req, Eff> {
+interface CronJob<
+  In = void,
+  Out = unknown,
+  Err = never,
+  Req = never,
+  Eff = never,
+> extends StaticNode<"cron_job", In, Out, Err, Req, Eff> {
   readonly schedule: Schedule;
   readonly input?: ExprFunction<ScheduledFireContext, In> | StaticInput<In>;
   readonly run: CallableNode<In, Out, Err, Req, Eff> | ActionFunction<In, Out> | Workflow<In, Out>;
@@ -415,8 +420,13 @@ delivery:
 A workflow is a typed callable plan.
 
 ```ts
-interface Workflow<In = unknown, Out = unknown, Err = never, Req = never, Eff = never>
-  extends StaticNode<"workflow", In, Out, Err, Req, Eff> {
+interface Workflow<
+  In = unknown,
+  Out = unknown,
+  Err = never,
+  Req = never,
+  Eff = never,
+> extends StaticNode<"workflow", In, Out, Err, Req, Eff> {
   readonly name: string;
   readonly input: SemanticType<In>;
   readonly output: SemanticType<Out>;
@@ -485,9 +495,9 @@ const cleanupExpiredSessions = gen.func.action({
   input: gen.types.object({ olderThan: gen.types.datetime() }),
   returns: gen.types.object({ deleted: gen.types.number() }),
   effects: [Delete(Session)],
-  body: gen.action.delete(Session).where(
-    gen.expr.lt(Session.fields.expiresAt, gen.expr.param("olderThan")),
-  ),
+  body: gen.action
+    .delete(Session)
+    .where(gen.expr.lt(Session.fields.expiresAt, gen.expr.param("olderThan"))),
 });
 
 const cleanupJob = gen.cron.define({
@@ -616,7 +626,7 @@ const pastDueInvoiceJob = gen.cron.define({
 Runs steps in order.
 
 ```ts
-gen.workflow.sequence([stepA, stepB, stepC])
+gen.workflow.sequence([stepA, stepB, stepC]);
 ```
 
 Requirements/effects:
@@ -641,7 +651,7 @@ gen.workflow.parallel({
   user: getUser,
   projects: listProjects,
   notifications: listNotifications,
-})
+});
 ```
 
 Requirements/effects are unioned. Errors should preserve branch identity.
@@ -653,7 +663,7 @@ Graph edges show parallel branches separately.
 Runs a dependent next step using previous output.
 
 ```ts
-gen.workflow.chain(getUser, user => listProjectsForOrg(user.orgId))
+gen.workflow.chain(getUser, (user) => listProjectsForOrg(user.orgId));
 ```
 
 The callback form must lower to static IR or a static function builder. Avoid storing opaque callbacks.
@@ -667,7 +677,7 @@ gen.workflow.branch({
   if: canSendReminder,
   then: sendReminder,
   else: noop,
-})
+});
 ```
 
 The predicate should be `Predicate<Input, boolean>` or `Rule`.
@@ -680,7 +690,7 @@ Retry should wrap a step and expose retry semantics as static data.
 gen.workflow.retry(sendEmail, {
   policy: gen.retry.exponential({ maxAttempts: 5, baseDelay: "10s" }),
   retryOn: [TransientEmailError],
-})
+});
 ```
 
 Targets decide whether retry is implemented by queue, durable workflow engine, or inline loop.
@@ -688,7 +698,7 @@ Targets decide whether retry is implemented by queue, durable workflow engine, o
 ### 7.6 Wait
 
 ```ts
-gen.workflow.wait(gen.duration.days(3))
+gen.workflow.wait(gen.duration.days(3));
 ```
 
 Durable wait requires target support. If target cannot checkpoint/resume, the checker should reject or select a fallback.
@@ -700,7 +710,7 @@ gen.workflow.waitForEvent({
   event: UserActivatedEvent,
   where: gen.expr.eq(UserActivatedEvent.fields.userId, gen.workflow.input("userId")),
   timeout: gen.duration.days(7),
-})
+});
 ```
 
 Requires event correlation and durable state.
@@ -723,7 +733,7 @@ gen.workflow.saga([
     run: createShipment,
     compensate: cancelShipment,
   }),
-])
+]);
 ```
 
 Compensation should not be implicit. It should be declared and checked.
@@ -808,11 +818,11 @@ interface IdempotencyPlan<In = unknown> {
 Common helpers:
 
 ```ts
-gen.idempotency.byInput(fields)
-gen.idempotency.byEntity(entity, idExpr)
-gen.idempotency.byScheduleWindow("daily")
-gen.idempotency.byEventId()
-gen.idempotency.custom(expr)
+gen.idempotency.byInput(fields);
+gen.idempotency.byEntity(entity, idExpr);
+gen.idempotency.byScheduleWindow("daily");
+gen.idempotency.byEventId();
+gen.idempotency.custom(expr);
 ```
 
 ### 9.2 DeliveryPolicy
@@ -865,9 +875,7 @@ limit(n)
 For tenant-aware jobs:
 
 ```ts
-gen.concurrency.singletonPerKey(
-  gen.expr.field("tenantId"),
-)
+gen.concurrency.singletonPerKey(gen.expr.field("tenantId"));
 ```
 
 Concurrency constraints should become target requirements.
@@ -998,7 +1006,7 @@ Cron/workflows often write data or invalidate derived resources.
 gen.workflow.invalidate([
   projectKeys.list.any(),
   projectKeys.detail.match({ id: gen.workflow.value("projectId") }),
-])
+]);
 ```
 
 ### 14.2 Derived Invalidation
@@ -1034,9 +1042,7 @@ The rule planner may suggest a cron invalidation job:
 gen.cron.define({
   name: "refreshPastDueInvoices",
   schedule: gen.schedule.daily({ time: "00:05", timezone: "UTC" }),
-  run: gen.reactivity.invalidateAction([
-    invoiceKeys.pastDue.any(),
-  ]),
+  run: gen.reactivity.invalidateAction([invoiceKeys.pastDue.any()]),
 });
 ```
 
@@ -1468,4 +1474,3 @@ target output:
 ```
 
 This demonstrates the value: scheduled and long-running behavior becomes a typed, checkable, generatable part of the app model.
-

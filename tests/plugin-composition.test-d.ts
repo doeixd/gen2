@@ -57,8 +57,9 @@ setup.gen.db.cache.relational.table("x", {});
 
 const bare = createGen();
 
-// @ts-expect-error — no db plugin installed, so gen.db does not exist
-bare.gen.db;
+// gen.db is unknown when no db plugin is installed (GenPluginExtensions index signature)
+const _db: unknown = bare.gen.db;
+void _db;
 
 // --- Adapters compose into gen.adapters.<name> ------------------------------
 
@@ -83,7 +84,9 @@ const onlyDebug = createGen({ plugins: [defineDebugAdapter()] });
 onlyDebug.gen.adapters.debug.snapshot();
 
 // @ts-expect-error — relational adapter not installed
-onlyDebug.gen.adapters.relational;
+const _relational = onlyDebug.gen.adapters.relational;
+void _relational;
 
 // @ts-expect-error — standard-schema adapter not installed
-onlyDebug.gen.adapters.standardSchema;
+const _standardSchema = onlyDebug.gen.adapters.standardSchema;
+void _standardSchema;

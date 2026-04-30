@@ -13,6 +13,7 @@ import type { Artifact } from "./artifacts.ts";
 import type { Diagnostic, DiagnosticDefinition, Severity } from "./diagnostics.ts";
 import type { Ref } from "./refs.ts";
 import type { TargetInput } from "./target.ts";
+import type { StaticNode, TraitKind, TraitMetadata } from "./node.ts";
 
 /** Lifecycle status of a plugin within the kernel. */
 export type PluginStatus = "registered" | "active" | "failed";
@@ -83,6 +84,22 @@ export interface PluginContext extends PluginContextExtensions {
   readonly requirement_helpers: readonly string[];
 }
 
+/** A plugin-contributed custom node kind with traits and lifecycle hooks. */
+export interface NodeKindContribution {
+  readonly kind: string;
+  readonly traits: readonly TraitKind[];
+  readonly check?: (node: StaticNode) => readonly Diagnostic[];
+  readonly deriveGraph?: (node: StaticNode, ctx: PluginContext) => unknown;
+  readonly interpret?: Record<string, (node: StaticNode) => readonly Artifact[]>;
+}
+
+/** A plugin-contributed lowering from a custom node to canonical IR. */
+export interface LoweringContribution {
+  readonly from_kind: string;
+  readonly to_kind: string;
+  readonly lower: (node: StaticNode) => StaticNode | readonly StaticNode[];
+}
+
 /** Aggregated contributions produced by a plugin's setup function. */
 export interface PluginContributions {
   readonly helpers: readonly Helper[];
@@ -95,6 +112,10 @@ export interface PluginContributions {
   readonly checks: readonly CheckHook[];
   readonly codegen_hooks: readonly CodegenHook[];
   readonly artifact_transforms: readonly ArtifactTransform[];
+  readonly node_kinds: readonly NodeKindContribution[];
+  readonly lowerings: readonly LoweringContribution[];
+  /** Plugin-contributed trait metadata, keyed by trait name. */
+  readonly trait_metadata?: Record<string, TraitMetadata>;
 }
 
 /**
@@ -162,6 +183,12 @@ export const definePlugin = <THelpers extends object = {}>(
   status: "registered",
 });
 
+/** Helper for defining a plugin-contributed node kind. */
+export const defineNodeKind = (input: NodeKindContribution): NodeKindContribution => input;
+
+/** Helper for defining a plugin-contributed lowering from a custom node to canonical IR. */
+export const defineLowering = (input: LoweringContribution): LoweringContribution => input;
+
 const emptyContributions = (): PluginContributions => ({
   helpers: [],
   targets: [],
@@ -173,6 +200,8 @@ const emptyContributions = (): PluginContributions => ({
   checks: [],
   codegen_hooks: [],
   artifact_transforms: [],
+  node_kinds: [],
+  lowerings: [],
 });
 
 const mergeContributions = (partial: Partial<PluginContributions>): PluginContributions => ({

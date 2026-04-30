@@ -10,74 +10,9 @@
 
 import { type Diagnostic, diagnostic } from "../core/index.ts";
 import type { Entity } from "../entity/index.ts";
-import type { RuleExpr } from "../rules/index.ts";
 import { analyzeRulePlacement } from "../rules/index.ts";
 import type { AuthConditionInput, Policy } from "./authz.ts";
 import type { AccessSurface, Placement } from "./surface.ts";
-
-// --- Helpers ----------------------------------------------------------------
-
-const isSqlWhereExpr = (expr: RuleExpr, targetEntity: Entity): boolean => {
-  switch (expr.kind) {
-    case "rule.literal":
-    case "rule.var":
-      return true;
-    case "rule.field":
-      return expr.source === targetEntity;
-    case "rule.eq":
-    case "rule.compare":
-      return isSqlWhereExpr(expr.left, targetEntity) && isSqlWhereExpr(expr.right, targetEntity);
-    case "rule.and":
-    case "rule.or":
-      return expr.terms.every((t) => isSqlWhereExpr(t, targetEntity));
-    case "rule.not":
-      return isSqlWhereExpr(expr.term, targetEntity);
-    case "rule.exists":
-      return false;
-    default:
-      return false;
-  }
-};
-
-const hasExists = (expr: RuleExpr): boolean => {
-  switch (expr.kind) {
-    case "rule.exists":
-      return true;
-    case "rule.and":
-    case "rule.or":
-      return expr.terms.some(hasExists);
-    case "rule.not":
-      return hasExists(expr.term);
-    case "rule.eq":
-    case "rule.compare":
-      return hasExists(expr.left) || hasExists(expr.right);
-    default:
-      return false;
-  }
-};
-
-const allExistsSameStore = (expr: RuleExpr, targetEntity: Entity): boolean => {
-  switch (expr.kind) {
-    case "rule.exists": {
-      const fromStore = expr.relation.from_entity.store_name;
-      const toStore = expr.relation.to_entity.store_name;
-      const targetStore = targetEntity.store_name;
-      return fromStore === targetStore && toStore === targetStore;
-    }
-    case "rule.and":
-    case "rule.or":
-      return expr.terms.every((t) => allExistsSameStore(t, targetEntity));
-    case "rule.not":
-      return allExistsSameStore(expr.term, targetEntity);
-    case "rule.eq":
-    case "rule.compare":
-      return (
-        allExistsSameStore(expr.left, targetEntity) && allExistsSameStore(expr.right, targetEntity)
-      );
-    default:
-      return true;
-  }
-};
 
 const isRlsCondition = (condition: AuthConditionInput): boolean => {
   return (
@@ -109,12 +44,13 @@ export const classifyPlacement = (surface: AccessSurface, policy: Policy): Place
   if (policy.predicate) {
     // Use structured rule placement analysis for more precise classification
     const analysis = analyzeRulePlacement(policy.predicate, policy.target_entity);
-    if (analysis.selected) {
-      const selected = analysis.selected;
+    const selected =
+      analysis.selected ?? analysis.placements.find((p) => p.placement === "server_post_filter");
+    if (selected) {
       switch (selected.placement) {
         case "database_predicate":
           return { kind: "sql_where", authoritative: true, exact: true };
-        case "rls_policy":
+        case "rls":
           return { kind: "rls", authoritative: true, exact: true };
         case "server_integrated_query":
           return { kind: "server_integrated_query", authoritative: true, exact: true };
@@ -124,22 +60,12 @@ export const classifyPlacement = (surface: AccessSurface, policy: Policy): Place
           return { kind: "server_post_filter", authoritative: true, exact: false };
         case "client_hint":
           return { kind: "client_hint", authoritative: false, exact: false };
-        case "materialized":
-        case "external":
+        case "materialized_ivm":
+        case "external_evaluator":
           return { kind: "external", authoritative: false, exact: false };
       }
     }
-    // Fallback to old heuristic if analysis has no selected placement
-    if (isSqlWhereExpr(policy.predicate.body, policy.target_entity)) {
-      return { kind: "sql_where", authoritative: true, exact: true };
-    }
-    if (hasExists(policy.predicate.body)) {
-      if (allExistsSameStore(policy.predicate.body, policy.target_entity)) {
-        return { kind: "server_integrated_query", authoritative: true, exact: true };
-      }
-      return { kind: "server_post_filter", authoritative: true, exact: false };
-    }
-    return { kind: "server_pre_query", authoritative: true, exact: true };
+    return { kind: "none", authoritative: false, exact: false };
   }
 
   // Fall back to legacy AuthCondition

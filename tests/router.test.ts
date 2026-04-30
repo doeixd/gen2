@@ -1,5 +1,6 @@
 import { expect, test } from "vite-plus/test";
 import { createGen, lifecycle, router } from "../src/index.ts";
+import { defineNode } from "../src/core/node-lowering.ts";
 
 test("gen.router.route registers app routes in context", () => {
   const { gen, ctx } = createGen();
@@ -66,8 +67,8 @@ test("reactive graph derives app route nodes and loader binds edges", () => {
   });
   expect(graph.edges).toContainEqual({
     from: "app_route:/users/:id",
-    to: "query:getUser",
-    kind: "binds",
+    to: "function.getUser",
+    kind: "route_loads",
   });
 });
 
@@ -90,8 +91,8 @@ test("reactive graph derives app route action binds edge", () => {
 
   expect(graph.edges).toContainEqual({
     from: "app_route:/users/:id",
-    to: "action:updateUser",
-    kind: "binds",
+    to: "function.updateUser",
+    kind: "route_submits",
   });
 });
 
@@ -124,7 +125,7 @@ test("reactive graph derives app route with reactive resource loader", () => {
   expect(graph.edges).toContainEqual({
     from: "app_route:/users/:id",
     to: "resource:userResource",
-    kind: "binds",
+    kind: "route_loads",
   });
 });
 
@@ -149,7 +150,7 @@ test("reactive graph derives app route with reactive mutation action", () => {
   expect(graph.edges).toContainEqual({
     from: "app_route:/users/:id",
     to: "mutation:updateUserMutation",
-    kind: "binds",
+    kind: "route_submits",
   });
 });
 
@@ -211,4 +212,47 @@ test("router.link replaces multiple occurrences of the same param", () => {
 
   const path = router.link(route, { id: "u1" });
   expect(path).toBe("/users/u1/avatar/u1");
+});
+
+test("custom trait-implementing node works as a route loader", () => {
+  const { gen, ctx } = createGen();
+  const _User = gen.entity("User", { id: gen.types.uuid() });
+  void _User;
+
+  // Define a custom callable+readable+server-placeable node
+  const customLoader = defineNode({
+    kind: "custom_loader",
+    name: "customUserLoader",
+    traits: ["callable", "readable", "server_placeable"],
+    input: gen.types.uuid(),
+    output: gen.types.uuid(),
+  });
+
+  // Use the custom node as a route loader
+  gen.router.route({
+    path: "/users/:id",
+    path_params: { id: gen.types.uuid() },
+    loaders: [customLoader as any],
+  });
+
+  // Derive the reactive graph
+  const graph = gen.reactivity.graph(ctx);
+
+  // The graph should contain the app route node
+  expect(graph.nodes.some((n) => n.kind === "app_route" && n.name === "/users/:id")).toBe(true);
+
+  // The graph should contain the custom loader node
+  expect(
+    graph.nodes.some((n) => n.kind === "query_function" && n.name === "customUserLoader"),
+  ).toBe(true);
+
+  // There should be a route_loads edge from the route to the custom loader
+  expect(
+    graph.edges.some(
+      (e) =>
+        e.from === "app_route:/users/:id" &&
+        e.to === "node:customUserLoader" &&
+        e.kind === "route_loads",
+    ),
+  ).toBe(true);
 });

@@ -5,7 +5,12 @@
  */
 
 export * from "./refs.ts";
+export * from "./node.ts";
+export * from "./node-lowering.ts";
 export * from "./diagnostics.ts";
+export { defineNode, registerNode } from "./node-lowering.ts";
+export * from "./magic_strings.ts";
+export * from "./migration_lineage.ts";
 export * from "./artifacts.ts";
 export * from "./target.ts";
 export * from "./contract.ts";

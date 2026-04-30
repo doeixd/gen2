@@ -68,6 +68,7 @@ export const bindKeyFamily = (ctx: GenContext): typeof reactivityMod.defineKeyFa
   ((name, options) => {
     const family = reactivityMod.defineKeyFamily(name, options);
     ctx.key_families.push(family);
+    registerRefs(ctx, [family.ref]);
     return family;
   }) as typeof reactivityMod.defineKeyFamily;
 
@@ -105,6 +106,22 @@ export const bindResourceChain = (ctx: GenContext): typeof reactivityMod.defineR
     return rc;
   }) as typeof reactivityMod.defineResourceChain;
 
+export const bindReactiveRegistry = (
+  ctx: GenContext,
+): typeof reactivityMod.defineReactiveRegistry =>
+  ((name, families) => {
+    const registry = reactivityMod.defineReactiveRegistry(name, families);
+    ctx.reactive_registries.push(registry);
+    return registry;
+  }) as typeof reactivityMod.defineReactiveRegistry;
+
+export const bindTrackingScope = (ctx: GenContext): typeof reactivityMod.defineTrackingScope =>
+  ((...args) => {
+    const scope = reactivityMod.defineTrackingScope(...args);
+    ctx.tracking_scopes.push(scope);
+    return scope;
+  }) as typeof reactivityMod.defineTrackingScope;
+
 export const bindAppRoute = (ctx: GenContext): typeof routerMod.defineAppRoute =>
   ((input) => {
     const route = routerMod.defineAppRoute(input);
@@ -116,6 +133,10 @@ export const bindServiceRef = (ctx: GenContext): typeof servicesMod.defineServic
   ((input) => {
     const service = servicesMod.defineServiceRef(input);
     ctx.services.push(service);
+    if (service.ref) registerRefs(ctx, [service.ref]);
+    for (const method of service.methods) {
+      if (method.ref) registerRefs(ctx, [method.ref]);
+    }
     return service;
   }) as typeof servicesMod.defineServiceRef;
 
@@ -128,10 +149,7 @@ export const bindEntity = (ctx: GenContext): typeof entityMod.defineEntity =>
   ((name, fields, options) => {
     const entity = entityMod.defineEntity(name, fields, options);
     ctx.entities.push(entity);
-    registerRefs(
-      ctx,
-      entity.fieldList.map((field) => field.ref),
-    );
+    registerRefs(ctx, [entity.ref, ...entity.fieldList.map((field) => field.ref)]);
     return entity;
   }) as typeof entityMod.defineEntity;
 
@@ -256,8 +274,8 @@ export const bindRelation = (ctx: GenContext): typeof relationMod.defineRelation
  * @returns A context-bound `defineRelationEntity`.
  */
 export const bindRelationEntity = (ctx: GenContext): typeof relationMod.defineRelationEntity =>
-  ((name, roles, fields) => {
-    const relationEntity = relationMod.defineRelationEntity(name, roles, fields);
+  ((name, roles, fields, options) => {
+    const relationEntity = relationMod.defineRelationEntity(name, roles, fields, options);
     ctx.relation_entities.push(relationEntity);
     registerRefs(ctx, [relationEntity.ref]);
     return relationEntity;
@@ -291,7 +309,12 @@ export const bindGraph = (ctx: GenContext): typeof relationMod.defineGraph =>
  * @returns A context-bound `oneToOne`.
  */
 export const bindOneToOne = (ctx: GenContext): typeof relationMod.oneToOne =>
-  bindFactory(ctx.relations, relationMod.oneToOne) as typeof relationMod.oneToOne;
+  ((...args) => {
+    const relation = relationMod.oneToOne(...args);
+    ctx.relations.push(relation);
+    registerRefs(ctx, [relation.ref]);
+    return relation;
+  }) as typeof relationMod.oneToOne;
 
 /**
  * Binds `oneToMany` to a context, registering the result into the relations collection.
@@ -299,7 +322,12 @@ export const bindOneToOne = (ctx: GenContext): typeof relationMod.oneToOne =>
  * @returns A context-bound `oneToMany`.
  */
 export const bindOneToMany = (ctx: GenContext): typeof relationMod.oneToMany =>
-  bindFactory(ctx.relations, relationMod.oneToMany) as typeof relationMod.oneToMany;
+  ((...args) => {
+    const relation = relationMod.oneToMany(...args);
+    ctx.relations.push(relation);
+    registerRefs(ctx, [relation.ref]);
+    return relation;
+  }) as typeof relationMod.oneToMany;
 
 /**
  * Binds `manyToOne` to a context, registering the result into the relations collection.
@@ -307,7 +335,12 @@ export const bindOneToMany = (ctx: GenContext): typeof relationMod.oneToMany =>
  * @returns A context-bound `manyToOne`.
  */
 export const bindManyToOne = (ctx: GenContext): typeof relationMod.manyToOne =>
-  bindFactory(ctx.relations, relationMod.manyToOne) as typeof relationMod.manyToOne;
+  ((...args) => {
+    const relation = relationMod.manyToOne(...args);
+    ctx.relations.push(relation);
+    registerRefs(ctx, [relation.ref]);
+    return relation;
+  }) as typeof relationMod.manyToOne;
 
 /**
  * Binds `manyToMany` to a context, registering the result into the relations collection.
@@ -315,7 +348,12 @@ export const bindManyToOne = (ctx: GenContext): typeof relationMod.manyToOne =>
  * @returns A context-bound `manyToMany`.
  */
 export const bindManyToMany = (ctx: GenContext): typeof relationMod.manyToMany =>
-  bindFactory(ctx.relations, relationMod.manyToMany) as typeof relationMod.manyToMany;
+  ((...args) => {
+    const relation = relationMod.manyToMany(...args);
+    ctx.relations.push(relation);
+    registerRefs(ctx, [relation.ref]);
+    return relation;
+  }) as typeof relationMod.manyToMany;
 
 /**
  * Binds `defineRuntime` to a context, registering the result into the runtimes collection.
@@ -359,10 +397,12 @@ export const bindFromEntity = (ctx: GenContext): typeof queryMod.fromEntity =>
  * @returns A context-bound `defineExprFunction`.
  */
 export const bindExprFunction = (ctx: GenContext): typeof functionMod.defineExprFunction =>
-  bindFactory(
-    ctx.expr_functions,
-    functionMod.defineExprFunction,
-  ) as typeof functionMod.defineExprFunction;
+  ((input) => {
+    const fn = functionMod.defineExprFunction(input);
+    ctx.expr_functions.push(fn);
+    if (fn.ref) registerRefs(ctx, [fn.ref]);
+    return fn;
+  }) as typeof functionMod.defineExprFunction;
 
 /**
  * Binds `defineQueryFunction` to a context, registering the result into the
@@ -371,10 +411,12 @@ export const bindExprFunction = (ctx: GenContext): typeof functionMod.defineExpr
  * @returns A context-bound `defineQueryFunction`.
  */
 export const bindQueryFunction = (ctx: GenContext): typeof functionMod.defineQueryFunction =>
-  bindFactory(
-    ctx.query_functions,
-    functionMod.defineQueryFunction,
-  ) as typeof functionMod.defineQueryFunction;
+  ((input) => {
+    const fn = functionMod.defineQueryFunction(input);
+    ctx.query_functions.push(fn);
+    if (fn.ref) registerRefs(ctx, [fn.ref]);
+    return fn;
+  }) as typeof functionMod.defineQueryFunction;
 
 /**
  * Binds `defineActionFunction` to a context, registering the result into the
@@ -383,10 +425,12 @@ export const bindQueryFunction = (ctx: GenContext): typeof functionMod.defineQue
  * @returns A context-bound `defineActionFunction`.
  */
 export const bindActionFunction = (ctx: GenContext): typeof functionMod.defineActionFunction =>
-  bindFactory(
-    ctx.action_functions,
-    functionMod.defineActionFunction,
-  ) as typeof functionMod.defineActionFunction;
+  ((input) => {
+    const fn = functionMod.defineActionFunction(input);
+    ctx.action_functions.push(fn);
+    if (fn.ref) registerRefs(ctx, [fn.ref]);
+    return fn;
+  }) as typeof functionMod.defineActionFunction;
 
 /**
  * Binds `definePatchFunction` to a context, registering the result into the
@@ -395,10 +439,12 @@ export const bindActionFunction = (ctx: GenContext): typeof functionMod.defineAc
  * @returns A context-bound `definePatchFunction`.
  */
 export const bindPatchFunction = (ctx: GenContext): typeof functionMod.definePatchFunction =>
-  bindFactory(
-    ctx.patch_functions,
-    functionMod.definePatchFunction,
-  ) as typeof functionMod.definePatchFunction;
+  ((input) => {
+    const fn = functionMod.definePatchFunction(input);
+    ctx.patch_functions.push(fn);
+    if (fn.ref) registerRefs(ctx, [fn.ref]);
+    return fn;
+  }) as typeof functionMod.definePatchFunction;
 
 /**
  * Binds `defineRoute` to a context, validating that the handler has exactly one
@@ -664,10 +710,12 @@ export const bindSubscription = (ctx: GenContext): typeof eventsMod.defineSubscr
  * @returns A context-bound `defineStaticFunction`.
  */
 export const bindStaticFunction = (ctx: GenContext): typeof functionMod.defineStaticFunction =>
-  bindFactory(
-    ctx.static_functions,
-    functionMod.defineStaticFunction,
-  ) as typeof functionMod.defineStaticFunction;
+  ((input) => {
+    const fn = functionMod.defineStaticFunction(input);
+    ctx.static_functions.push(fn);
+    if (fn.ref) registerRefs(ctx, [fn.ref]);
+    return fn;
+  }) as typeof functionMod.defineStaticFunction;
 
 /**
  * Binds `definePredicateFunction` to a context, registering the result into the
@@ -678,10 +726,12 @@ export const bindStaticFunction = (ctx: GenContext): typeof functionMod.defineSt
 export const bindPredicateFunction = (
   ctx: GenContext,
 ): typeof functionMod.definePredicateFunction =>
-  bindFactory(
-    ctx.predicate_functions,
-    functionMod.definePredicateFunction,
-  ) as typeof functionMod.definePredicateFunction;
+  ((input) => {
+    const fn = functionMod.definePredicateFunction(input);
+    ctx.predicate_functions.push(fn);
+    if (fn.ref) registerRefs(ctx, [fn.ref]);
+    return fn;
+  }) as typeof functionMod.definePredicateFunction;
 
 /**
  * Binds `definePlanFunction` to a context, registering the result into the
@@ -690,10 +740,12 @@ export const bindPredicateFunction = (
  * @returns A context-bound `definePlanFunction`.
  */
 export const bindPlanFunction = (ctx: GenContext): typeof functionMod.definePlanFunction =>
-  bindFactory(
-    ctx.plan_functions,
-    functionMod.definePlanFunction,
-  ) as typeof functionMod.definePlanFunction;
+  ((input) => {
+    const fn = functionMod.definePlanFunction(input);
+    ctx.plan_functions.push(fn);
+    if (fn.ref) registerRefs(ctx, [fn.ref]);
+    return fn;
+  }) as typeof functionMod.definePlanFunction;
 
 /**
  * Binds `defineView` to a context, registering the result into the views collection.
@@ -777,8 +829,16 @@ export const bindDeriveCrud = (ctx: GenContext): typeof crudMod.deriveCrud =>
   ((entity, options) => {
     const getByIdKey = options?.getByIdKey ?? reactivityMod.entityKeyFamily(entity);
     const listKey = options?.listKey ?? reactivityMod.collectionKeyFamily(entity);
-    if (!options?.getByIdKey) ctx.key_families.push(getByIdKey);
-    if (!options?.listKey) ctx.key_families.push(listKey);
+    if (!options?.getByIdKey) {
+      if (!ctx.key_families.some((kf) => kf.name === getByIdKey.name)) {
+        ctx.key_families.push(getByIdKey);
+      }
+    }
+    if (!options?.listKey) {
+      if (!ctx.key_families.some((kf) => kf.name === listKey.name)) {
+        ctx.key_families.push(listKey);
+      }
+    }
     const crud = crudMod.deriveCrud(entity, {
       ...options,
       getByIdKey,

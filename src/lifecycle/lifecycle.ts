@@ -10,6 +10,8 @@ import {
   type Artifact,
   checkConfig,
   checkContractsAndActors,
+  checkMagicStrings,
+  checkNodes,
   collectAllArtifacts,
   collectAllDiagnostics,
   type Diagnostic,
@@ -303,6 +305,8 @@ export const registerBuiltInModuleCheckers = (ctx: GenContext): void => {
       key_families: ctx.key_families,
       reactive_resources: ctx.reactive_resources,
       reactive_mutations: ctx.reactive_mutations,
+      query_functions: ctx.query_functions,
+      action_functions: ctx.action_functions,
     }),
   );
   registerModuleChecker(ctx, (ctx) =>
@@ -315,6 +319,8 @@ export const registerBuiltInModuleCheckers = (ctx: GenContext): void => {
   registerModuleChecker(ctx, (ctx) => checkServices(ctx));
   registerModuleChecker(ctx, (ctx) => checkRules(ctx.rules));
   registerModuleChecker(ctx, (ctx) => checkReactions(ctx.reactions));
+  registerModuleChecker(ctx, (ctx) => checkNodes(ctx));
+  registerModuleChecker(ctx, (ctx) => checkMagicStrings(ctx));
   registerModuleChecker(ctx, (ctx) =>
     checkUi({
       views: ctx.views,

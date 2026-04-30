@@ -230,7 +230,7 @@ test("dependency-not-extractable diagnostic for exists", () => {
 
   const result = check(ctx);
   const diag = result.diagnostics.find(
-    (d) => d.code === "rules-reactivity:dependency-not-extractable",
+    (d) => d.code === "rules-reactivity:complex-dependency-reduces-precision",
   );
   expect(diag).toBeDefined();
   expect(diag!.severity).toBe("info");

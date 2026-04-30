@@ -1,4 +1,3 @@
-
 Yes — typed references should be the default. Magic strings should be either avoided entirely or limited to stable external names where they are unavoidable.
 
 The better design is:
@@ -17,23 +16,23 @@ Target output:
 So users write:
 
 ```ts id="julii4"
-Project.fields.status
-Project.relations.members
-canViewProject
-currentActor
-projectKeys.detail
-EmailService.methods.send
+Project.fields.status;
+Project.relations.members;
+canViewProject;
+currentActor;
+projectKeys.detail;
+EmailService.methods.send;
 ```
 
 not:
 
 ```ts id="dk05x1"
-"Project.status"
-"members"
-"canViewProject"
-"currentActor"
-"project.detail"
-"send"
+"Project.status";
+"members";
+"canViewProject";
+"currentActor";
+"project.detail";
+"send";
 ```
 
 ## Core principle
@@ -71,11 +70,7 @@ metadata
 Example shape:
 
 ```ts id="xtr9px"
-interface Ref<
-  Kind extends string,
-  Id extends string,
-  T = unknown,
-> {
+interface Ref<Kind extends string, Id extends string, T = unknown> {
   readonly kind: Kind;
   readonly id: Id;
   readonly name?: string;
@@ -86,11 +81,7 @@ interface Ref<
 But for fields you want stronger typing:
 
 ```ts id="xgxi4h"
-interface FieldRef<
-  E,
-  Name extends string,
-  T,
-> {
+interface FieldRef<E, Name extends string, T> {
   readonly kind: "field_ref";
   readonly id: StableId;
   readonly name: Name;
@@ -136,19 +127,19 @@ because `Invoice.fields.total` is not a `Project` field.
 Instead of:
 
 ```ts id="srm747"
-gen.expr.field("project.status")
+gen.expr.field("project.status");
 ```
 
 use:
 
 ```ts id="lhs7ux"
-gen.expr.field(Project.fields.status)
+gen.expr.field(Project.fields.status);
 ```
 
 Instead of:
 
 ```ts id="g3mzl3"
-gen.expr.param("actorId")
+gen.expr.param("actorId");
 ```
 
 you can use typed input refs where possible:
@@ -159,7 +150,7 @@ const input = gen.input.object({
   projectId: Project.fields.id.type,
 });
 
-gen.expr.param(input.fields.actorId)
+gen.expr.param(input.fields.actorId);
 ```
 
 Or inside a typed builder:
@@ -213,7 +204,7 @@ const canEditProject = gen.rule.define({
 Not:
 
 ```ts id="hzt33a"
-gen.rule.field("project.ownerId")
+gen.rule.field("project.ownerId");
 ```
 
 ## Services should use method refs
@@ -221,19 +212,19 @@ gen.rule.field("project.ownerId")
 Instead of:
 
 ```ts id="fwq5o5"
-gen.action.callService(EmailService, "sendEmail", input)
+gen.action.callService(EmailService, "sendEmail", input);
 ```
 
 prefer:
 
 ```ts id="jsl04n"
-gen.action.call(EmailService.methods.sendEmail, input)
+gen.action.call(EmailService.methods.sendEmail, input);
 ```
 
 Then the method ref carries input/output/effect types:
 
 ```ts id="1xz9w7"
-EmailService.methods.sendEmail
+EmailService.methods.sendEmail;
 // MethodRef<EmailService, SendEmailInput, SendEmailResult>
 ```
 
@@ -244,13 +235,13 @@ The compiler can reject wrong input.
 Instead of:
 
 ```ts id="f2ph1y"
-requires: ["CurrentActor"]
+requires: ["CurrentActor"];
 ```
 
 use:
 
 ```ts id="z77lk7"
-requires: [CurrentActor]
+requires: [CurrentActor];
 ```
 
 And providers:
@@ -265,7 +256,7 @@ gen.provider.define({
 Not:
 
 ```ts id="qlka9u"
-provides: "CurrentActor"
+provides: "CurrentActor";
 ```
 
 ## Keys should use key-family refs
@@ -286,15 +277,15 @@ const projectDetailKey = gen.key.family({
 Then use:
 
 ```ts id="7286qy"
-projectDetailKey({ id })
-projectDetailKey.any()
-projectDetailKey.match({ id })
+projectDetailKey({ id });
+projectDetailKey.any();
+projectDetailKey.match({ id });
 ```
 
 not:
 
 ```ts id="bxe1m4"
-gen.key.invalidate("project.detail")
+gen.key.invalidate("project.detail");
 ```
 
 ## Migrations especially need stable refs
@@ -319,7 +310,7 @@ const Project = gen.entity({
 The author uses:
 
 ```ts id="pgl62a"
-Project.fields.title
+Project.fields.title;
 ```
 
 The persisted IR knows:
@@ -347,19 +338,19 @@ drop old field + add unrelated new field
 A common temptation is:
 
 ```ts id="bqiyyd"
-gen.path("Project.owner.email")
+gen.path("Project.owner.email");
 ```
 
 Better:
 
 ```ts id="51cx46"
-gen.path(Project.relations.owner, User.fields.email)
+gen.path(Project.relations.owner, User.fields.email);
 ```
 
 Or:
 
 ```ts id="ydw0fe"
-Project.paths.owner.email
+Project.paths.owner.email;
 ```
 
 If you generate typed path objects.
@@ -367,7 +358,7 @@ If you generate typed path objects.
 Path refs can carry source/target types:
 
 ```ts id="ejwmwg"
-PathRef<Project, string>
+PathRef<Project, string>;
 ```
 
 Then forms, patches, projections, and relation includes become safer.
@@ -413,7 +404,7 @@ const ProjectStatusFieldId = gen.id.field(ProjectId, "status");
 Or:
 
 ```ts id="skeh6n"
-id: gen.stableId("field.project.status")
+id: gen.stableId("field.project.status");
 ```
 
 This makes it visually clear that the string is a persistent ID, not a casual lookup key.
@@ -446,14 +437,12 @@ const listProjects = gen.func.query({
   returns: gen.types.array(ProjectSummary),
   body: gen.query
     .from(Project)
-    .where(
-      gen.expr.eq(Project.fields.tenantId, ListProjectsInput.fields.tenantId)
-    ),
+    .where(gen.expr.eq(Project.fields.tenantId, ListProjectsInput.fields.tenantId)),
   reactivity: {
-    key: gen.key.expr(input =>
+    key: gen.key.expr((input) =>
       projectKeys.list({
         tenantId: input.tenantId,
-      })
+      }),
     ),
   },
 });
@@ -495,17 +484,17 @@ No method names as strings.
 Every registry API should prefer refs:
 
 ```ts id="o26i8s"
-ctx.get(Project)
-ctx.get(Project.fields.status)
-ctx.get(canViewProject)
-ctx.get(projectKeys.detail)
-ctx.get(EmailService.methods.sendEmail)
+ctx.get(Project);
+ctx.get(Project.fields.status);
+ctx.get(canViewProject);
+ctx.get(projectKeys.detail);
+ctx.get(EmailService.methods.sendEmail);
 ```
 
 Maybe allow string lookup only for tooling/import:
 
 ```ts id="u19tst"
-ctx.lookupById("field.project.status")
+ctx.lookupById("field.project.status");
 ```
 
 But normal application code should not use it.

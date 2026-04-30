@@ -441,9 +441,7 @@ test("analyzeRulePlacement emits error when no authoritative placement exists", 
 
   const analysis = gen.rule.analyzePlacement(rule, User);
   // No store on User, so no authoritative placement
-  expect(
-    analysis.diagnostics.some((d) => d.code === "authz:list-policy-not-database-placeable"),
-  ).toBe(true);
+  expect(analysis.diagnostics.some((d) => d.code === "rules:not-sql-translatable")).toBe(true);
 });
 
 test("analyzeRulePlacement flags materialized and external as unsupported", () => {
@@ -456,8 +454,8 @@ test("analyzeRulePlacement flags materialized and external as unsupported", () =
   });
 
   const analysis = gen.rule.analyzePlacement(rule, User);
-  const materialized = analysis.placements.find((p) => p.placement === "materialized")!;
-  const external = analysis.placements.find((p) => p.placement === "external")!;
+  const materialized = analysis.placements.find((p) => p.placement === "materialized_ivm")!;
+  const external = analysis.placements.find((p) => p.placement === "external_evaluator")!;
 
   expect(materialized.supported).toBe(false);
   expect(external.supported).toBe(false);

@@ -1,5 +1,3 @@
-
-
 You can use “pseudo typeclasses” plus custom semantic types to define **merge behavior as typed, inspectable metadata**. That would let the compiler know how values of a given type should combine during:
 
 ```txt id="i5g6l4"
@@ -95,10 +93,7 @@ interface MergeStrategy<T, Delta = T> {
   readonly valueType: SemanticType<T>;
   readonly deltaType?: SemanticType<Delta>;
 
-  readonly merge: ExprFunction<
-    { base?: T; left: T; right: T; context?: MergeContext },
-    T
-  >;
+  readonly merge: ExprFunction<{ base?: T; left: T; right: T; context?: MergeContext }, T>;
 
   readonly diff?: ExprFunction<{ before: T; after: T }, Delta>;
   readonly applyDelta?: ExprFunction<{ value: T; delta: Delta }, T>;
@@ -143,22 +138,16 @@ custom
 Example:
 
 ```ts id="3mqap2"
-const TagSet = gen.types.set(gen.types.string()).withMerge(
-  gen.merge.setUnion()
-);
+const TagSet = gen.types.set(gen.types.string()).withMerge(gen.merge.setUnion());
 
-const UpdatedAt = gen.types.datetime().withMerge(
-  gen.merge.max()
-);
+const UpdatedAt = gen.types.datetime().withMerge(gen.merge.max());
 
-const ViewCount = gen.types.number().withMerge(
-  gen.merge.sumDeltas()
-);
+const ViewCount = gen.types.number().withMerge(gen.merge.sumDeltas());
 
 const Title = gen.types.string().withMerge(
   gen.merge.lastWriteWins({
     clock: "updatedAt",
-  })
+  }),
 );
 ```
 
@@ -181,10 +170,7 @@ const Mergeable = gen.typeclass.define("Mergeable", {
       returns: gen.types.typeParam("T"),
     }),
   },
-  laws: [
-    gen.law.associative(),
-    gen.law.identity(),
-  ],
+  laws: [gen.law.associative(), gen.law.identity()],
 });
 ```
 
@@ -196,11 +182,7 @@ const tagSetMerge = gen.typeclass.instance(Mergeable, {
   methods: {
     merge: gen.merge.setUnion(),
   },
-  laws: [
-    gen.law.associative(),
-    gen.law.commutative(),
-    gen.law.idempotent(),
-  ],
+  laws: [gen.law.associative(), gen.law.commutative(), gen.law.idempotent()],
 });
 ```
 
@@ -226,11 +208,11 @@ I would not expose “typeclass” jargon to normal users unless the project alr
 Public API could be:
 
 ```ts id="b4l3fj"
-gen.types.number().mergeWith(gen.merge.sum())
-gen.types.array(Comment).mergeWith(gen.merge.byId(Comment.fields.id))
-gen.types.enum(["draft", "active", "archived"]).mergeWith(
-  gen.merge.stateMachine(ProjectStatusMachine)
-)
+gen.types.number().mergeWith(gen.merge.sum());
+gen.types.array(Comment).mergeWith(gen.merge.byId(Comment.fields.id));
+gen.types
+  .enum(["draft", "active", "archived"])
+  .mergeWith(gen.merge.stateMachine(ProjectStatusMachine));
 ```
 
 Internally, that can register a `Mergeable` instance.
@@ -475,7 +457,7 @@ const CommentCount = gen.types.number().withMerge(
   gen.merge.sumDeltas({
     identity: 0,
     delta: gen.types.number(),
-  })
+  }),
 );
 ```
 
@@ -563,8 +545,7 @@ interface TypeclassInstance<T = unknown> {
 Then merge is a specific typeclass:
 
 ```ts id="x669f2"
-interface MergeableInstance<T, Delta = T>
-  extends TypeclassInstance<T> {
+interface MergeableInstance<T, Delta = T> extends TypeclassInstance<T> {
   readonly typeclass: "Mergeable";
   readonly strategy: MergeStrategy<T, Delta>;
 }
@@ -634,12 +615,7 @@ Or for a CRDT-ish type:
 const GrowOnlyCounter = gen.types.custom("GCounter", {
   representation: gen.types.record(gen.types.string(), gen.types.number()),
   merge: gen.merge.fieldWiseMax(),
-  laws: [
-    gen.law.associative(),
-    gen.law.commutative(),
-    gen.law.idempotent(),
-    gen.law.monotonic(),
-  ],
+  laws: [gen.law.associative(), gen.law.commutative(), gen.law.idempotent(), gen.law.monotonic()],
 });
 ```
 

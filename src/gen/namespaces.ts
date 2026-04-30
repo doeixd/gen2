@@ -59,7 +59,9 @@ import {
   bindReactiveResource,
   bindResourceAll,
   bindResourceChain,
+  bindReactiveRegistry,
   bindAppRoute,
+  bindTrackingScope,
   bindServiceRef,
 } from "./binders.ts";
 
@@ -86,6 +88,7 @@ import type {
   RulesNamespace,
   ReactionNamespace,
   AuthzSurfaceNamespace,
+  NodeNamespace,
 } from "./types.ts";
 
 export const createKeyNamespace = <C extends GenConfig = GenConfig>(
@@ -95,11 +98,13 @@ export const createKeyNamespace = <C extends GenConfig = GenConfig>(
   entity: ((entity) => {
     const family = reactivityMod.entityKeyFamily(entity);
     ctx.key_families.push(family);
+    ctx.refs.push(family.ref);
     return family;
   }) as typeof reactivityMod.entityKeyFamily,
   collection: ((entity) => {
     const family = reactivityMod.collectionKeyFamily(entity);
     ctx.key_families.push(family);
+    ctx.refs.push(family.ref);
     return family;
   }) as typeof reactivityMod.collectionKeyFamily,
   custom: bindKeyFamily(ctx),
@@ -117,6 +122,8 @@ export const createReactivityNamespace = <C extends GenConfig = GenConfig>(
   mutation: bindReactiveMutation(ctx),
   all: bindResourceAll(ctx),
   chain: bindResourceChain(ctx),
+  registry: bindReactiveRegistry(ctx),
+  scope: bindTrackingScope(ctx),
   optimistic: reactivityMod.defineOptimisticPlan,
   invalidates: reactivityMod.invalidates,
   graph: reactivityMod.deriveReactiveGraph,
@@ -130,7 +137,8 @@ export const createReactivityNamespace = <C extends GenConfig = GenConfig>(
   entitiesWrittenByMutation: reactivityMod.entitiesWrittenByMutation,
   actionsWritingEntity: reactivityMod.actionsWritingEntity,
   mutationsWritingEntity: reactivityMod.mutationsWritingEntity,
-  graphArtifact: reactivityMod.reactiveGraphArtifact,
+  graphArtifact: (graph: reactivityMod.ReactiveGraph, path?: string) =>
+    reactivityMod.reactiveGraphArtifact(graph, path, ctx),
   singleFlight: reactivityMod.deriveSingleFlightPlan,
   ruleInvalidations: reactivityMod.deriveRuleInvalidationPlans,
   ivmPlans: reactivityMod.deriveIvmPlans,
@@ -186,9 +194,12 @@ export const createRulesNamespace = <C extends GenConfig = GenConfig>(
   exists: rulesMod.ruleExists,
   dependencies: rulesMod.extractRuleDependencies,
   translateSql: rulesMod.translateRuleToSql,
+  sqlPredicate: rulesMod.ruleToSqlPredicate,
+  rlsPolicy: rulesMod.ruleToRlsPolicy,
   translateSqlWithBindings: rulesMod.translateRuleToSqlWithBindings,
   evaluate: rulesMod.evaluateRule,
   analyzePlacement: rulesMod.analyzeRulePlacement,
+  classifyPlacement: rulesMod.classifyRulePlacement,
 });
 
 export const createReactionNamespace = <C extends GenConfig = GenConfig>(
@@ -401,6 +412,7 @@ export const createFunctionNamespace = <C extends GenConfig = GenConfig>(
   buildActionInsert: functionMod.buildActionInsert,
   buildActionUpdate: functionMod.buildActionUpdate,
   buildActionDelete: functionMod.buildActionDelete,
+  buildActionInvalidate: functionMod.buildActionInvalidate,
   buildActionSequence: functionMod.buildActionSequence,
   buildPatchInsert: functionMod.buildPatchInsert,
   buildPatchUpdate: functionMod.buildPatchUpdate,
@@ -608,4 +620,20 @@ export const createEnvNamespace = <C extends GenConfig = GenConfig>(): EnvNamesp
   boolean: core.envBoolean,
   json: core.envJson,
   requires: core.envRequires,
+});
+
+/**
+ * Creates the `node` namespace for custom application-level nodes.
+ * @param ctx - The mutable Gen context.
+ * @returns The node namespace.
+ */
+export const createNodeNamespace = <C extends GenConfig = GenConfig>(
+  ctx: GenContext,
+): NodeNamespace<C> => ({
+  define: (input) => {
+    const node = core.defineNode(input);
+    core.registerNode(ctx, node);
+    return node;
+  },
+  register: (node) => core.registerNode(ctx, node),
 });

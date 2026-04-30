@@ -18,13 +18,13 @@ import { translateRuleToSql, type SqlDialectCapabilities } from "./sql-translato
 
 export type RulePlacementKind =
   | "database_predicate"
-  | "rls_policy"
+  | "rls"
   | "server_pre_query"
   | "server_integrated_query"
   | "server_post_filter"
   | "client_hint"
-  | "materialized"
-  | "external";
+  | "materialized_ivm"
+  | "external_evaluator";
 
 export type RulePlacementSafety = "authoritative" | "non_authoritative_hint" | "unsafe";
 
@@ -46,6 +46,15 @@ export interface RulePlacementAnalysis {
   readonly rule: Rule;
   readonly placements: readonly RulePlacementOption[];
   readonly selected?: RulePlacementOption;
+  readonly diagnostics: readonly Diagnostic[];
+}
+
+export interface RulePlacement {
+  readonly kind: "rule_placement";
+  readonly rule: Rule;
+  readonly target_entity: Entity;
+  readonly selected?: RulePlacementKind;
+  readonly options: readonly RulePlacementOption[];
   readonly diagnostics: readonly Diagnostic[];
 }
 
@@ -235,11 +244,11 @@ export const analyzeRulePlacement = (
     });
   }
 
-  // 2. rls_policy — only if simple and entity has store
+  // 2. rls — only if simple and entity has store
   {
     const supported = entityHasStore && !hasExistsExpr(body) && !hasUnsafeNegation(body);
     placements.push({
-      placement: "rls_policy",
+      placement: "rls",
       supported,
       safety: supported ? "authoritative" : "unsafe",
       requirements: supported ? ["Row-level security enabled", "same-store entity"] : [],
@@ -265,10 +274,8 @@ export const analyzeRulePlacement = (
   {
     const hasEx = hasExistsExpr(body);
     const sameStore = allExistsSameStore(body, targetEntity);
-    const fieldsOnTarget = allFieldsOnTargetEntity(body, targetEntity);
-    // Supported when there's a same-store exists that couldn't be placed as database_predicate
-    // (e.g., because fields reference other entities)
-    const supported = entityHasStore && hasEx && sameStore && !fieldsOnTarget;
+    // Supported when same-store exists can be folded into the server query planner.
+    const supported = entityHasStore && hasEx && sameStore;
 
     placements.push({
       placement: "server_integrated_query",
@@ -354,9 +361,9 @@ export const analyzeRulePlacement = (
     });
   }
 
-  // 7. materialized — deferred
+  // 7. materialized_ivm — deferred
   placements.push({
-    placement: "materialized",
+    placement: "materialized_ivm",
     supported: false,
     safety: "unsafe",
     requirements: [],
@@ -364,15 +371,15 @@ export const analyzeRulePlacement = (
     diagnostics: [
       diagnostic({
         severity: "info",
-        code: "rules:aggregate-unsupported",
-        message: `Materialized placement for rule ${rule.name} is not supported in this version`,
+        code: "rules:not-sql-translatable",
+        message: `Materialized IVM placement for rule ${rule.name} is not supported in this version`,
       }),
     ],
   });
 
-  // 8. external — deferred
+  // 8. external_evaluator — deferred
   placements.push({
-    placement: "external",
+    placement: "external_evaluator",
     supported: false,
     safety: "unsafe",
     requirements: [],
@@ -380,7 +387,7 @@ export const analyzeRulePlacement = (
     diagnostics: [
       diagnostic({
         severity: "info",
-        code: "rules:external-evaluator-required",
+        code: "rules:not-sql-translatable",
         message: `External evaluator for rule ${rule.name} is not supported in this version`,
       }),
     ],
@@ -389,7 +396,7 @@ export const analyzeRulePlacement = (
   // Select the first supported authoritative placement as the default
   const preferredOrder: RulePlacementKind[] = [
     "database_predicate",
-    "rls_policy",
+    "rls",
     "server_integrated_query",
     "server_pre_query",
   ];
@@ -401,7 +408,7 @@ export const analyzeRulePlacement = (
     topLevelDiagnostics.push(
       diagnostic({
         severity: "error",
-        code: "authz:list-policy-not-database-placeable",
+        code: "rules:not-sql-translatable",
         message: `Rule ${rule.name} has no safe database or server-integrated placement for entity ${targetEntity.name}. List queries protected by this rule cannot be safely executed.`,
         suggestion:
           "Rewrite the rule to use only SQL-translatable constructs (eq, compare, and, or, simple not) on fields of the target entity.",
@@ -414,5 +421,21 @@ export const analyzeRulePlacement = (
     placements,
     selected,
     diagnostics: topLevelDiagnostics,
+  };
+};
+
+export const classifyRulePlacement = (
+  rule: Rule,
+  targetEntity: Entity,
+  capabilities?: SqlDialectCapabilities,
+): RulePlacement => {
+  const analysis = analyzeRulePlacement(rule, targetEntity, capabilities);
+  return {
+    kind: "rule_placement",
+    rule,
+    target_entity: targetEntity,
+    selected: analysis.selected?.placement,
+    options: analysis.placements,
+    diagnostics: analysis.diagnostics,
   };
 };

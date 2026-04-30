@@ -259,6 +259,12 @@ export interface TuiUiNamespaceExtensions {
   ) => uiMod.Behavior<Record<string, uiMod.ElementCapability>, TuiElementHandle>;
 }
 
+export interface NodeNamespace<C extends GenConfig = GenConfig> {
+  readonly _config?: C;
+  define: typeof core.defineNode;
+  register: (node: core.StaticNode) => void;
+}
+
 export interface KeyNamespace<C extends GenConfig = GenConfig> {
   readonly _config?: C;
   family: typeof reactivityMod.defineKeyFamily;
@@ -278,6 +284,8 @@ export interface ReactivityNamespace<C extends GenConfig = GenConfig> {
   mutation: typeof reactivityMod.defineReactiveMutation;
   all: typeof reactivityMod.defineResourceAll;
   chain: typeof reactivityMod.defineResourceChain;
+  registry: typeof reactivityMod.defineReactiveRegistry;
+  scope: typeof reactivityMod.defineTrackingScope;
   optimistic: typeof reactivityMod.defineOptimisticPlan;
   invalidates: typeof reactivityMod.invalidates;
   graph: typeof reactivityMod.deriveReactiveGraph;
@@ -291,7 +299,7 @@ export interface ReactivityNamespace<C extends GenConfig = GenConfig> {
   entitiesWrittenByMutation: typeof reactivityMod.entitiesWrittenByMutation;
   actionsWritingEntity: typeof reactivityMod.actionsWritingEntity;
   mutationsWritingEntity: typeof reactivityMod.mutationsWritingEntity;
-  graphArtifact: typeof reactivityMod.reactiveGraphArtifact;
+  graphArtifact: (graph: reactivityMod.ReactiveGraph, path?: string) => core.Artifact;
   singleFlight: typeof reactivityMod.deriveSingleFlightPlan;
   ruleInvalidations: typeof reactivityMod.deriveRuleInvalidationPlans;
   ivmPlans: typeof reactivityMod.deriveIvmPlans;
@@ -340,9 +348,12 @@ export interface RulesNamespace<C extends GenConfig = GenConfig> {
   exists: typeof rulesMod.ruleExists;
   dependencies: typeof rulesMod.extractRuleDependencies;
   translateSql: typeof rulesMod.translateRuleToSql;
+  sqlPredicate: typeof rulesMod.ruleToSqlPredicate;
+  rlsPolicy: typeof rulesMod.ruleToRlsPolicy;
   translateSqlWithBindings: typeof rulesMod.translateRuleToSqlWithBindings;
   evaluate: typeof rulesMod.evaluateRule;
   analyzePlacement: typeof rulesMod.analyzeRulePlacement;
+  classifyPlacement: typeof rulesMod.classifyRulePlacement;
 }
 
 export interface ReactionNamespace<C extends GenConfig = GenConfig> {
@@ -541,6 +552,9 @@ export interface Gen<C extends GenConfig = GenConfig> extends GenPluginExtension
   // Entities
   entity: typeof entityMod.defineEntity;
 
+  // Custom application-level nodes
+  node: NodeNamespace<C>;
+
   // Portable reactivity/cache keys
   key: KeyNamespace<C>;
 
@@ -659,6 +673,7 @@ export interface Gen<C extends GenConfig = GenConfig> extends GenPluginExtension
     buildActionInsert: typeof functionMod.buildActionInsert;
     buildActionUpdate: typeof functionMod.buildActionUpdate;
     buildActionDelete: typeof functionMod.buildActionDelete;
+    buildActionInvalidate: typeof functionMod.buildActionInvalidate;
     buildActionSequence: typeof functionMod.buildActionSequence;
     buildPatchInsert: typeof functionMod.buildPatchInsert;
     buildPatchUpdate: typeof functionMod.buildPatchUpdate;
@@ -870,7 +885,7 @@ export type EnvNamespace<C extends GenConfig = GenConfig> = Gen<C>["env"];
  * @typeParam C - The GenConfig used for backend-specific typing.
  * @typeParam G - The full `gen` type (including plugin helpers).
  */
-export interface CreateGenResult<C extends GenConfig = GenConfig, G extends Gen<C> = Gen<C>> {
+export interface CreateGenResult<C extends GenConfig = GenConfig, G = Gen<C>> {
   readonly ctx: GenContext;
   readonly gen: G;
 }

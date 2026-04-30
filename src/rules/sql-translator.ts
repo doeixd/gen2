@@ -186,6 +186,14 @@ const translateExpr = (ctx: TranslateContext, expr: RuleExpr): string | null => 
         );
         return null;
       }
+      if (!ctx.capabilities.supportsCrossTableJoin) {
+        addDiagnostic(
+          ctx,
+          "rules:not-sql-translatable",
+          "SQL dialect does not support cross-table EXISTS translation",
+        );
+        return null;
+      }
       const subquery = translateExists(ctx, expr.relation, expr.where);
       if (subquery == null) return null;
       return `EXISTS (${subquery})`;

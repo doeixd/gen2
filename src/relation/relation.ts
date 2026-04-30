@@ -9,7 +9,7 @@
  */
 
 import { type Diagnostic, diagnostic, makeRef } from "../core/index.ts";
-import type { Ref } from "../core/index.ts";
+import type { RelationId, RelationRef } from "../core/index.ts";
 import type { Entity, Field } from "../entity/index.ts";
 
 /**
@@ -88,6 +88,8 @@ export interface Relation<
   E1 extends Entity = Entity,
   E2 extends Entity = Entity,
 > {
+  /** Stable persisted identity for this relation, when explicitly declared. */
+  readonly id?: RelationId;
   /** Human-readable name of the relation. */
   readonly name: string;
   /** Cardinality kind (e.g., one_to_many). */
@@ -117,7 +119,7 @@ export interface Relation<
   /**
    * Auto-populated RelationRef preserving relation endpoint types.
    */
-  readonly ref: Ref<{ from: From; to: To }>;
+  readonly ref: RelationRef<From, To>;
 }
 
 /**
@@ -136,6 +138,8 @@ export interface Role {
  * A synthetic entity representing a many-to-many link table.
  */
 export interface RelationEntity {
+  /** Stable persisted identity for this relation entity, when explicitly declared. */
+  readonly id?: RelationId;
   /** Name of the relation entity. */
   readonly name: string;
   /** Roles participating in the relation entity. */
@@ -145,7 +149,7 @@ export interface RelationEntity {
   /**
    * Auto-populated RelationRef for typed citation.
    */
-  readonly ref: Ref;
+  readonly ref: RelationRef;
 }
 
 /**
@@ -186,6 +190,7 @@ export const defineRelation = <
   E1 extends Entity = Entity,
   E2 extends Entity = Entity,
 >(input: {
+  id?: RelationId;
   name: string;
   kind: K;
   from_entity: E1;
@@ -199,6 +204,7 @@ export const defineRelation = <
   link_entity?: Entity;
   inverse?: Relation<To, From>;
 }): Relation<From, To, K, E1, E2> => ({
+  id: input.id,
   name: input.name,
   kind: input.kind,
   from_entity: input.from_entity,
@@ -213,10 +219,11 @@ export const defineRelation = <
   inverse: input.inverse,
   ref: makeRef({
     kind: "RelationRef",
+    id: input.id,
     owner: { kind: "Relation", name: input.name },
     name: input.name,
     value_type: `${input.from_entity.name}_${input.to_entity.name}`,
-  }),
+  }) as RelationRef<From, To>,
 });
 
 /**
@@ -231,16 +238,19 @@ export const defineRelationEntity = (
   name: string,
   roles: readonly Role[],
   fields: readonly Field[],
+  options: { id?: RelationId } = {},
 ): RelationEntity => ({
+  id: options.id,
   name,
   roles,
   fields,
   ref: makeRef({
     kind: "RelationRef",
+    id: options.id,
     owner: { kind: "Relation", name },
     name,
     value_type: "relation_entity",
-  }),
+  }) as RelationRef,
 });
 
 // --- Invariants and rules --------------------------------------------------
@@ -420,6 +430,7 @@ export const oneToOne = <
   from_field: Field<From>,
   to_field: Field<To>,
   options?: {
+    id?: RelationId;
     required?: boolean;
     integrity?: IntegrityMode;
     foreign_key?: ForeignKey;
@@ -458,6 +469,7 @@ export const oneToMany = <
   from_field: Field<From>,
   to_field: Field<To>,
   options?: {
+    id?: RelationId;
     required?: boolean;
     integrity?: IntegrityMode;
     foreign_key?: ForeignKey;
@@ -496,6 +508,7 @@ export const manyToOne = <
   from_field: Field<From>,
   to_field: Field<To>,
   options?: {
+    id?: RelationId;
     required?: boolean;
     integrity?: IntegrityMode;
     foreign_key?: ForeignKey;
@@ -536,6 +549,7 @@ export const manyToMany = <
   to_field: Field<To>,
   link_entity: Entity,
   options?: {
+    id?: RelationId;
     required?: boolean;
     integrity?: IntegrityMode;
     deletion_behavior?: AppDeletionBehavior;

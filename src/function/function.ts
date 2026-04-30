@@ -13,10 +13,16 @@
  */
 
 import {
+  callPlan,
   type Diagnostic,
   diagnostic,
   entityToSemanticType,
+  type FunctionId,
+  type FunctionRef,
+  functionId,
+  makeRef,
   type PolicyAction,
+  type TraitKind,
 } from "../core/index.ts";
 import type { Entity, Field } from "../entity/index.ts";
 import type { Expr, PlanExpr, Predicate } from "../expression/index.ts";
@@ -55,7 +61,13 @@ export interface ErrorType {
 // ---------------------------------------------------------------------------
 
 /** Discriminated kind tag for an action expression. */
-export type ActionExprKindTag = "insert" | "update" | "delete" | "custom" | "sequence";
+export type ActionExprKindTag =
+  | "insert"
+  | "update"
+  | "delete"
+  | "invalidate"
+  | "custom"
+  | "sequence";
 
 /** Kind wrapper for an action expression. */
 export interface ActionExprKind {
@@ -70,12 +82,20 @@ export interface WriteOperation {
   readonly condition?: Predicate;
 }
 
+/** An explicit invalidation of one or more key patterns. */
+export interface InvalidateOperation {
+  readonly kind: "invalidate_op";
+  readonly patterns: readonly import("../reactivity/index.ts").KeyPatternExpression[];
+}
+
+export type ActionOperation = WriteOperation | InvalidateOperation;
+
 /** An expression representing a write action against an entity. */
 export interface ActionExpr {
   readonly kind: ActionExprKind;
   readonly phase: "schema" | "query" | "mutation" | "client" | "server";
   readonly target_entity: import("../entity/index.ts").Entity;
-  readonly operations: readonly WriteOperation[];
+  readonly operations: readonly ActionOperation[];
   readonly effects: readonly Effect[];
   readonly requirements: readonly Requirement[];
 }
@@ -103,7 +123,10 @@ export interface PatchExpr {
 
 /** A function with an opaque static body and declared effects/requirements. */
 export interface StaticFunction<In = unknown, Out = unknown> {
+  readonly id?: FunctionId;
+  readonly ref?: FunctionRef<In, Out>;
   readonly name: string;
+  readonly traits?: readonly TraitKind[];
   readonly input_type: SemanticType<In>;
   readonly input_fields: readonly Field[];
   readonly output_type: SemanticType<Out>;
@@ -118,11 +141,15 @@ export interface StaticFunction<In = unknown, Out = unknown> {
   readonly capabilities: readonly Capability[];
   readonly laws: readonly Law[];
   readonly target_runtimes: readonly Runtime[];
+  readonly callPlan?: ReturnType<typeof callPlan<In, Out>>;
 }
 
 /** A function whose body is a typed expression. */
 export interface ExprFunction<In = unknown, Out = unknown> {
+  readonly id?: FunctionId;
+  readonly ref?: FunctionRef<In, Out>;
   readonly name: string;
+  readonly traits?: readonly TraitKind[];
   readonly input_type: SemanticType<In>;
   readonly output_type: SemanticType<Out>;
   readonly body: Expr;
@@ -131,16 +158,21 @@ export interface ExprFunction<In = unknown, Out = unknown> {
   readonly capabilities: readonly Capability[];
   readonly laws: readonly Law[];
   readonly target_runtimes: readonly Runtime[];
+  readonly callPlan?: ReturnType<typeof callPlan<In, Out>>;
 }
 
 /** A function whose body is a predicate expression. */
 export interface PredicateFunction<In = unknown> {
+  readonly id?: FunctionId;
+  readonly ref?: FunctionRef<In, boolean>;
   readonly name: string;
+  readonly traits?: readonly TraitKind[];
   readonly input_type: SemanticType<In>;
   readonly body: Predicate;
   readonly requirements: readonly Requirement[];
   readonly effects: readonly Effect[];
   readonly target_runtimes: readonly Runtime[];
+  readonly callPlan?: ReturnType<typeof callPlan<In, boolean>>;
 }
 
 /** A function that returns query results, optionally with auth and error types. */
@@ -148,8 +180,11 @@ export interface QueryReactivity<Input = unknown, Payload extends KeyPayload = K
   readonly key: KeyExpression<Input, Payload>;
 }
 
-export interface ActionReactivity<Input = unknown, Payload extends KeyPayload = KeyPayload> {
-  readonly invalidates: readonly KeyPatternExpression<Input, Payload>[];
+export interface ActionReactivity<In = unknown, Out = unknown> {
+  readonly invalidates: readonly KeyPatternExpression<
+    import("../reactivity/index.ts").MutationKeyContext<In, Out>,
+    KeyPayload
+  >[];
 }
 
 export interface QueryFunction<
@@ -157,7 +192,10 @@ export interface QueryFunction<
   Out = unknown,
   Payload extends KeyPayload = KeyPayload,
 > {
+  readonly id?: FunctionId;
+  readonly ref?: FunctionRef<In, Out>;
   readonly name: string;
+  readonly traits?: readonly TraitKind[];
   readonly input_type: SemanticType<In>;
   readonly input_fields: readonly Field[];
   readonly returns: SemanticType<Out>;
@@ -167,11 +205,15 @@ export interface QueryFunction<
   readonly errors: readonly ErrorType[];
   readonly requirements: readonly Requirement[];
   readonly target_runtimes: readonly Runtime[];
+  readonly callPlan?: ReturnType<typeof callPlan<In, Out>>;
 }
 
 /** A function representing a write action with auth, effects, and store targets. */
 export interface ActionFunction<In = unknown, Out = unknown> {
+  readonly id?: FunctionId;
+  readonly ref?: FunctionRef<In, Out>;
   readonly name: string;
+  readonly traits?: readonly TraitKind[];
   readonly input_type: SemanticType<In>;
   readonly input_fields: readonly Field[];
   readonly returns: SemanticType<Out>;
@@ -179,32 +221,41 @@ export interface ActionFunction<In = unknown, Out = unknown> {
   readonly auth?: PolicyAction;
   readonly errors: readonly ErrorType[];
   readonly invalidates: readonly QueryFunction[];
-  readonly reactivity?: ActionReactivity<In>;
+  readonly reactivity?: ActionReactivity<In, Out>;
   readonly optimistic?: PatchFunction;
   readonly consistency: "transactional" | "eventual" | "best_effort";
   readonly written_stores: readonly Store[];
   readonly effects: readonly Effect[];
   readonly requirements: readonly Requirement[];
   readonly target_runtimes: readonly Runtime[];
+  readonly callPlan?: ReturnType<typeof callPlan<In, Out>>;
 }
 
 /** A function representing an optimistic patch with reconciliation. */
 export interface PatchFunction<In = unknown, Out = unknown> {
+  readonly id?: FunctionId;
+  readonly ref?: FunctionRef<In, Out>;
   readonly name: string;
+  readonly traits?: readonly TraitKind[];
   readonly input_type: SemanticType<In>;
   readonly returns: SemanticType<Out>;
   readonly body: PatchExpr;
   readonly reconcile_field?: Field;
   readonly rollback_strategy?: "inverse" | "custom";
+  readonly callPlan?: ReturnType<typeof callPlan<In, Out>>;
 }
 
 /** A function wrapping a runtime-aware execution plan. */
 export interface PlanFunction<In = unknown, Out = unknown> {
+  readonly id?: FunctionId;
+  readonly ref?: FunctionRef<In, Out>;
   readonly name: string;
+  readonly traits?: readonly TraitKind[];
   readonly input_type: SemanticType<In>;
   readonly output_type: SemanticType<Out>;
   readonly body: PlanExpr;
   readonly fallback_policy: FallbackPolicy;
+  readonly callPlan?: ReturnType<typeof callPlan<In, Out>>;
 }
 
 // ---------------------------------------------------------------------------
@@ -243,6 +294,44 @@ export const emptyFunctionCatalog = (): FunctionCatalog => ({
   patch: [],
   plan: [],
 });
+
+const defaultFunctionId = (name: string): FunctionId => functionId(`function.${name}`);
+
+const functionRefFor = <In = unknown, Out = unknown>(input: {
+  readonly id?: FunctionId;
+  readonly name: string;
+  readonly input_type: SemanticType<In>;
+  readonly output_type: SemanticType<Out>;
+}): FunctionRef<In, Out> =>
+  makeRef<{ input: In; output: Out; errors: never; requirements: never; effects: never }>({
+    kind: "FunctionRef",
+    id: input.id ?? defaultFunctionId(input.name),
+    owner: { kind: "Function", name: input.name },
+    name: input.name,
+    value_type: `${input.input_type.name}->${input.output_type.name}`,
+  }) as FunctionRef<In, Out>;
+
+const baseFunctionNode = <In = unknown, Out = unknown>(input: {
+  readonly id?: FunctionId;
+  readonly name: string;
+  readonly input_type: SemanticType<In>;
+  readonly output_type: SemanticType<Out>;
+  readonly traits: readonly TraitKind[];
+}): {
+  readonly id: FunctionId;
+  readonly ref: FunctionRef<In, Out>;
+  readonly traits: readonly TraitKind[];
+  readonly callPlan: ReturnType<typeof callPlan<In, Out>>;
+} => {
+  const id = input.id ?? defaultFunctionId(input.name);
+  const ref = functionRefFor({ ...input, id });
+  return {
+    id,
+    ref,
+    traits: input.traits,
+    callPlan: callPlan({ input: input.input_type, output: input.output_type, target: ref }),
+  };
+};
 
 // --- Type-level inference helpers ------------------------------------------
 
@@ -399,13 +488,21 @@ export const checkFunctions = (cat: FunctionCatalog): readonly Diagnostic[] => {
   return out;
 };
 
-const lowerLegacyInvalidations = <In = unknown>(
+const lowerLegacyInvalidations = <In = unknown, Out = unknown>(
   invalidates: readonly QueryFunction[],
-): readonly KeyPatternExpression<In>[] =>
+): readonly KeyPatternExpression<
+  import("../reactivity/index.ts").MutationKeyContext<In, Out>,
+  KeyPayload
+>[] =>
   invalidates.flatMap((query) => {
     const declaredKey = query.reactivity?.key;
     if (declaredKey === undefined) return [];
-    return [keyPatternExpr<In>(declaredKey.family, [anyKey(declaredKey.family)])];
+    return [
+      keyPatternExpr<import("../reactivity/index.ts").MutationKeyContext<In, Out>>(
+        declaredKey.family,
+        [anyKey(declaredKey.family)],
+      ),
+    ];
   });
 
 /**
@@ -452,6 +549,7 @@ export const checkActionWrites = (cat: FunctionCatalog): readonly Diagnostic[] =
   const out: Diagnostic[] = [];
   for (const a of cat.action) {
     for (const op of a.body.operations) {
+      if (op.kind === "invalidate_op") continue;
       for (const field of op.values.keys()) {
         if (field.read_only) {
           out.push(
@@ -516,6 +614,7 @@ export const checkQueryFunctionRuntimes = (cat: FunctionCatalog): readonly Diagn
  * ```
  */
 export const defineExprFunction = <In = unknown, Out = unknown>(input: {
+  id?: FunctionId;
   name: string;
   input_type: SemanticType<In> | Entity;
   output_type: SemanticType<Out> | Entity;
@@ -525,17 +624,37 @@ export const defineExprFunction = <In = unknown, Out = unknown>(input: {
   capabilities?: readonly Capability[];
   laws?: readonly Law[];
   target_runtimes?: readonly Runtime[];
-}): ExprFunction<In, Out> => ({
-  name: input.name,
-  input_type: entityToSemanticType<In>(input.input_type),
-  output_type: entityToSemanticType<Out>(input.output_type),
-  body: input.body,
-  requirements: input.requirements ?? [],
-  effects: input.effects ?? [],
-  capabilities: input.capabilities ?? [],
-  laws: input.laws ?? [],
-  target_runtimes: input.target_runtimes ?? [],
-});
+}): ExprFunction<In, Out> => {
+  const input_type = entityToSemanticType<In>(input.input_type);
+  const output_type = entityToSemanticType<Out>(input.output_type);
+  const effects = input.effects ?? [];
+  return {
+    ...baseFunctionNode({
+      id: input.id,
+      name: input.name,
+      input_type,
+      output_type,
+      traits: [
+        "static",
+        "named",
+        "typed",
+        "callable",
+        "requires",
+        ...(effects.length === 0 ? [] : (["effectful"] as const)),
+        "target_interpretable",
+      ],
+    }),
+    name: input.name,
+    input_type,
+    output_type,
+    body: input.body,
+    requirements: input.requirements ?? [],
+    effects,
+    capabilities: input.capabilities ?? [],
+    laws: input.laws ?? [],
+    target_runtimes: input.target_runtimes ?? [],
+  };
+};
 
 /**
  * Builds a {@link QueryFunction} record with inferred input/output types.
@@ -558,6 +677,7 @@ export const defineQueryFunction = <
   Out = unknown,
   Payload extends KeyPayload = KeyPayload,
 >(input: {
+  id?: FunctionId;
   name: string;
   input_type: SemanticType<In> | Entity;
   input_fields?: readonly Field[];
@@ -574,7 +694,7 @@ export const defineQueryFunction = <
   const reactivity: QueryReactivity<In, Payload> | undefined =
     input.reactivity == null
       ? undefined
-      : input.reactivity.key.kind === "key_expression"
+      : input.reactivity.key.kind === "constant_key_expression"
         ? (input.reactivity as QueryReactivity<In, Payload>)
         : {
             key: keyExpr<In, Payload>(
@@ -585,11 +705,29 @@ export const defineQueryFunction = <
                 : undefined,
             ),
           };
+  const input_type = entityToSemanticType<In>(input.input_type);
+  const returns = entityToSemanticType<Out>(input.returns);
   return {
+    ...baseFunctionNode({
+      id: input.id,
+      name: input.name,
+      input_type,
+      output_type: returns,
+      traits: [
+        "static",
+        "named",
+        "typed",
+        "callable",
+        "readable",
+        "requires",
+        ...(reactivity === undefined ? [] : (["keyed", "reactive"] as const)),
+        "target_interpretable",
+      ],
+    }),
     name: input.name,
-    input_type: entityToSemanticType<In>(input.input_type),
+    input_type,
     input_fields: input.input_fields ?? [],
-    returns: entityToSemanticType<Out>(input.returns),
+    returns,
     body: input.body,
     reactivity,
     auth: input.auth,
@@ -618,6 +756,7 @@ export const defineQueryFunction = <
  * ```
  */
 export const defineActionFunction = <In = unknown, Out = unknown>(input: {
+  id?: FunctionId;
   name: string;
   input_type: SemanticType<In> | Entity;
   input_fields?: readonly Field[];
@@ -626,7 +765,7 @@ export const defineActionFunction = <In = unknown, Out = unknown>(input: {
   auth?: PolicyAction;
   errors?: readonly ErrorType[];
   invalidates?: readonly QueryFunction[];
-  reactivity?: ActionReactivity<In> | { readonly invalidates: readonly ReactiveKeyPattern[] };
+  reactivity?: ActionReactivity<In, Out> | { readonly invalidates: readonly ReactiveKeyPattern[] };
   optimistic?: PatchFunction;
   consistency?: ActionFunction["consistency"];
   written_stores?: readonly Store[];
@@ -634,24 +773,52 @@ export const defineActionFunction = <In = unknown, Out = unknown>(input: {
   requirements?: readonly Requirement[];
   target_runtimes?: readonly Runtime[];
 }): ActionFunction<In, Out> => {
-  const reactivity: ActionReactivity<In> | undefined =
+  const reactivity: ActionReactivity<In, Out> | undefined =
     input.reactivity == null
       ? input.invalidates === undefined
         ? undefined
-        : { invalidates: lowerLegacyInvalidations(input.invalidates) }
+        : { invalidates: lowerLegacyInvalidations<In, Out>(input.invalidates) }
       : input.reactivity.invalidates.length > 0 &&
-          input.reactivity.invalidates[0]!.kind === "key_pattern_expression"
-        ? (input.reactivity as ActionReactivity<In>)
+          input.reactivity.invalidates[0]!.kind === "constant_key_pattern_expression"
+        ? (input.reactivity as ActionReactivity<In, Out>)
         : {
             invalidates: (input.reactivity.invalidates as ReactiveKeyPattern[]).map(
-              (p): KeyPatternExpression<In> => keyPatternExpr<In>(p.family, [p]),
+              (
+                p,
+              ): KeyPatternExpression<
+                import("../reactivity/index.ts").MutationKeyContext<In, Out>,
+                KeyPayload
+              > =>
+                keyPatternExpr<import("../reactivity/index.ts").MutationKeyContext<In, Out>>(
+                  p.family,
+                  [p],
+                ),
             ),
           };
+  const input_type = entityToSemanticType<In>(input.input_type);
+  const returns = entityToSemanticType<Out>(input.returns);
   return {
+    ...baseFunctionNode({
+      id: input.id,
+      name: input.name,
+      input_type,
+      output_type: returns,
+      traits: [
+        "static",
+        "named",
+        "typed",
+        "callable",
+        "writable",
+        "requires",
+        "effectful",
+        ...(reactivity === undefined ? [] : (["reactive"] as const)),
+        "target_interpretable",
+      ],
+    }),
     name: input.name,
-    input_type: entityToSemanticType<In>(input.input_type),
+    input_type,
     input_fields: input.input_fields ?? [],
-    returns: entityToSemanticType<Out>(input.returns),
+    returns,
     body: input.body,
     auth: input.auth,
     errors: input.errors ?? [],
@@ -686,20 +853,32 @@ export const defineActionFunction = <In = unknown, Out = unknown>(input: {
  * ```
  */
 export const definePatchFunction = <In = unknown, Out = unknown>(input: {
+  id?: FunctionId;
   name: string;
   input_type: SemanticType<In> | Entity;
   returns: SemanticType<Out> | Entity;
   body: PatchExpr;
   reconcile_field?: Field;
   rollback_strategy?: PatchFunction["rollback_strategy"];
-}): PatchFunction<In, Out> => ({
-  name: input.name,
-  input_type: entityToSemanticType<In>(input.input_type),
-  returns: entityToSemanticType<Out>(input.returns),
-  body: input.body,
-  reconcile_field: input.reconcile_field,
-  rollback_strategy: input.rollback_strategy,
-});
+}): PatchFunction<In, Out> => {
+  const input_type = entityToSemanticType<In>(input.input_type);
+  const returns = entityToSemanticType<Out>(input.returns);
+  return {
+    ...baseFunctionNode({
+      id: input.id,
+      name: input.name,
+      input_type,
+      output_type: returns,
+      traits: ["static", "named", "typed", "callable", "writable", "target_interpretable"],
+    }),
+    name: input.name,
+    input_type,
+    returns,
+    body: input.body,
+    reconcile_field: input.reconcile_field,
+    rollback_strategy: input.rollback_strategy,
+  };
+};
 
 // --- Static, Predicate, and Plan function builders -------------------------
 
@@ -721,6 +900,7 @@ export const definePatchFunction = <In = unknown, Out = unknown>(input: {
  * ```
  */
 export const defineStaticFunction = <In = unknown, Out = unknown>(input: {
+  id?: FunctionId;
   name: string;
   input_type: SemanticType<In> | Entity;
   input_fields?: readonly Field[];
@@ -736,18 +916,38 @@ export const defineStaticFunction = <In = unknown, Out = unknown>(input: {
   capabilities?: readonly Capability[];
   laws?: readonly Law[];
   target_runtimes?: readonly Runtime[];
-}): StaticFunction & { input_type: SemanticType<In>; output_type: SemanticType<Out> } => ({
-  name: input.name,
-  input_type: entityToSemanticType<In>(input.input_type),
-  input_fields: input.input_fields ?? [],
-  output_type: entityToSemanticType<Out>(input.output_type),
-  body: input.body,
-  requirements: input.requirements ?? [],
-  effects: input.effects ?? [],
-  capabilities: input.capabilities ?? [],
-  laws: input.laws ?? [],
-  target_runtimes: input.target_runtimes ?? [],
-});
+}): StaticFunction & { input_type: SemanticType<In>; output_type: SemanticType<Out> } => {
+  const input_type = entityToSemanticType<In>(input.input_type);
+  const output_type = entityToSemanticType<Out>(input.output_type);
+  const effects = input.effects ?? [];
+  return {
+    ...baseFunctionNode({
+      id: input.id,
+      name: input.name,
+      input_type,
+      output_type,
+      traits: [
+        "static",
+        "named",
+        "typed",
+        "callable",
+        "requires",
+        ...(effects.length === 0 ? [] : (["effectful"] as const)),
+        "target_interpretable",
+      ],
+    }),
+    name: input.name,
+    input_type,
+    input_fields: input.input_fields ?? [],
+    output_type,
+    body: input.body,
+    requirements: input.requirements ?? [],
+    effects,
+    capabilities: input.capabilities ?? [],
+    laws: input.laws ?? [],
+    target_runtimes: input.target_runtimes ?? [],
+  };
+};
 
 /**
  * Builds a {@link PredicateFunction} record with inferred input type.
@@ -765,20 +965,31 @@ export const defineStaticFunction = <In = unknown, Out = unknown>(input: {
  * ```
  */
 export const definePredicateFunction = <In = unknown>(input: {
+  id?: FunctionId;
   name: string;
   input_type: SemanticType<In> | Entity;
   body: Predicate;
   requirements?: readonly Requirement[];
   effects?: readonly Effect[];
   target_runtimes?: readonly Runtime[];
-}): PredicateFunction & { input_type: SemanticType<In> } => ({
-  name: input.name,
-  input_type: entityToSemanticType<In>(input.input_type),
-  body: input.body,
-  requirements: input.requirements ?? [],
-  effects: input.effects ?? [],
-  target_runtimes: input.target_runtimes ?? [],
-});
+}): PredicateFunction & { input_type: SemanticType<In> } => {
+  const input_type = entityToSemanticType<In>(input.input_type);
+  return {
+    ...baseFunctionNode({
+      id: input.id,
+      name: input.name,
+      input_type,
+      output_type: input.body.value_type,
+      traits: ["static", "named", "typed", "callable", "readable", "target_interpretable"],
+    }),
+    name: input.name,
+    input_type,
+    body: input.body,
+    requirements: input.requirements ?? [],
+    effects: input.effects ?? [],
+    target_runtimes: input.target_runtimes ?? [],
+  };
+};
 
 /**
  * Builds a {@link PlanFunction} record with inferred input/output types.
@@ -798,18 +1009,30 @@ export const definePredicateFunction = <In = unknown>(input: {
  * ```
  */
 export const definePlanFunction = <In = unknown, Out = unknown>(input: {
+  id?: FunctionId;
   name: string;
   input_type: SemanticType<In> | Entity;
   output_type: SemanticType<Out> | Entity;
   body: PlanExpr;
   fallback_policy: FallbackPolicy;
-}): PlanFunction & { input_type: SemanticType<In>; output_type: SemanticType<Out> } => ({
-  name: input.name,
-  input_type: entityToSemanticType<In>(input.input_type),
-  output_type: entityToSemanticType<Out>(input.output_type),
-  body: input.body,
-  fallback_policy: input.fallback_policy,
-});
+}): PlanFunction & { input_type: SemanticType<In>; output_type: SemanticType<Out> } => {
+  const input_type = entityToSemanticType<In>(input.input_type);
+  const output_type = entityToSemanticType<Out>(input.output_type);
+  return {
+    ...baseFunctionNode({
+      id: input.id,
+      name: input.name,
+      input_type,
+      output_type,
+      traits: ["static", "named", "typed", "callable", "plan", "target_interpretable"],
+    }),
+    name: input.name,
+    input_type,
+    output_type,
+    body: input.body,
+    fallback_policy: input.fallback_policy,
+  };
+};
 
 // --- Action DSL constructors -----------------------------------------------
 
@@ -939,6 +1162,19 @@ export const buildActionDelete = (
  * ]);
  * ```
  */
+export const buildActionInvalidate = (
+  target: Entity,
+  patterns: readonly import("../reactivity/index.ts").KeyPatternExpression[],
+  options?: { effects?: readonly Effect[]; requirements?: readonly Requirement[] },
+): ActionExpr => ({
+  kind: { kind: "invalidate" },
+  phase: "mutation",
+  target_entity: target,
+  operations: [{ kind: "invalidate_op", patterns }],
+  effects: [...(options?.effects ?? [])],
+  requirements: [...(options?.requirements ?? [])],
+});
+
 export const buildActionSequence = (
   target: Entity,
   steps: readonly ActionExpr[],
