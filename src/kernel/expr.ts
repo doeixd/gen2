@@ -1,5 +1,7 @@
 /* @__NO_SIDE_EFFECTS__ */
-/** Kernel expression - typed computation AST. */
+/**
+ * Kernel expression - typed computation AST.
+ */
 
 import type { KernelId } from "./id.ts";
 import type { KernelMetadata } from "./metadata.ts";
@@ -51,10 +53,10 @@ export interface ExprArg {
 }
 
 /** Kernel expression - typed computation AST. */
-export interface KernelExpr<T = unknown> {
+export interface KernelExpr<Out = unknown> {
   readonly id: KernelId<"expr">;
   readonly op: ExprOp;
-  readonly type: KernelType;
+  readonly type: KernelType<Out>;
   readonly args: readonly ExprArg[];
   readonly phase?: ExprPhase;
   readonly requirements?: readonly string[];
@@ -63,9 +65,9 @@ export interface KernelExpr<T = unknown> {
 }
 
 /** Create a kernel expression. */
-export const defineExpr = <T>(
+export const defineExpr = <Out>(
   op: ExprOp,
-  type: KernelType,
+  type: KernelType<Out>,
   input?: {
     readonly args?: readonly ExprArg[];
     readonly phase?: ExprPhase;
@@ -73,7 +75,7 @@ export const defineExpr = <T>(
     readonly effects?: readonly string[];
     readonly metadata?: KernelMetadata;
   },
-): KernelExpr<T> => ({
+): KernelExpr<Out> => ({
   id: `expr:${op}` as KernelId<"expr">,
   op,
   type,

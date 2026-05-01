@@ -2677,3 +2677,794 @@ Then implement only PR 1 and PR 2 before touching lifecycle. The current codebas
 [1]: https://effect.website/blog/releases/effect/40-beta/ "Effect v4 Beta | Effect Documentation"
 [2]: https://raw.githubusercontent.com/Effect-TS/effect-smol/main/packages/effect/SCHEMA.md "raw.githubusercontent.com"
 [3]: https://github.com/Effect-TS/effect-smol/blob/main/migration/services.md "effect-smol/migration/services.md at main · Effect-TS/effect-smol · GitHub"
+
+
+Yes. My main suggestion is: **design the new kernel around two synchronized layers**:
+
+```txt id="hiiq3x"
+Runtime IR values
+  inspectable, serializable-ish, pass-friendly, no magic strings
+
+Type-level mirrors
+  phantom generics that carry inference, capabilities, requirements, effects, laws, and traits
+```
+
+The project is already pointed in this direction. `StaticNode` already carries traits, input/output semantic types, requirements, effects, symbol metadata, and phantom `_input`, `_output`, `_requires`, `_effects`, and `_traits` slots.  `Expr` already carries type, phase, requirements, effects, AST, opacity, and refs.  `SemanticType` already carries TS type, semantic kind, storage/wire representation, serializer/deserializer flags, server-only marking, traits, validation, and merge strategy. 
+
+So this is not a new idea bolted on. It is a consolidation of what the codebase is already becoming.
+
+## 1. Make the kernel symbol-first, not string-first
+
+Given the library’s philosophy, I would avoid APIs like:
+
+```ts id="y8l6wy"
+Node<"query", In, Out, Has<"node.callable">>
+Edge<"writes", ...>
+Has<"law.idempotent">
+```
+
+Use typed symbol definitions instead:
+
+```ts id="l8slxn"
+Node<typeof QueryNodeKind, In, Out, Has<typeof NodeCallable>>
+Edge<typeof WritesEdgeKind, ...>
+Has<typeof LawIdempotent>
+```
+
+That fits the existing `checkMagicStrings` direction: the repo already has a diagnostic that warns when raw strings are used where typed refs or stable IDs are expected, while still allowing strings for external names like DB names, URL templates, env vars, filenames, operation IDs, and CSS classes. 
+
+So introduce a shared symbol system:
+
+```ts id="r80lr4"
+defineNodeKind(...)
+defineEdgeKind(...)
+defineEndpointRole(...)
+defineTrait(...)
+defineLaw(...)
+defineCapability(...)
+```
+
+Then all graph APIs should take definitions, not strings:
+
+```ts id="d79t2s"
+graph.nodesWithTrait(NodeCallable)
+graph.edgesOfKind(WritesEdgeKind)
+graph.edgesFrom(action.ref, WritesEdgeKind)
+graph.hasTrait(expr, SqlLowerable)
+```
+
+This gives you rename safety, autocomplete, stable identity, and agent-friendly refactorability.
+
+## 2. Use a `GType<Decoded, Encoded, DecodeR, EncodeR, Traits>` shape
+
+Effect v4 makes this more obvious. Its Schema system supports validation, TypeScript inference, transformation, serialization/deserialization, and schema composition. ([Effect][1]) Effect v4 also emphasizes services/dependency tracking in the type system. ([Effect][2])
+
+So I would evolve `SemanticType<T>` toward:
+
+```ts id="qyavmo"
+interface GType<
+  Decoded,
+  Encoded = Decoded,
+  DecodeR = never,
+  EncodeR = never,
+  Traits extends TraitSet = EmptyTraits
+> {
+  readonly kind: TypeKindDef;
+  readonly id?: TypeId;
+
+  readonly decoded?: Phantom<Decoded>;
+  readonly encoded?: Phantom<Encoded>;
+  readonly decodeRequirements?: Phantom<DecodeR>;
+  readonly encodeRequirements?: Phantom<EncodeR>;
+  readonly traits: readonly TraitDef[];
+
+  readonly storage?: Representation;
+  readonly wire?: Representation;
+  readonly metadata?: Metadata;
+
+  readonly effectSchema?: EffectSchemaAdapter<
+    Decoded,
+    Encoded,
+    DecodeR,
+    EncodeR
+  >;
+
+  readonly _traits?: Traits;
+}
+```
+
+This gives you:
+
+```txt id="h6dw8v"
+Decoded
+  the domain value
+
+Encoded
+  wire/storage representation
+
+DecodeR
+  services needed to decode/hydrate
+
+EncodeR
+  services needed to encode/store
+
+Traits
+  semantic capabilities/laws/metadata at type level
+```
+
+This also keeps Effect as an adapter, not the substrate. Effect v4 is currently beta, with the docs highlighting performance, bundle-size, and DX improvements, but also making clear it is a major breaking-change release. ([Effect][3])
+
+## 3. Keep “value first, types mirror” as the core inference rule
+
+The runtime object should always be the source of truth:
+
+```ts id="jggwp6"
+const Email = defineType({
+  kind: StringTypeKind,
+  traits: [EmailTrait, QueryableTrait],
+});
+```
+
+The type-level mirror should be inferred from that value:
+
+```ts id="lj6xf4"
+type Email = InferDecoded<typeof Email>; // string
+type EmailTraits = InferTraits<typeof Email>;
+```
+
+Avoid APIs where users must manually pass the same fact twice:
+
+```ts id="u3lxkh"
+// Avoid
+defineType<string, string, Has<typeof EmailTrait>>({
+  traits: [EmailTrait],
+});
+```
+
+Prefer:
+
+```ts id="hplggc"
+const Email = string()
+  .pipe(withTrait(EmailTrait))
+  .pipe(withTrait(QueryableTrait));
+```
+
+The builder should compute the type.
+
+## 4. Bubble up everything that matters
+
+Every composable object should infer and bubble up:
+
+```txt id="x26lfr"
+Input
+Output
+Error
+Requirements
+Effects
+Traits
+Refs
+Read set
+Write set
+Laws
+Capabilities needed
+Opacity
+Placement constraints
+```
+
+For example:
+
+```ts id="qknj49"
+type Node<
+  Kind,
+  In,
+  Out,
+  Err,
+  Req,
+  Eff,
+  Traits
+>
+```
+
+For `Expr`:
+
+```ts id="k143p7"
+type Expr<
+  Out,
+  Req = never,
+  Eff = never,
+  Traits = EmptyTraits,
+  Refs = never
+>
+```
+
+For `Transform`:
+
+```ts id="mzldie"
+type Transform<
+  From,
+  To,
+  DecodeR = never,
+  EncodeR = never,
+  Err = never,
+  Traits = EmptyTraits
+>
+```
+
+For `Edge`:
+
+```ts id="3msnia"
+type Edge<
+  Kind,
+  Endpoints,
+  Payload = never,
+  Traits = EmptyTraits
+>
+```
+
+Then composition works by unioning or intersecting the right dimensions:
+
+```txt id="h7qi6j"
+sequence requirements = ReqA | ReqB
+sequence effects = EffA | EffB
+sequence errors = ErrA | ErrB
+parallel output = { a: OutA; b: OutB }
+chain input/output = OutA must flow into InB
+traits = TraitsA & TraitsB, or derived traits when proven
+```
+
+This is the “bubble up” half.
+
+## 5. Use flow-down contextual builders
+
+Bubble-up inference is not enough. You also want **context flowing down** so users do not have to annotate everything.
+
+Example:
+
+```ts id="z0xick"
+const User = gen.entity("User", {
+  id: gen.type.uuid(),
+  role: gen.type.enum(Role),
+});
+
+const isAdmin = gen.rule(User, (u) =>
+  u.role.eq(Role.Admin)
+);
+```
+
+Inside the callback, `u.role` should already know:
+
+```txt id="snk2gv"
+field ref
+field type
+enum values
+entity context
+allowed expression phase
+available operations
+```
+
+This is “use flows down.”
+
+I would formalize this with scopes:
+
+```ts id="pnbk7t"
+withEntityScope(User, (scope) => ...)
+withActionScope(actionInput, (scope) => ...)
+withQueryScope(queryInput, (scope) => ...)
+withTargetScope(PostgresTarget, (scope) => ...)
+```
+
+Each scope narrows available builders. For example, SQL-lowerable rules should only expose SQL-lowerable expression constructors unless the user explicitly escapes into opaque JS.
+
+## 6. Make illegal composition unrepresentable where practical
+
+For chain composition:
+
+```ts id="cu7tkw"
+chain<A extends Node, B extends Node>(
+  a: A,
+  b: B & Accepts<OutputOf<A>>
+): PlanNode<InOf<A>, OutOf<B>, ReqOf<A> | ReqOf<B>, EffOf<A> | EffOf<B>>
+```
+
+For parallel composition:
+
+```ts id="j8nx02"
+parallel({
+  user: getUser,
+  projects: listProjects
+})
+```
+
+Should infer:
+
+```ts id="y340vw"
+Out = {
+  user: User;
+  projects: readonly Project[];
+}
+
+Req = ReqOf<typeof getUser> | ReqOf<typeof listProjects>
+Eff = EffOf<typeof getUser> | EffOf<typeof listProjects>
+```
+
+For action write safety:
+
+```ts id="1lyyb5"
+write(field, value)
+```
+
+should require:
+
+```txt id="jov3uz"
+value type assignable to field type
+field not read-only
+phase allows mutation
+target/runtime supports write
+policy or explicit unsafe escape exists
+```
+
+Do as much in TypeScript as possible, then use lifecycle diagnostics for the rest.
+
+## 7. Prefer trait-gated protocols over structural mixins
+
+Avoid:
+
+```ts id="8fqybt"
+type Callable = { callPlan: CallPlan };
+type Query = Node & Callable & Readable;
+```
+
+That makes traits structural and accidental.
+
+Prefer:
+
+```ts id="s0gze9"
+type Query = Node<
+  typeof QueryNodeKind,
+  In,
+  Out,
+  Err,
+  Req,
+  Eff,
+  Traits<
+    Has<typeof NodeCallable>,
+    Has<typeof NodeReadable>
+  >
+>;
+```
+
+Then runtime trait claims stay inspectable:
+
+```ts id="euo35v"
+traits: [NodeCallable, NodeReadable]
+```
+
+And type-level capability checks stay precise:
+
+```ts id="8fkliu"
+function deriveQueryHook<N extends HasTrait<typeof NodeReadable>>(node: N) {}
+```
+
+## 8. Make edges carry inference, not just metadata
+
+Edges should infer from their endpoint roles.
+
+Example:
+
+```ts id="r6ptjl"
+const WritesEdgeKind = defineEdgeKind({
+  id: edgeKindId("edge.writes"),
+  endpoints: {
+    writer: endpointRole<NodeWith<typeof NodeWritable>>(),
+    target: endpointRole<FieldNode>(),
+  },
+});
+```
+
+Then:
+
+```ts id="k65bqm"
+defineEdge(WritesEdgeKind, {
+  writer: deleteUser,
+  target: User.fields.archivedAt,
+});
+```
+
+should infer:
+
+```txt id="c9ilno"
+writer node
+target field
+written entity
+written type
+effect footprint
+write relationship
+reactivity consequences
+```
+
+This lets reactivity, auth, storage, and devtools all consume the same fact.
+
+## 9. Model laws as trait applications with witnesses
+
+Yes, laws should be traits, but some laws need payloads.
+
+Marker law:
+
+```ts id="nb5d4h"
+applyTrait(expr, LawPure);
+applyTrait(action, LawIdempotent);
+```
+
+Witnessed law:
+
+```ts id="d8nr4d"
+applyTrait(transform, LawReversible, {
+  inverse: inverseTransform,
+});
+
+applyTrait(combiner, LawIdentity, {
+  identity: expr.literal(0),
+});
+
+applyTrait(operation, LawAssociative, {
+  proof: "declared",
+});
+```
+
+Type-level:
+
+```ts id="89h1rj"
+Has<typeof LawReversible, { inverse: TransformRef<any, any> }>
+Has<typeof LawIdentity, { identity: ExprRef<any> }>
+```
+
+This matters for optimistic updates, retries, offline replay, reducers, and IVM. A pass should be able to ask not only “is this reversible?” but “what is the inverse?”
+
+## 10. Add “opaque boundary” as a first-class trait, not a boolean afterthought
+
+Current expressions already track `contains_opaque_js`.  I’d turn that into a trait/capability model:
+
+```txt id="ossbje"
+ExprOpaqueJs
+ExprPortable
+ExprSqlLowerable
+ExprClientSafe
+ExprServerOnly
+```
+
+Then target passes can say:
+
+```txt id="ezseew"
+RLS emitter requires ExprSqlLowerable + LawPure
+Client hint emitter requires ExprClientSafe
+Static dependency extraction requires !ExprOpaqueJs or explicit conservative refs
+```
+
+Opaque code should be allowed, but it should force explicit degradation.
+
+## 11. Split metadata from semantic claims more aggressively
+
+Existing `StaticNode` metadata is a list of namespace/key/value strings.  I’d keep metadata passive and typed where possible:
+
+```ts id="iuox93"
+metadata: {
+  title,
+  description,
+  examples,
+  docs,
+  source,
+}
+```
+
+Anything that changes compiler behavior should be a trait, edge, type, transform, or pass input — not metadata.
+
+Bad:
+
+```ts id="3qkbvj"
+metadata: [{ namespace: "postgres", key: "gin_index", value: "true" }]
+```
+
+Good:
+
+```ts id="a69zyk"
+applyTrait(Article.fields.content, PostgresGinIndex);
+```
+
+## 12. Introduce typed registries for full inference
+
+A big issue in libraries like this is that once you register a thing into `ctx`, TypeScript often loses knowledge of it.
+
+So add an optional typed registry layer:
+
+```ts id="pdx70n"
+const app = gen
+  .define("User", entity(...))
+  .define("Post", entity(...))
+  .define("deleteUser", action(...));
+```
+
+Where:
+
+```ts id="wbb85h"
+type App = Registry<{
+  User: typeof User;
+  Post: typeof Post;
+  deleteUser: typeof deleteUser;
+}>
+```
+
+Then:
+
+```ts id="yg6g1g"
+app.get(User)
+app.get(DeleteUser)
+app.nodesWithTrait(NodeCallable)
+```
+
+The runtime `GenContext` remains canonical, but the typed registry preserves autocomplete and literal names during construction.
+
+This is especially helpful for agents: they can navigate typed definitions instead of raw files and strings. `AGENTS.md` already instructs agents to read the core primitive docs before changing core IR/rules/reactivity/providers/target derivation and to run `vp check` and `vp test`.  A typed registry gives agents a safer edit surface.
+
+## 13. Use “capability flow” for targets
+
+Targets should be nodes with capability traits:
+
+```ts id="aixw1o"
+const PostgresTarget = defineTarget({
+  traits: [
+    CapabilitySql,
+    CapabilityRls,
+    CapabilityTransactions,
+    CapabilityTriggers,
+  ],
+});
+```
+
+Emitters then become trait/capability constrained passes:
+
+```ts id="4dfo6d"
+const emitRls = definePass({
+  requiresTarget: [CapabilityRls],
+  requiresInput: [NodePolicyProtected, ExprSqlLowerable],
+});
+```
+
+This is cleaner than scattered target-specific checks.
+
+## 14. Use staged builders to keep inference fast
+
+Because the project uses a very new TypeScript stack (`typescript` native preview 7.0 dev, package versioned as `^6.0.2` in `package.json`), you can use advanced inference patterns, but you should still avoid pathological recursive types. 
+
+I’d design builders in stages:
+
+```ts id="b8df7u"
+defineNodeKind(...)
+defineTrait(...)
+defineType(...)
+defineNode(...)
+defineEdge(...)
+```
+
+Avoid one mega generic that infers the whole app at once.
+
+Good:
+
+```ts id="x0sl7i"
+const User = entity(...)
+const isAdmin = rule(User, ...)
+const deleteUser = action(...)
+
+const graph = graphBuilder()
+  .add(User)
+  .add(isAdmin)
+  .add(deleteUser);
+```
+
+Risky:
+
+```ts id="ioet1j"
+const app = defineApp({
+  entities: {...},
+  rules: {...},
+  actions: {...},
+  views: {...},
+  targets: {...}
+});
+```
+
+The latter gives beautiful whole-app inference until it melts the language server.
+
+## 15. Make “full inference” opt-in at boundaries
+
+Support two modes:
+
+```txt id="yc2jrn"
+Local inference
+  default, fast, works module-by-module
+
+Full registry inference
+  opt-in, gives whole-app autocomplete and cross-reference typing
+```
+
+Example:
+
+```ts id="qae3dh"
+const { gen, ctx } = createGen(); // local inference
+
+const app = createTypedRegistry()
+  .add(User)
+  .add(Project)
+  .add(deleteUser); // full inference
+```
+
+This lets product users stay fast and platform users opt into more power.
+
+## 16. Encode variance deliberately
+
+Types like `Node<In, Out>` need variance discipline:
+
+```txt id="wgwjxk"
+In should be contravariant-ish
+Out should be covariant
+Req/Eff usually union upward
+Traits usually intersection/additive
+```
+
+TypeScript does not make variance easy, so use helper aliases instead of exposing raw assignability everywhere:
+
+```ts id="8zjiaq"
+AcceptsInput<N, Input>
+ProducesOutput<N, Output>
+HasRequirement<N, Req>
+HasEffect<N, Eff>
+HasTrait<N, Trait>
+```
+
+That avoids subtle “it structurally matches but semantically should not” bugs.
+
+## 17. Keep extension open with typed modules
+
+Plugins should contribute typed symbols, not string namespaces only.
+
+```ts id="pqcsa1"
+const SearchPlugin = definePlugin({
+  id: pluginId("plugin.search"),
+  symbols: {
+    traits: [SearchIndexed],
+    edgeKinds: [IndexedByEdgeKind],
+    nodeKinds: [SearchIndexNodeKind],
+    capabilities: [CapabilitySearch],
+  },
+  passes: [deriveSearchIndexes, emitSearchConfig],
+});
+```
+
+This is much safer than:
+
+```ts id="v8klbb"
+trait("search:indexed")
+```
+
+The current plugin/helper system already materializes helpers into the `gen` namespace.  The new kernel should let plugins materialize typed symbol values too.
+
+## 18. Design for agents explicitly
+
+For AI agents, the kernel should expose:
+
+```txt id="r1lg0t"
+graph queries
+semantic diffs
+diagnostic traces
+artifact source maps
+typed symbol registry
+migration-safe stable IDs
+```
+
+Agent-friendly APIs:
+
+```ts id="9q2q7e"
+graph.explain(deleteUser)
+graph.trace(User.fields.role)
+graph.findEdges({ kind: WritesEdgeKind, target: User.fields.status })
+graph.diff(oldGraph, newGraph)
+graph.requiredUpdatesFor(change)
+```
+
+This matches Gen2’s deeper value: agents should modify semantic intent, not chase scattered files.
+
+## My final suggested generic shapes
+
+```ts id="ev89nl"
+type GType<
+  Decoded,
+  Encoded = Decoded,
+  DecodeR = never,
+  EncodeR = never,
+  Traits extends TraitSet = EmptyTraits
+> = ...
+
+type GExpr<
+  Out,
+  Req = never,
+  Eff = never,
+  Traits extends TraitSet = EmptyTraits,
+  Refs = never
+> = ...
+
+type GTransform<
+  From,
+  To,
+  DecodeR = never,
+  EncodeR = never,
+  Err = never,
+  Traits extends TraitSet = EmptyTraits
+> = ...
+
+type GNode<
+  Kind extends NodeKindDef,
+  In = unknown,
+  Out = unknown,
+  Err = never,
+  Req = never,
+  Eff = never,
+  Traits extends TraitSet = EmptyTraits
+> = ...
+
+type GEdge<
+  Kind extends EdgeKindDef,
+  Endpoints extends EndpointMap,
+  Payload = never,
+  Traits extends TraitSet = EmptyTraits
+> = ...
+
+type GPass<
+  Phase extends PassPhase,
+  Reads,
+  Writes,
+  ReqCapabilities = never
+> = ...
+```
+
+And core helpers:
+
+```ts id="mxv921"
+InferType<T>
+InferEncoded<T>
+InferInput<N>
+InferOutput<N>
+InferError<N>
+InferRequirements<X>
+InferEffects<X>
+InferTraits<X>
+InferRefs<X>
+HasTrait<X, T>
+AddTrait<X, T>
+MergeRequirements<A, B>
+MergeEffects<A, B>
+Chain<A, B>
+Parallel<Record>
+```
+
+## Bottom line
+
+The kernel should be:
+
+```txt id="ptn62j"
+symbol-first
+trait-gated
+edge-centric
+value-first
+phantom-typed
+locally inferred by default
+fully inferred by typed registry when wanted
+Effect-compatible at the type/schema/service boundary
+Effect-independent at the IR/expression/graph boundary
+```
+
+The most important type-system idea is this:
+
+> Runtime IR values are the canonical semantic graph. TypeScript phantom generics mirror enough of that graph to make composition safe, infer outputs, bubble up requirements/effects/laws, and flow context down into builders.
+
+[1]: https://effect-ts-effect-smol-1.mintlify.app/data/schema?utm_source=chatgpt.com "Schema - Effect"
+[2]: https://effect-ts-effect-smol-1.mintlify.app/concepts/services?utm_source=chatgpt.com "Services - Effect"
+[3]: https://effect-ts-effect-smol-1.mintlify.app/?utm_source=chatgpt.com "Effect v4 - Effect"
