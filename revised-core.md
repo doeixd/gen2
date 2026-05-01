@@ -2093,6 +2093,587 @@ Pass gives evolution, derivation, lowering, and emission.
 
 That is the revised Gen2 core.
 
+[18.Appendix: Staged Migration Plan]
+
+Yes. I would **not** refactor this as a big rewrite. The repo already has most of the ingredients. The right move is to introduce the revised core as an **underlay**, then gradually make the current modules compile down into it.
+
+The current project has a very broad public surface: the package root exports `core`, `types`, `entity`, `expression`, `storage`, `relation`, `query`, `function`, `api`, `ui`, `authz`, `events`, `lifecycle`, `crud`, `reactivity`, `router`, `hydration`, `services`, `rules`, `reaction`, `plan`, `context`, `requirements`, and `state`.  The current `GenContext` mirrors that breadth by storing separate arrays for almost every concept: entities, relations, queries, functions, routes, policies, events, views, services, rules, reactions, providers, workflows, boundary plans, offline queues, and more.
+
+That tells me the first refactor goal should be:
+
+> Stop adding more top-level registries. Add one semantic graph registry underneath them.
+
+## The refactor target
+
+I would introduce:
+
+```txt
+src/kernel/
+  id.ts
+  metadata.ts
+  trait.ts
+  type.ts
+  expr.ts
+  transform.ts
+  node.ts
+  edge.ts
+  graph.ts
+  pass.ts
+  diagnostic.ts
+  artifact.ts
+  index.ts
+```
+
+Then gradually make the current modules emit kernel objects.
+
+The destination architecture:
+
+```txt
+Existing public API
+  gen.entity(...)
+  gen.rule(...)
+  gen.func.action(...)
+  gen.relation(...)
+  gen.ui...
+        |
+        v
+Stdlib adapters
+  entity -> kernel node + edges
+  rule -> kernel node + expr
+  action -> kernel node + read/write/guard edges
+  relation -> kernel edge
+        |
+        v
+Kernel graph
+  Id
+  Type
+  Expr
+  Transform
+  Trait
+  Metadata
+  Node
+  Edge
+  Graph
+  Pass
+```
+
+Do **not** delete the current modules early. Keep them as compatibility/stdlib layers.
+
+## What you already have
+
+You already have a good `Id/Ref` base. `src/core/refs.ts` defines stable IDs for entities, fields, relations, functions, rules, policies, key families, contexts, services, providers, routes, workflows, and migrations, plus typed `Ref` variants and identity helpers.  That should become the foundation for kernel identity rather than being replaced.
+
+You also already have `StaticNode` in `src/core/node.ts`, with traits, input/output semantic types, errors, requirements, effects, metadata, symbol info, call plans, and type inference helpers.  This is very close to the revised `Node` primitive.
+
+You already have `SemanticType` in `src/types/semantic.ts`, carrying kind, TypeScript type name, storage representation, optional wire representation, serializer/deserializer flags, server-only marking, traits, enum values, validation, and merge strategy.  That maps cleanly to revised `Type`.
+
+You already have `Expr` in `src/expression/expr.ts`, binding an AST to a value type, phase, requirements, effects, opacity marker, and flattened refs.  That maps cleanly to revised `Expr`.
+
+The biggest missing primitive is **Edge**. Today, `src/relation/relation.ts` models domain entity relations specifically: one-to-one, one-to-many, many-to-one, many-to-many, integrity modes, foreign keys, deletion behavior, and link entities.  That should become a **stdlib domain edge** built on a more general kernel `Edge`.
+
+## The main problem to fix
+
+The current architecture has two parallel structures:
+
+```txt
+1. Rich module-specific arrays on GenContext
+2. Partial generic core: refs, nodes, traits, diagnostics, artifacts
+```
+
+The refactor should unify them under:
+
+```ts
+interface KernelGraph {
+  ids: ...
+  types: ...
+  exprs: ...
+  transforms: ...
+  traits: ...
+  nodes: ...
+  edges: ...
+}
+```
+
+Then the current `GenContext` becomes:
+
+```ts
+interface GenContext {
+  graph: KernelGraph;
+
+  // temporary compatibility views:
+  entities: Entity[];
+  relations: Relation[];
+  query_functions: QueryFunction[];
+  action_functions: ActionFunction[];
+  ...
+}
+```
+
+That lets you migrate module by module without breaking the public API.
+
+## Phase 1: add the kernel underlay
+
+Create `src/kernel/*` and re-export it from `src/core/index.ts`.
+
+Start small:
+
+```ts
+// src/kernel/id.ts
+export type KernelId<Kind extends string = string> = string & {
+  readonly __kernelId?: Kind;
+};
+
+export interface KernelRef<Kind extends string = string, Ts = unknown> {
+  readonly kind: Kind;
+  readonly id?: KernelId<Kind>;
+  readonly name?: string;
+  readonly _ts?: Ts;
+}
+```
+
+But don't throw away existing `Ref`. Instead bridge it:
+
+```ts
+export type KernelObjectRef = Ref | KernelRef;
+
+export const refToKernelRef = (ref: Ref): KernelRef => ({
+  kind: ref.kind,
+  id: ref.id as KernelId,
+  name: ref.name,
+});
+```
+
+Then add:
+
+```ts
+interface KernelMetadata {
+  readonly title?: string;
+  readonly description?: string;
+  readonly docs?: string;
+  readonly examples?: readonly unknown[];
+  readonly source?: SourceSpan;
+  readonly custom?: Record<string, unknown>;
+}
+
+interface KernelTrait {
+  readonly id: KernelId<"trait">;
+  readonly name: string;
+  readonly appliesTo: readonly KernelTargetKind[];
+  readonly implies?: readonly KernelId<"trait">[];
+  readonly conflictsWith?: readonly KernelId<"trait">[];
+  readonly metadata?: KernelMetadata;
+}
+```
+
+This is a better version of current traits. Right now type traits are relatively narrow: name, optional `applies_to`, validation expression, storage expression, error message, and queryable flag.  Node traits are separately represented as strings / trait refs.  The refactor should unify those under one trait object while preserving compatibility helpers.
+
+## Phase 2: introduce `Edge`
+
+Add:
+
+```ts
+export interface KernelEdgeEndpoint {
+  readonly role: string;
+  readonly target: KernelObjectRef;
+  readonly cardinality?: "one" | "optional" | "many";
+}
+
+export interface KernelEdge {
+  readonly id?: KernelId<"edge">;
+  readonly kind: string;
+  readonly endpoints: readonly KernelEdgeEndpoint[];
+  readonly payloadType?: KernelObjectRef;
+  readonly traits: readonly KernelTraitRef[];
+  readonly metadata?: KernelMetadata;
+  readonly provenance?: KernelProvenance;
+}
+```
+
+This becomes the generic substrate for:
+
+```txt
+owns
+hasType
+reads
+writes
+guards
+requires
+provides
+derives
+invalidates
+patches
+submits
+displays
+edits
+stores
+mapsTo
+crossesBoundary
+lowersTo
+generatedFrom
+```
+
+Then make current `Relation` also emit a kernel edge:
+
+```ts
+export const relationToKernelEdge = (relation: Relation): KernelEdge => ({
+  kind: "domain.relation",
+  endpoints: [
+    { role: "from_entity", target: relation.from_entity.ref, cardinality: "one" },
+    { role: "to_entity", target: relation.to_entity.ref, cardinality: "one" },
+    { role: "from_field", target: relation.from_field.ref, cardinality: "one" },
+    { role: "to_field", target: relation.to_field.ref, cardinality: "one" },
+  ],
+  traits: [
+    `relation.${relation.kind}`,
+    `integrity.${relation.integrity.kind}`,
+  ],
+  metadata: {
+    title: relation.name,
+  },
+});
+```
+
+Current `Relation` remains the ergonomic domain API. Kernel `Edge` becomes the general graph primitive.
+
+## Phase 3: add `graph` to `GenContext`
+
+Change `createGen()` to initialize a graph:
+
+```ts
+const ctx: GenContext = {
+  graph: createKernelGraph(),
+  entities: [],
+  relations: [],
+  ...
+}
+```
+
+For now, do dual writes:
+
+```ts
+ctx.entities.push(entity);
+ctx.graph.nodes.push(entityToKernelNode(entity));
+ctx.graph.edges.push(...entityToKernelEdges(entity));
+```
+
+This dual-write period is important. It gives you a migration path without breaking all checkers.
+
+## Phase 4: convert modules into graph emitters
+
+Do this one module at a time.
+
+Recommended order:
+
+```txt
+1. entity
+2. relation
+3. expression
+4. rules
+5. function/action/query
+6. authz
+7. reactivity
+8. ui
+9. storage
+10. lifecycle
+```
+
+Why this order: entity/relation/expression give you the graph substrate; rules/functions/authz/reactivity become much easier once read/write/guard edges exist.
+
+Example mappings:
+
+```txt
+Entity
+  -> Node(kind: "entity")
+  -> Edge(kind: "owns", entity -> field)
+  -> Edge(kind: "hasType", field -> type)
+
+Rule
+  -> Node(kind: "rule", body: Expr<boolean>)
+  -> Edge(kind: "reads", rule -> field)
+  -> Edge(kind: "guards", rule -> action/policy/view)
+
+Action
+  -> Node(kind: "action")
+  -> Edge(kind: "writes", action -> field)
+  -> Edge(kind: "requires", action -> provider/context)
+  -> Edge(kind: "guardedBy", action -> rule)
+
+Query
+  -> Node(kind: "query")
+  -> Edge(kind: "reads", query -> field)
+  -> Edge(kind: "derives", query -> key)
+
+View
+  -> Node(kind: "view")
+  -> Edge(kind: "displays", view -> field)
+  -> Edge(kind: "submits", view -> action)
+  -> Edge(kind: "enabledWhen", view/control -> rule)
+```
+
+## Phase 5: replace lifecycle checker registration with passes
+
+Current lifecycle manually registers many module checkers: entities, refs, contracts, config, storage, mappings, relations, queries, functions, API, authz, events, reactivity, rules, reactions, nodes, UI, CRUD, lists, context/storage, requirements, workflows, boundary plans, obligations, merge, offline, and more.
+
+Keep that behavior, but wrap it in a unified pass protocol:
+
+```ts
+interface KernelPass {
+  readonly name: string;
+  readonly phase: "check" | "derive" | "lower" | "emit";
+  readonly run: (ctx: GenContext) => readonly Diagnostic[] | PassResult;
+}
+```
+
+Then existing checkers become:
+
+```ts
+registerPass(ctx, {
+  name: "relation.check",
+  phase: "check",
+  run: (ctx) => checkRelations(ctx.relations),
+});
+```
+
+Later, make them graph-native:
+
+```ts
+registerPass(ctx, {
+  name: "edge.domain.check",
+  phase: "check",
+  run: (ctx) => checkDomainEdges(ctx.graph),
+});
+```
+
+This lets you migrate checkers incrementally.
+
+## Phase 6: make derivation explicit
+
+Once `Edge` exists, add derive passes:
+
+```txt
+derive.entity.fieldEdges
+derive.rule.reads
+derive.action.writes
+derive.query.reads
+derive.auth.guards
+derive.reactivity.invalidates
+derive.storage.mapsTo
+derive.artifact.generatedFrom
+```
+
+This is where Gen2 starts becoming much cleaner.
+
+Instead of each module holding private dependency logic, the graph becomes queryable:
+
+```ts
+graph.edges({
+  kind: "writes",
+  from: action.ref,
+});
+
+graph.edges({
+  kind: "reads",
+  to: field.ref,
+});
+```
+
+Then reactivity can become graph logic:
+
+```txt
+action writes field
+rule reads field
+query uses rule
+resource derives key
+=> mutation invalidates key
+```
+
+## Phase 7: add Effect interop as an adapter, not a dependency
+
+Your package currently has `@effect-atom/atom` as a dev dependency, but not Effect itself.  That's good. Keep `@gen2/core` independent.
+
+Add a future package/module:
+
+```txt
+src/adapters/effect/
+  schema.ts
+  context.ts
+  layer.ts
+  runtime.ts
+```
+
+Mapping:
+
+```txt
+Kernel Type       <-> Effect Schema
+Kernel Transform  <-> Effect Schema transformation / codec
+Kernel Provider   <-> Effect Layer
+Kernel Requirement/Service <-> Effect Context.Service
+Kernel Action     -> Effect runtime program
+```
+
+But do not make `Expr` an Effect program. Keep `Expr` static and portable.
+
+## The first concrete PR I'd make
+
+PR 1 should be boring and non-breaking:
+
+```txt
+Title:
+  Add kernel graph primitives
+
+Files:
+  src/kernel/id.ts
+  src/kernel/metadata.ts
+  src/kernel/trait.ts
+  src/kernel/type.ts
+  src/kernel/expr.ts
+  src/kernel/transform.ts
+  src/kernel/node.ts
+  src/kernel/edge.ts
+  src/kernel/graph.ts
+  src/kernel/pass.ts
+  src/kernel/index.ts
+
+Also:
+  export * as kernel from "./kernel/index.ts" in src/index.ts
+  export * from "../kernel/index.ts" or selected exports in src/core/index.ts
+```
+
+No existing code should be rewritten in PR 1.
+
+PR 1 acceptance criteria:
+
+```txt
+vp check passes
+vp test passes
+kernel graph can register nodes
+kernel graph can register edges
+edge endpoints can target existing Ref objects
+existing public API unchanged
+```
+
+## PR 2
+
+Add adapters, still non-breaking:
+
+```txt
+src/entity/kernel.ts
+src/relation/kernel.ts
+src/rules/kernel.ts
+src/function/kernel.ts
+```
+
+Example:
+
+```ts
+export const entityToKernelNode = (entity: Entity): KernelNode => ...
+export const relationToKernelEdge = (relation: Relation): KernelEdge => ...
+```
+
+Acceptance criteria:
+
+```txt
+Existing entity/relation builders still work.
+A test can build User/Post/author relation and inspect graph nodes/edges.
+No lifecycle behavior changes yet.
+```
+
+## PR 3
+
+Add `ctx.graph` and dual-write selected modules:
+
+```txt
+createGen initializes graph
+bindEntity writes entity + kernel node
+bindRelation writes relation + kernel edge
+```
+
+Acceptance criteria:
+
+```txt
+Existing tests pass.
+New graph tests pass.
+No checker migration yet.
+```
+
+## PR 4
+
+Convert relation checking to graph-aware checking.
+
+Current relation checks are a good first target because relations are already semantically rich and self-contained: type matching, cross-store FK errors, nullable requirements for `set_null`, default requirements for `set_default`, many-to-many link entity requirements, and inverse consistency.
+
+Start by making relation checks compare old and new behavior.
+
+```ts
+const oldDiagnostics = checkRelations(ctx.relations);
+const newDiagnostics = checkDomainEdges(ctx.graph);
+expectEquivalentDiagnostics(oldDiagnostics, newDiagnostics);
+```
+
+Then migrate lifecycle to the new checker once equivalent.
+
+## What not to do
+
+Do not start by renaming everything.
+
+Do not delete `Entity`, `Relation`, `Rule`, `ActionFunction`, or `QueryFunction`.
+
+Do not try to make the public API match the new kernel immediately.
+
+Do not collapse all modules into `kernel`.
+
+Do not move Effect into core.
+
+The public API should stay ergonomic:
+
+```ts
+gen.entity(...)
+gen.rule(...)
+gen.func.action(...)
+gen.relation(...)
+```
+
+The implementation should become graph-backed.
+
+## The guiding migration rule
+
+For every existing concept, ask:
+
+```txt
+Is this a semantic object?
+  -> Kernel Node
+
+Is this a semantic connection?
+  -> Kernel Edge
+
+Is this inspectable logic?
+  -> Kernel Expr
+
+Is this a value shape?
+  -> Kernel Type
+
+Is this a representation conversion?
+  -> Kernel Transform
+
+Is this a checked semantic claim?
+  -> Kernel Trait
+
+Is this passive descriptive data?
+  -> Kernel Metadata
+```
+
+That gives you a path out of the current large registry model without breaking the library.
+
+## My recommendation
+
+Start with a branch like:
+
+```txt
+refactor/kernel-graph-underlay
+```
+
+Then implement only PR 1 and PR 2 before touching lifecycle. The current codebase is already close enough that you do not need a conceptual rewrite; you need a **semantic graph underlay** and then a staged migration of each module onto it.
+
 [1]: https://effect.website/blog/releases/effect/40-beta/ "Effect v4 Beta | Effect Documentation"
 [2]: https://raw.githubusercontent.com/Effect-TS/effect-smol/main/packages/effect/SCHEMA.md "raw.githubusercontent.com"
 [3]: https://github.com/Effect-TS/effect-smol/blob/main/migration/services.md "effect-smol/migration/services.md at main · Effect-TS/effect-smol · GitHub"
