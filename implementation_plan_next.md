@@ -341,3 +341,128 @@ Define a `TargetInputRecord` that bundles the reactive graph, the import/symbol 
 
 - Targets receive a unified input record containing all necessary generation context.
 - Generators can emit well-formed TypeScript files with correct imports and typed boundaries.
+
+---
+
+## Phase 3: IR Architecture and Semantic Expansion
+
+> As identified in `spec/atom.txt` and `docs/stuff.txt`, the ultimate goal of the `gen2` compiler is not just to generate React/Effect code from functions, but to capture the full semantic meaning of the application (DI, Client State, Reactions, IVM, and Progressive Enhancement) as a target-agnostic IR.
+
+## Recommended Milestone Order (Phase 3)
+
+1. **ARCH1: Open Trait-Based Composition**
+2. **DI1: Typed Context and Storage Locations**
+3. **PE2: Progressive Enhancement and Fallbacks**
+4. **IVM1: Rule-Derived Incremental View Maintenance**
+5. **RX1: Reactions and Outbox Planning**
+6. **XFER1: Cross-Boundary Transports and SingleFlight**
+
+---
+
+## Milestone ARCH1: Open Trait-Based Composition
+
+### Problem
+The current IR relies heavily on closed node kinds (e.g., `QueryFunction`, `ActionFunction`). While expression-level IR should remain closed for exhaustive target generation, application-level concepts (Workflows, Services, Reports) should be open for extension by plugins without breaking the graph compiler.
+
+### Target Design
+Formalize a trait-based protocol where custom plugin nodes can participate in the graph. Introduce generic composition primitives (`gen.plan.sequence`, `gen.plan.parallel`) that operate on traits rather than concrete kinds.
+
+### Implementation Steps
+1. Formalize the `StaticNode` trait interfaces (`CallableNode`, `ReadableNode`, `EffectfulNode`, etc.) to ensure plugin-defined nodes can implement them.
+2. Introduce a `LowerableNode` interface (`lowersTo?: () => readonly StaticNode[]`) so targets can handle unknown custom nodes by lowering them into canonical IR.
+3. Build trait-aware plan combinators (`gen.plan.sequence`, `gen.plan.parallel`, `gen.plan.withRequirement`).
+
+### Acceptance Criteria
+- Plugins can define custom nodes that seamlessly participate in routing, reactivity, and target generation via traits or lowering.
+
+---
+
+## Milestone DI1: Typed Context and Storage Locations
+
+### Problem
+Client state and context injection (DI) are currently handled haphazardly across frontends and backends. The compiler lacks a unified model for where data lives and how dependencies are satisfied.
+
+### Target Design
+Make "Storage Locations" and "Context Requirements" first-class typed IR. 
+
+### Implementation Steps
+1. Define `StorageLocation` IR kinds (`server.requestContext`, `client.localStorage`, `client.queryCache`, `shared.cookie`) with semantic capabilities (`persistent`, `sensitive-safe`, `client-readable`).
+2. Add `gen.context.define` to represent typed environmental or session state (e.g., `AuthSession`, `TenantContext`).
+3. Allow routes, components, and workflows to declare `requires: [AuthSession]` and `provides: [AuthSession from storage]`.
+4. Emit diagnostics for unsafe placements (e.g., storing a sensitive secret in `client.localStorage`).
+
+### Acceptance Criteria
+- Storage locations and contexts are fully typed and validated during the lifecycle `check` phase.
+
+---
+
+## Milestone PE2: Progressive Enhancement and Fallbacks
+
+### Problem
+Targets currently generate a single blessed path. Real apps need progressive enhancement (e.g., try Optimistic UI, fallback to standard fetch, fallback to server-rendered form).
+
+### Target Design
+Build out the `EnhancementPlan` seed (from PE1) into a full fallback planning system for actions, routes, and resources.
+
+### Implementation Steps
+1. Expand `FallbackPlan` to represent degraded execution modes (e.g., `degrade_to_server_form`, `degrade_to_refetch`).
+2. Update target generators (like React/Effect) to wrap generated hooks/atoms in progressive enhancement boundaries.
+3. Validate that required capabilities for the primary plan are actually supported by the target runtime.
+
+### Acceptance Criteria
+- Target generation emits explicit fallback logic rather than failing silently or omitting unsupported features.
+
+---
+
+## Milestone IVM1: Rule-Derived Incremental View Maintenance
+
+### Problem
+Rule-derived reactivity currently relies on Level 1 "broad" invalidation. We correctly identify overlap, but we don't execute true Incremental View Maintenance (IVM).
+
+### Target Design
+Elevate rule dependency extraction to derive exact patches and materialized view maintenance queries.
+
+### Implementation Steps
+1. Map relational queries and rules into delta-queries (insert/update/delete -> exact key additions/removals).
+2. Enhance `checkRuleReactivity` to determine if a rule is purely monotonic and safe for IVM.
+3. Generate exact invalidation plans (`precision: "patchable"`) or materialized maintenance actions where supported.
+
+### Acceptance Criteria
+- Simple equality and foreign-key rules can derive exact cache patches instead of broad collection invalidation.
+
+---
+
+## Milestone RX1: Reactions and Outbox Planning
+
+### Problem
+Reactions ("when project becomes overdue, send notification") are defined but lack execution safety guarantees (idempotency, outbox).
+
+### Target Design
+Formalize the translation of a `Reaction` into an `EventSubscription`, an `ActionFunction`, and an `OutboxPlan`.
+
+### Implementation Steps
+1. Add `OutboxPlan` and `DeliveryGuarantee` metadata to `Reaction`.
+2. Generate required schemas for an outbox table/queue storage.
+3. Lower reactions into transactional sequences that write to the outbox and schedule the effect.
+
+### Acceptance Criteria
+- Reactions correctly lower into transactional effect-scheduling IR.
+
+---
+
+## Milestone XFER1: Cross-Boundary Transports and SingleFlight
+
+### Problem
+Routes and client/server boundaries currently rely on implicit HTTP calls. `SingleFlight` is stubbed but not fully utilized for bundling loader data and mutation invalidations across the network.
+
+### Target Design
+Formalize the network boundary with explicit RPC, WebSocket, or HTTP transports, and bundle state synchronization.
+
+### Implementation Steps
+1. Build out `@gen/singleflight` to bundle route loader queries and client-state resources into single requests.
+2. Allow mutations to return the updated payloads of any loaders that were marked as stale, preventing double-round-trips.
+3. Formalize `HydrationSnapshot` to securely serialize and dehydrate context/resources across the server-client gap.
+
+### Acceptance Criteria
+- Server targets can generate bundled SingleFlight endpoints.
+- Client targets can generate bundled RPC/HTTP fetchers that automatically populate the reactivity cache.
