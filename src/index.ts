@@ -24,6 +24,7 @@
 export * from "./gen.ts";
 export * from "./db/index.ts";
 export * from "./adapters/index.ts";
+export * as kernel from "./kernel/index.ts";
 
 // Module re-exports for users who want to import directly from a sub-module.
 export * as core from "./core/index.ts";
