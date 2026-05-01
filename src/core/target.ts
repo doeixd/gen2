@@ -26,11 +26,17 @@ export interface EnhancementPlan {
   readonly required_capabilities: readonly Capability[];
 }
 
+export interface SymbolRegistry {
+  readonly symbols: readonly import("./node.ts").SymbolMetadata[];
+}
+
 /** A concrete input supplied to a target during generation. */
-export interface TargetInput {
+export interface TargetInputRecord {
   readonly name: string;
   readonly kind: string;
   readonly value?: unknown;
+  readonly symbol_registry?: SymbolRegistry;
+  readonly target_config?: Record<string, unknown>;
 }
 
 /** A generation target that bridges domain models to concrete artifacts. */
@@ -38,7 +44,7 @@ export interface Target {
   readonly name: string;
   readonly plugin_id: string;
   readonly accepts_inputs: readonly string[];
-  inputs: TargetInput[];
+  inputs: TargetInputRecord[];
   check_result?: CheckResult;
   generate_result?: GenerateResult;
 }
@@ -53,7 +59,7 @@ export const makeTarget = (input: {
   name: string;
   plugin_id: string;
   accepts_inputs: readonly string[];
-  inputs?: TargetInput[];
+  inputs?: TargetInputRecord[];
 }): Target => ({
   name: input.name,
   plugin_id: input.plugin_id,
@@ -62,19 +68,23 @@ export const makeTarget = (input: {
 });
 
 /**
- * Creates a concrete TargetInput record.
+ * Creates a concrete TargetInputRecord.
  *
  * @param input - Input metadata and optional payload.
- * @returns A TargetInput record.
+ * @returns A TargetInputRecord.
  */
 export const makeTargetInput = (input: {
   name: string;
   kind: string;
   value?: unknown;
-}): TargetInput => ({
+  symbol_registry?: SymbolRegistry;
+  target_config?: Record<string, unknown>;
+}): TargetInputRecord => ({
   name: input.name,
   kind: input.kind,
   value: input.value,
+  symbol_registry: input.symbol_registry,
+  target_config: input.target_config,
 });
 
 /**
@@ -84,7 +94,7 @@ export const makeTargetInput = (input: {
  * @param input - The input to attach.
  * @returns The same target for chaining.
  */
-export const acceptTargetInput = (target: Target, input: TargetInput): Target => {
-  target.inputs.push(input);
+export const acceptTargetInput = (target: Target, input: TargetInputRecord): Target => {
+  target.inputs = [...target.inputs, input];
   return target;
 };

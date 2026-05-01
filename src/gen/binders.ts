@@ -77,7 +77,7 @@ export const bindReactiveResource = (
 ): typeof reactivityMod.defineReactiveResource =>
   ((input) => {
     const resource = reactivityMod.defineReactiveResource(input);
-    ctx.reactive_resources.push(resource);
+    ctx.reactive_resources.push(resource as reactivityMod.ReactiveResource);
     return resource;
   }) as typeof reactivityMod.defineReactiveResource;
 
@@ -86,9 +86,9 @@ export const bindReactiveMutation = (
 ): typeof reactivityMod.defineReactiveMutation =>
   ((input) => {
     const optimistic =
-      input.optimistic ?? reactivityMod.deriveDefaultOptimisticPlan(input.action, ctx);
+      input.optimistic ?? reactivityMod.deriveDefaultOptimisticPlan(input.action as any, ctx);
     const mutation = reactivityMod.defineReactiveMutation({ ...input, optimistic });
-    ctx.reactive_mutations.push(mutation);
+    ctx.reactive_mutations.push(mutation as reactivityMod.ReactiveMutation);
     return mutation;
   }) as typeof reactivityMod.defineReactiveMutation;
 
@@ -169,25 +169,19 @@ export const bindStore = (ctx: GenContext): typeof storageMod.defineStore =>
 export const bindTable = (ctx: GenContext): typeof storageMod.defineTable =>
   ((store, name, columns) => {
     const table = storageMod.defineTable(store, name, columns);
-    (store.tables as storageMod.Table[]).push(table);
+    (store as any).tables = Object.freeze([...store.tables, table]);
     ctx.tables.push(table);
     ctx.columns.push(...table.columns);
     return table;
   }) as typeof storageMod.defineTable;
 
-/**
- * Binds `defineColumn` to a context, registering the result into the columns
- * collection. Preserves the column's generic value-type parameter so that
- * `gen.column(table, { semantic_type: stringType() })` returns `Column<string>`.
- * @param ctx - The mutable Gen context.
- * @returns A context-bound `defineColumn`.
- */
 export const bindColumn = (ctx: GenContext): typeof storageMod.defineColumn =>
   (<T = unknown>(
     table: storageMod.Table,
     input: Omit<storageMod.Column<T>, "owning_table">,
   ): storageMod.Column<T> => {
     const c = storageMod.defineColumn<T>(table, input);
+    (table as any).columns = Object.freeze([...table.columns, c]);
     ctx.columns.push(c as storageMod.Column);
     return c;
   }) as typeof storageMod.defineColumn;
@@ -380,14 +374,17 @@ export const bindBuildQuery = (ctx: GenContext): typeof queryMod.buildQuery =>
 export const bindFromEntity = (ctx: GenContext): typeof queryMod.fromEntity =>
   ((entity, result_type) => {
     const builder = queryMod.fromEntity(entity, result_type);
+
+    // Instead of Object.assign mapping closures over every builder method,
+    // we just override the `build` method to capture the result.
     const originalBuild = builder.build.bind(builder);
-    return Object.assign(builder, {
-      build: () => {
-        const query = originalBuild();
-        ctx.queries.push(query);
-        return query;
-      },
-    });
+    builder.build = () => {
+      const query = originalBuild();
+      ctx.queries.push(query);
+      return query;
+    };
+
+    return builder;
   }) as typeof queryMod.fromEntity;
 
 /**
@@ -809,7 +806,18 @@ export const bindRenderer = (ctx: GenContext): typeof uiMod.defineRenderer =>
  * @returns A context-bound `defineForm`.
  */
 export const bindForm = (ctx: GenContext): typeof uiMod.defineForm =>
-  bindFactory(ctx.forms, uiMod.defineForm) as typeof uiMod.defineForm;
+  ((name, source_function, fields, slots, submit_result, error_mapping) => {
+    const form = uiMod.defineForm(
+      name,
+      source_function,
+      fields,
+      slots,
+      submit_result,
+      error_mapping,
+    );
+    ctx.forms.push(form as uiMod.Form);
+    return form;
+  }) as typeof uiMod.defineForm;
 
 /**
  * Binds `defineEditor` to a context, registering the result into the editors collection.

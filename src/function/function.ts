@@ -122,7 +122,14 @@ export interface PatchExpr {
 // ---------------------------------------------------------------------------
 
 /** A function with an opaque static body and declared effects/requirements. */
-export interface StaticFunction<In = unknown, Out = unknown> {
+export interface StaticFunction<
+  In = unknown,
+  Out = unknown,
+  Err = ErrorType,
+  Req = unknown,
+  Eff = unknown,
+  Cap = unknown,
+> {
   readonly id?: FunctionId;
   readonly ref?: FunctionRef<In, Out>;
   readonly name: string;
@@ -142,10 +149,24 @@ export interface StaticFunction<In = unknown, Out = unknown> {
   readonly laws: readonly Law[];
   readonly target_runtimes: readonly Runtime[];
   readonly callPlan?: ReturnType<typeof callPlan<In, Out>>;
+  readonly symbol?: import("../core/index.ts").SymbolMetadata;
+  readonly _input?: In;
+  readonly _output?: Out;
+  readonly _errors?: Err;
+  readonly _requires?: Req;
+  readonly _effects?: Eff;
+  readonly _capabilities?: Cap;
 }
 
 /** A function whose body is a typed expression. */
-export interface ExprFunction<In = unknown, Out = unknown> {
+export interface ExprFunction<
+  In = unknown,
+  Out = unknown,
+  Err = ErrorType,
+  Req = unknown,
+  Eff = unknown,
+  Cap = unknown,
+> {
   readonly id?: FunctionId;
   readonly ref?: FunctionRef<In, Out>;
   readonly name: string;
@@ -159,10 +180,23 @@ export interface ExprFunction<In = unknown, Out = unknown> {
   readonly laws: readonly Law[];
   readonly target_runtimes: readonly Runtime[];
   readonly callPlan?: ReturnType<typeof callPlan<In, Out>>;
+  readonly symbol?: import("../core/index.ts").SymbolMetadata;
+  readonly _input?: In;
+  readonly _output?: Out;
+  readonly _errors?: Err;
+  readonly _requires?: Req;
+  readonly _effects?: Eff;
+  readonly _capabilities?: Cap;
 }
 
 /** A function whose body is a predicate expression. */
-export interface PredicateFunction<In = unknown> {
+export interface PredicateFunction<
+  In = unknown,
+  Err = ErrorType,
+  Req = unknown,
+  Eff = unknown,
+  Cap = unknown,
+> {
   readonly id?: FunctionId;
   readonly ref?: FunctionRef<In, boolean>;
   readonly name: string;
@@ -173,6 +207,13 @@ export interface PredicateFunction<In = unknown> {
   readonly effects: readonly Effect[];
   readonly target_runtimes: readonly Runtime[];
   readonly callPlan?: ReturnType<typeof callPlan<In, boolean>>;
+  readonly symbol?: import("../core/index.ts").SymbolMetadata;
+  readonly _input?: In;
+  readonly _output?: boolean;
+  readonly _errors?: Err;
+  readonly _requires?: Req;
+  readonly _effects?: Eff;
+  readonly _capabilities?: Cap;
 }
 
 /** A function that returns query results, optionally with auth and error types. */
@@ -191,6 +232,10 @@ export interface QueryFunction<
   In = unknown,
   Out = unknown,
   Payload extends KeyPayload = KeyPayload,
+  Err = ErrorType,
+  Req = unknown,
+  Eff = unknown,
+  Cap = unknown,
 > {
   readonly id?: FunctionId;
   readonly ref?: FunctionRef<In, Out>;
@@ -206,10 +251,24 @@ export interface QueryFunction<
   readonly requirements: readonly Requirement[];
   readonly target_runtimes: readonly Runtime[];
   readonly callPlan?: ReturnType<typeof callPlan<In, Out>>;
+  readonly symbol?: import("../core/index.ts").SymbolMetadata;
+  readonly _input?: In;
+  readonly _output?: Out;
+  readonly _errors?: Err;
+  readonly _requires?: Req;
+  readonly _effects?: Eff;
+  readonly _capabilities?: Cap;
 }
 
 /** A function representing a write action with auth, effects, and store targets. */
-export interface ActionFunction<In = unknown, Out = unknown> {
+export interface ActionFunction<
+  In = unknown,
+  Out = unknown,
+  Err = ErrorType,
+  Req = unknown,
+  Eff = unknown,
+  Cap = unknown,
+> {
   readonly id?: FunctionId;
   readonly ref?: FunctionRef<In, Out>;
   readonly name: string;
@@ -229,10 +288,24 @@ export interface ActionFunction<In = unknown, Out = unknown> {
   readonly requirements: readonly Requirement[];
   readonly target_runtimes: readonly Runtime[];
   readonly callPlan?: ReturnType<typeof callPlan<In, Out>>;
+  readonly symbol?: import("../core/index.ts").SymbolMetadata;
+  readonly _input?: In;
+  readonly _output?: Out;
+  readonly _errors?: Err;
+  readonly _requires?: Req;
+  readonly _effects?: Eff;
+  readonly _capabilities?: Cap;
 }
 
 /** A function representing an optimistic patch with reconciliation. */
-export interface PatchFunction<In = unknown, Out = unknown> {
+export interface PatchFunction<
+  In = unknown,
+  Out = unknown,
+  Err = ErrorType,
+  Req = unknown,
+  Eff = unknown,
+  Cap = unknown,
+> {
   readonly id?: FunctionId;
   readonly ref?: FunctionRef<In, Out>;
   readonly name: string;
@@ -243,10 +316,24 @@ export interface PatchFunction<In = unknown, Out = unknown> {
   readonly reconcile_field?: Field;
   readonly rollback_strategy?: "inverse" | "custom";
   readonly callPlan?: ReturnType<typeof callPlan<In, Out>>;
+  readonly symbol?: import("../core/index.ts").SymbolMetadata;
+  readonly _input?: In;
+  readonly _output?: Out;
+  readonly _errors?: Err;
+  readonly _requires?: Req;
+  readonly _effects?: Eff;
+  readonly _capabilities?: Cap;
 }
 
 /** A function wrapping a runtime-aware execution plan. */
-export interface PlanFunction<In = unknown, Out = unknown> {
+export interface PlanFunction<
+  In = unknown,
+  Out = unknown,
+  Err = ErrorType,
+  Req = unknown,
+  Eff = unknown,
+  Cap = unknown,
+> {
   readonly id?: FunctionId;
   readonly ref?: FunctionRef<In, Out>;
   readonly name: string;
@@ -256,6 +343,13 @@ export interface PlanFunction<In = unknown, Out = unknown> {
   readonly body: PlanExpr;
   readonly fallback_policy: FallbackPolicy;
   readonly callPlan?: ReturnType<typeof callPlan<In, Out>>;
+  readonly symbol?: import("../core/index.ts").SymbolMetadata;
+  readonly _input?: In;
+  readonly _output?: Out;
+  readonly _errors?: Err;
+  readonly _requires?: Req;
+  readonly _effects?: Eff;
+  readonly _capabilities?: Cap;
 }
 
 // ---------------------------------------------------------------------------
@@ -613,18 +707,25 @@ export const checkQueryFunctionRuntimes = (cat: FunctionCatalog): readonly Diagn
  * });
  * ```
  */
-export const defineExprFunction = <In = unknown, Out = unknown>(input: {
+export const defineExprFunction = <
+  In = unknown,
+  Out = unknown,
+  const Err extends ErrorType = ErrorType,
+  const Req extends Requirement = Requirement,
+  const Eff extends Effect = Effect,
+  const Cap extends Capability = Capability,
+>(input: {
   id?: FunctionId;
   name: string;
   input_type: SemanticType<In> | Entity;
   output_type: SemanticType<Out> | Entity;
   body: Expr;
-  requirements?: readonly Requirement[];
-  effects?: readonly Effect[];
-  capabilities?: readonly Capability[];
+  requirements?: readonly Req[];
+  effects?: readonly Eff[];
+  capabilities?: readonly Cap[];
   laws?: readonly Law[];
   target_runtimes?: readonly Runtime[];
-}): ExprFunction<In, Out> => {
+}): ExprFunction<In, Out, Err, Req, Eff, Cap> => {
   const input_type = entityToSemanticType<In>(input.input_type);
   const output_type = entityToSemanticType<Out>(input.output_type);
   const effects = input.effects ?? [];
@@ -676,6 +777,10 @@ export const defineQueryFunction = <
   In = unknown,
   Out = unknown,
   Payload extends KeyPayload = KeyPayload,
+  const Err extends ErrorType = ErrorType,
+  const Req extends Requirement = Requirement,
+  const Eff extends Effect = Effect,
+  const Cap extends Capability = Capability,
 >(input: {
   id?: FunctionId;
   name: string;
@@ -687,10 +792,12 @@ export const defineQueryFunction = <
     | QueryReactivity<In, Payload>
     | { readonly key: KeyFamily<Payload> | import("../reactivity/index.ts").ReactiveKey<Payload> };
   auth?: PolicyAction;
-  errors?: readonly ErrorType[];
-  requirements?: readonly Requirement[];
+  errors?: readonly Err[];
+  requirements?: readonly Req[];
+  effects?: readonly Eff[];
+  capabilities?: readonly Cap[];
   target_runtimes?: readonly Runtime[];
-}): QueryFunction<In, Out, Payload> => {
+}): QueryFunction<In, Out, Payload, Err, Req, Eff, Cap> => {
   const reactivity: QueryReactivity<In, Payload> | undefined =
     input.reactivity == null
       ? undefined
@@ -755,7 +862,14 @@ export const defineQueryFunction = <
  * });
  * ```
  */
-export const defineActionFunction = <In = unknown, Out = unknown>(input: {
+export const defineActionFunction = <
+  In = unknown,
+  Out = unknown,
+  const Err extends ErrorType = ErrorType,
+  const Req extends Requirement = Requirement,
+  const Eff extends Effect = Effect,
+  const Cap extends Capability = Capability,
+>(input: {
   id?: FunctionId;
   name: string;
   input_type: SemanticType<In> | Entity;
@@ -763,16 +877,27 @@ export const defineActionFunction = <In = unknown, Out = unknown>(input: {
   returns: SemanticType<Out> | Entity;
   body: ActionExpr;
   auth?: PolicyAction;
-  errors?: readonly ErrorType[];
+  errors?: readonly Err[];
   invalidates?: readonly QueryFunction[];
-  reactivity?: ActionReactivity<In, Out> | { readonly invalidates: readonly ReactiveKeyPattern[] };
+  reactivity?:
+    | ActionReactivity<In, Out>
+    | {
+        readonly invalidates: readonly (
+          | import("../reactivity/index.ts").ReactiveKeyPattern
+          | import("../reactivity/index.ts").KeyPatternExpression<
+              import("../reactivity/index.ts").MutationKeyContext<In, Out>,
+              KeyPayload
+            >
+        )[];
+      };
   optimistic?: PatchFunction;
-  consistency?: ActionFunction["consistency"];
+  consistency?: "transactional" | "eventual" | "best_effort";
   written_stores?: readonly Store[];
-  effects?: readonly Effect[];
-  requirements?: readonly Requirement[];
+  effects?: readonly Eff[];
+  requirements?: readonly Req[];
+  capabilities?: readonly Cap[];
   target_runtimes?: readonly Runtime[];
-}): ActionFunction<In, Out> => {
+}): ActionFunction<In, Out, Err, Req, Eff, Cap> => {
   const reactivity: ActionReactivity<In, Out> | undefined =
     input.reactivity == null
       ? input.invalidates === undefined
@@ -852,7 +977,14 @@ export const defineActionFunction = <In = unknown, Out = unknown>(input: {
  * });
  * ```
  */
-export const definePatchFunction = <In = unknown, Out = unknown>(input: {
+export const definePatchFunction = <
+  In = unknown,
+  Out = unknown,
+  const Err extends ErrorType = ErrorType,
+  const Req extends Requirement = Requirement,
+  const Eff extends Effect = Effect,
+  const Cap extends Capability = Capability,
+>(input: {
   id?: FunctionId;
   name: string;
   input_type: SemanticType<In> | Entity;
@@ -860,7 +992,7 @@ export const definePatchFunction = <In = unknown, Out = unknown>(input: {
   body: PatchExpr;
   reconcile_field?: Field;
   rollback_strategy?: PatchFunction["rollback_strategy"];
-}): PatchFunction<In, Out> => {
+}): PatchFunction<In, Out, Err, Req, Eff, Cap> => {
   const input_type = entityToSemanticType<In>(input.input_type);
   const returns = entityToSemanticType<Out>(input.returns);
   return {
@@ -899,7 +1031,14 @@ export const definePatchFunction = <In = unknown, Out = unknown>(input: {
  * });
  * ```
  */
-export const defineStaticFunction = <In = unknown, Out = unknown>(input: {
+export const defineStaticFunction = <
+  In = unknown,
+  Out = unknown,
+  const Err extends ErrorType = ErrorType,
+  const Req extends Requirement = Requirement,
+  const Eff extends Effect = Effect,
+  const Cap extends Capability = Capability,
+>(input: {
   id?: FunctionId;
   name: string;
   input_type: SemanticType<In> | Entity;
@@ -911,12 +1050,12 @@ export const defineStaticFunction = <In = unknown, Out = unknown>(input: {
     requirements: readonly Requirement[];
     effects: readonly Effect[];
   };
-  requirements?: readonly Requirement[];
-  effects?: readonly Effect[];
-  capabilities?: readonly Capability[];
+  requirements?: readonly Req[];
+  effects?: readonly Eff[];
+  capabilities?: readonly Cap[];
   laws?: readonly Law[];
   target_runtimes?: readonly Runtime[];
-}): StaticFunction & { input_type: SemanticType<In>; output_type: SemanticType<Out> } => {
+}): StaticFunction<In, Out, Err, Req, Eff, Cap> => {
   const input_type = entityToSemanticType<In>(input.input_type);
   const output_type = entityToSemanticType<Out>(input.output_type);
   const effects = input.effects ?? [];
@@ -964,15 +1103,21 @@ export const defineStaticFunction = <In = unknown, Out = unknown>(input: {
  * });
  * ```
  */
-export const definePredicateFunction = <In = unknown>(input: {
+export const definePredicateFunction = <
+  In = unknown,
+  const Err extends ErrorType = ErrorType,
+  const Req extends Requirement = Requirement,
+  const Eff extends Effect = Effect,
+  const Cap extends Capability = Capability,
+>(input: {
   id?: FunctionId;
   name: string;
   input_type: SemanticType<In> | Entity;
   body: Predicate;
-  requirements?: readonly Requirement[];
-  effects?: readonly Effect[];
+  requirements?: readonly Req[];
+  effects?: readonly Eff[];
   target_runtimes?: readonly Runtime[];
-}): PredicateFunction & { input_type: SemanticType<In> } => {
+}): PredicateFunction<In, Err, Req, Eff, Cap> => {
   const input_type = entityToSemanticType<In>(input.input_type);
   return {
     ...baseFunctionNode({
@@ -1008,14 +1153,21 @@ export const definePredicateFunction = <In = unknown>(input: {
  * });
  * ```
  */
-export const definePlanFunction = <In = unknown, Out = unknown>(input: {
+export const definePlanFunction = <
+  In = unknown,
+  Out = unknown,
+  const Err extends ErrorType = ErrorType,
+  const Req extends Requirement = Requirement,
+  const Eff extends Effect = Effect,
+  const Cap extends Capability = Capability,
+>(input: {
   id?: FunctionId;
   name: string;
   input_type: SemanticType<In> | Entity;
   output_type: SemanticType<Out> | Entity;
   body: PlanExpr;
   fallback_policy: FallbackPolicy;
-}): PlanFunction & { input_type: SemanticType<In>; output_type: SemanticType<Out> } => {
+}): PlanFunction<In, Out, Err, Req, Eff, Cap> => {
   const input_type = entityToSemanticType<In>(input.input_type);
   const output_type = entityToSemanticType<Out>(input.output_type);
   return {
@@ -1038,6 +1190,96 @@ export const definePlanFunction = <In = unknown, Out = unknown>(input: {
 
 const normalizeValues = (values: Iterable<readonly [Field, Expr]>): ReadonlyMap<Field, Expr> =>
   values instanceof Map ? values : new Map(values);
+
+export interface ActionInsertBuilder {
+  values(values: Iterable<readonly [Field, Expr]>): ActionInsertBuilderReady;
+}
+
+export interface ActionInsertBuilderReady {
+  build(options?: {
+    effects?: readonly Effect[];
+    requirements?: readonly Requirement[];
+  }): ActionExpr;
+}
+
+export interface ActionUpdateBuilder {
+  values(values: Iterable<readonly [Field, Expr]>): ActionUpdateBuilderWithValues;
+}
+
+export interface ActionUpdateBuilderWithValues {
+  where(condition: Predicate): ActionUpdateBuilderReady;
+  build(options?: {
+    effects?: readonly Effect[];
+    requirements?: readonly Requirement[];
+  }): ActionExpr;
+}
+
+export interface ActionUpdateBuilderReady {
+  build(options?: {
+    effects?: readonly Effect[];
+    requirements?: readonly Requirement[];
+  }): ActionExpr;
+}
+
+export interface ActionDeleteBuilder {
+  where(condition: Predicate): ActionDeleteBuilderReady;
+}
+
+export interface ActionDeleteBuilderReady {
+  build(options?: {
+    effects?: readonly Effect[];
+    requirements?: readonly Requirement[];
+  }): ActionExpr;
+}
+
+export interface ActionInvalidateBuilder {
+  patterns(
+    patterns: readonly import("../reactivity/index.ts").KeyPatternExpression[],
+  ): ActionInvalidateBuilderReady;
+}
+
+export interface ActionInvalidateBuilderReady {
+  build(options?: {
+    effects?: readonly Effect[];
+    requirements?: readonly Requirement[];
+  }): ActionExpr;
+}
+
+export interface ActionSequenceBuilder {
+  build(options?: {
+    effects?: readonly Effect[];
+    requirements?: readonly Requirement[];
+  }): ActionExpr;
+}
+
+export const actionBuilder = {
+  insert: (target: Entity): ActionInsertBuilder => ({
+    values: (values) => ({
+      build: (options) => buildActionInsert(target, values, options),
+    }),
+  }),
+  update: (target: Entity): ActionUpdateBuilder => ({
+    values: (values) => ({
+      where: (condition) => ({
+        build: (options) => buildActionUpdate(target, values, condition, options),
+      }),
+      build: (options) => buildActionUpdate(target, values, undefined, options),
+    }),
+  }),
+  delete: (target: Entity): ActionDeleteBuilder => ({
+    where: (condition) => ({
+      build: (options) => buildActionDelete(target, condition, options),
+    }),
+  }),
+  invalidate: (target: Entity): ActionInvalidateBuilder => ({
+    patterns: (patterns) => ({
+      build: (options) => buildActionInvalidate(target, patterns, options),
+    }),
+  }),
+  sequence: (target: Entity, steps: readonly ActionExpr[]): ActionSequenceBuilder => ({
+    build: (options) => buildActionSequence(target, steps, options),
+  }),
+};
 
 /**
  * Builds an insert {@link ActionExpr}.

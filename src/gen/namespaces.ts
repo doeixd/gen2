@@ -53,7 +53,6 @@ import {
   bindConfigEntry,
   bindConfig,
   bindDefaultInstance,
-  bindFactory,
   bindKeyFamily,
   bindReactiveMutation,
   bindReactiveResource,
@@ -535,7 +534,11 @@ export const createEventsNamespace = <C extends GenConfig = GenConfig>(
 export const createFormsNamespace = <C extends GenConfig = GenConfig>(
   ctx: GenContext,
 ): FormsNamespace<C> => ({
-  build: bindFactory(ctx.forms, formsMod.buildForm) as typeof formsMod.buildForm,
+  build: ((name, source_function, submit_result, options) => {
+    const form = formsMod.buildForm(name, source_function, submit_result, options);
+    ctx.forms.push(form as any);
+    return form;
+  }) as typeof formsMod.buildForm,
   auto: formsMod.autoForm,
   field: formsMod.formField,
   defaultWidget: formsMod.defaultWidget,

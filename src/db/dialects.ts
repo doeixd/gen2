@@ -187,7 +187,7 @@ export const buildRelationalSurface = (
   },
   index: (table, name, columns, options = {}) => {
     const idx: Index = { name, owning_table: table, columns, unique: options.unique ?? false };
-    table.indexes.push(idx);
+    (table as any).indexes = [...table.indexes, idx];
     return idx;
   },
   schema: (input) => primitives.schema(store, { tables: input.tables }),
@@ -214,14 +214,14 @@ export const buildDocumentSurface = (
   collection: <F extends DocumentFieldsRecord>(name: string, fields: F): TypedCollection<F> => {
     const collection: Collection = { name, store, fields: [] };
     for (const [fieldName, input] of Object.entries(fields)) {
-      collection.fields.push({
+      (collection.fields as any).push({
         name: fieldName,
         owning_collection: collection,
         physical_type: input.physical_type,
         semantic_type: input.semantic_type,
       });
     }
-    store.collections.push(collection);
+    (store as any).collections = [...store.collections, collection];
     const fields_by_name = Object.fromEntries(
       collection.fields.map((f) => [f.name, f]),
     ) as unknown as TypedDocumentFields<F>;
@@ -252,7 +252,7 @@ export const buildKvSurface = (
       key_type: input.key_type,
       value_type: input.value_type,
     };
-    store.keyspaces.push(ks);
+    (store as any).keyspaces = [...store.keyspaces, ks];
     return ks;
   },
   schema: (input) => primitives.schema(store, { keyspaces: input.keyspaces }),

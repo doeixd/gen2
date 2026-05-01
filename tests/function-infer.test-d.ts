@@ -85,3 +85,38 @@ void badExprInput;
 // @ts-expect-error — output must be number, not string
 const badExprOutput: InferFunctionOutput<StringToNumberExpr> = "x";
 void badExprOutput;
+
+import type { InferRequirements, InferEffects } from "../src/core/node.ts";
+
+declare const AuthReq: { readonly kind: "auth" };
+declare const NetworkEff: { readonly kind: "network" };
+
+declare const ReqEffAction: import("../src/function/index.ts").ActionFunction<
+  { readonly name: string },
+  { readonly id: string },
+  never,
+  typeof AuthReq,
+  typeof NetworkEff
+>;
+
+const actionReqs: InferRequirements<typeof ReqEffAction> = { kind: "auth" };
+void actionReqs;
+
+const actionEffs: InferEffects<typeof ReqEffAction> = { kind: "network" };
+void actionEffs;
+
+import type { ReactiveResource } from "../src/reactivity/index.ts";
+
+declare const ReqEffResource: ReactiveResource<
+  { readonly id: string },
+  { readonly name: string },
+  never,
+  typeof AuthReq,
+  typeof NetworkEff
+>;
+
+const resourceReqs: InferRequirements<typeof ReqEffResource> = { kind: "auth" };
+void resourceReqs;
+
+const resourceEffs: InferEffects<typeof ReqEffResource> = { kind: "network" };
+void resourceEffs;

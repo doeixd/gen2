@@ -10,6 +10,7 @@ import * as storageMod from "../storage/index.ts";
 import * as editorMod from "../editor/index.ts";
 import * as listMod from "../list/index.ts";
 import * as adminMod from "../admin/index.ts";
+import * as functionMod from "../function/index.ts";
 import * as core from "../core/index.ts";
 
 import type { Plugin } from "../core/index.ts";
@@ -160,11 +161,12 @@ const buildGenNamespace = <C extends GenConfig = GenConfig>(
   runtime: bindRuntime(ctx),
   query: createQueryNamespace<C>(ctx),
   func: createFunctionNamespace<C>(ctx),
+  action: functionMod.actionBuilder,
   api: createApiNamespace<C>(ctx),
   ui: createUiNamespace(ctx, {
     backend: options?.ui?.backend ?? "jsx",
     factory: options?.ui?.factory,
-  } as UiNamespaceRuntimeOptions<string>) as UiNamespace<C>,
+  } as UiNamespaceRuntimeOptions<string>) as unknown as UiNamespace<C>,
   authz: createAuthzNamespace<C>(ctx),
   events: createEventsNamespace<C>(ctx),
   forms: createFormsNamespace<C>(ctx),

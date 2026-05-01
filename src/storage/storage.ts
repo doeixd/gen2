@@ -9,7 +9,12 @@
  * entity Mapping, entity FieldMapping, value MappingSource, value MappingTarget.
  */
 
-import { type Diagnostic, diagnostic, type TargetInput, makeTargetInput } from "../core/index.ts";
+import {
+  type Diagnostic,
+  diagnostic,
+  type TargetInputRecord,
+  makeTargetInput,
+} from "../core/index.ts";
 import type { Entity, Field } from "../entity/index.ts";
 import type { SemanticType } from "../types/index.ts";
 
@@ -42,11 +47,11 @@ export interface Store {
   /** Capability flags advertised by the store. */
   readonly capabilities: readonly string[];
   /** Relational tables contained in the store. */
-  readonly tables: Table[];
+  readonly tables: readonly Table[];
   /** Document collections contained in the store. */
-  readonly collections: Collection[];
+  readonly collections: readonly Collection[];
   /** Key-value keyspaces contained in the store. */
-  readonly keyspaces: Keyspace[];
+  readonly keyspaces: readonly Keyspace[];
 }
 
 /**
@@ -58,9 +63,9 @@ export interface Table {
   /** Store that owns this table. */
   readonly store: Store;
   /** Columns defined on the table. */
-  readonly columns: Column[];
+  readonly columns: readonly Column[];
   /** Indexes defined on the table. */
-  readonly indexes: Index[];
+  readonly indexes: readonly Index[];
 }
 
 /**
@@ -377,7 +382,7 @@ export const defineTable = (
     indexes: [],
   };
   const ownedColumns = columns.map((c) => ({ ...c, owning_table: table })) as Column[];
-  (table as { columns: Column[] }).columns = ownedColumns;
+  (table as unknown as { columns: Column[] }).columns = ownedColumns;
   return table;
 };
 
@@ -487,10 +492,7 @@ export const defineSchema = (
  * @param name - Optional target input name.
  * @returns A TargetInput of kind `schema`.
  */
-export const schemaTargetInput = (
-  schema: StoreSchema,
-  name = `${schema.store.name}Schema`,
-): TargetInput =>
+export const schemaTargetInput = (name: string, schema: StoreSchema): TargetInputRecord =>
   makeTargetInput({
     name,
     kind: "schema",
@@ -624,8 +626,6 @@ const NEVER_SEMANTIC_TYPE: SemanticType = {
   traits: [],
 };
 
-const neverSemanticType = (): SemanticType => NEVER_SEMANTIC_TYPE;
-
 /**
  * Creates a read-only MappingSource whose semantic type is `never`.
  *
@@ -633,7 +633,7 @@ const neverSemanticType = (): SemanticType => NEVER_SEMANTIC_TYPE;
  */
 export const readOnlySource = (): MappingSource => ({
   kind: "read_only",
-  semantic_type: neverSemanticType(),
+  semantic_type: NEVER_SEMANTIC_TYPE,
 });
 
 /**
@@ -643,7 +643,7 @@ export const readOnlySource = (): MappingSource => ({
  */
 export const hiddenSource = (): MappingSource => ({
   kind: "hidden",
-  semantic_type: neverSemanticType(),
+  semantic_type: NEVER_SEMANTIC_TYPE,
 });
 
 // --- Rich source builders --------------------------------------------------

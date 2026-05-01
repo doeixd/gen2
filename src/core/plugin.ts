@@ -12,7 +12,7 @@
 import type { Artifact } from "./artifacts.ts";
 import type { Diagnostic, DiagnosticDefinition, Severity } from "./diagnostics.ts";
 import type { Ref } from "./refs.ts";
-import type { TargetInput } from "./target.ts";
+import type { TargetInputRecord } from "./target.ts";
 import type { StaticNode, TraitKind, TraitMetadata } from "./node.ts";
 
 /** Lifecycle status of a plugin within the kernel. */
@@ -46,14 +46,18 @@ export interface MetadataNamespace {
 export interface CheckHook {
   readonly name: string;
   readonly target_kind: string;
-  readonly check_fn: (input: TargetInput) => readonly Diagnostic[] | Promise<readonly Diagnostic[]>;
+  readonly check_fn: (
+    input: TargetInputRecord,
+  ) => readonly Diagnostic[] | Promise<readonly Diagnostic[]>;
 }
 
 /** A plugin-contributed codegen hook that generates artifacts for a target. */
 export interface CodegenHook {
   readonly name: string;
   readonly target_kind: string;
-  readonly generate_fn: (input: TargetInput) => readonly Artifact[] | Promise<readonly Artifact[]>;
+  readonly generate_fn: (
+    input: TargetInputRecord,
+  ) => readonly Artifact[] | Promise<readonly Artifact[]>;
 }
 
 /** A plugin-contributed transform applied to generated artifacts. */
@@ -127,9 +131,9 @@ export interface TargetContribution {
   readonly name: string;
   readonly accepts_inputs: readonly string[];
   /** Plugin-supplied check function for this target's inputs. */
-  readonly check?: (input: TargetInput) => readonly Diagnostic[];
-  /** Plugin-supplied codegen function for this target's inputs. */
-  readonly generate?: (input: TargetInput) => readonly Artifact[];
+  readonly check?: (input: TargetInputRecord) => readonly Diagnostic[];
+  /** Optional code generation function for this target. */
+  readonly generate?: (input: TargetInputRecord) => readonly Artifact[];
 }
 
 /** Describes a plugin's setup function and its runtime behavior. */

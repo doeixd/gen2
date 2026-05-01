@@ -216,16 +216,23 @@ export const controlFor = <Ts = unknown, E = unknown>(
  * @param options - Optional overrides for fields, slots, and error mappings.
  * @returns A Form record.
  */
-export const buildForm = <Out = unknown, E = unknown>(
+export const buildForm = <
+  Out = unknown,
+  E = unknown,
+  Err = import("../function/index.ts").ErrorType,
+  Req = unknown,
+  Eff = unknown,
+  Cap = unknown,
+>(
   name: string,
-  source_function: ActionFunction,
+  source_function: ActionFunction<any, Out, Err, Req, Eff, Cap>,
   submit_result: SemanticType<Out>,
   options?: {
     fields?: readonly FormField<unknown, E>[];
     slots?: readonly Slot<E>[];
     error_mapping?: readonly FormErrorMapping[];
   },
-): Form<Out, E> => {
+): Form<Out, E, Err, Req, Eff, Cap> => {
   const fields =
     options?.fields ??
     source_function.input_fields.map((field) =>
@@ -243,7 +250,7 @@ export const buildForm = <Out = unknown, E = unknown>(
       hidden: false,
     })) as Slot<E>[]);
 
-  return defineForm<Out, E>(
+  return defineForm<Out, E, Err, Req, Eff, Cap>(
     name,
     source_function,
     fields,

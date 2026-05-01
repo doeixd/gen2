@@ -5,16 +5,19 @@
 import { expect, test } from "vite-plus/test";
 import { createGen } from "../src/index.ts";
 
-test("buildActionInsert builds an insert ActionExpr", () => {
+test("action builder DSL builds an insert ActionExpr", () => {
   const { gen } = createGen();
   const User = gen.entity("User", { id: gen.types.uuid(), email: gen.types.email() });
 
-  const expr = gen.func.buildActionInsert(User, [
-    [
-      User.fields.email,
-      gen.expr.literal(gen.types.email(), { kind: "string", string_value: "a@b.com" }),
-    ],
-  ]);
+  const expr = gen.action
+    .insert(User)
+    .values([
+      [
+        User.fields.email,
+        gen.expr.literal(gen.types.email(), { kind: "string", string_value: "a@b.com" }),
+      ],
+    ])
+    .build();
 
   expect(expr.kind.kind).toBe("insert");
   expect(expr.phase).toBe("mutation");
@@ -28,52 +31,90 @@ test("buildActionInsert builds an insert ActionExpr", () => {
   ).toBeDefined();
 });
 
-test("buildActionUpdate builds an update ActionExpr with condition", () => {
+test("action builder DSL builds an update ActionExpr with condition", () => {
   const { gen } = createGen();
   const User = gen.entity("User", { id: gen.types.uuid(), age: gen.types.int() });
 
-  const expr = gen.func.buildActionUpdate(User, [
-    [User.fields.age, gen.expr.literal(gen.types.int(), { kind: "integer", integer_value: 30 })],
-  ]);
+  const expr = gen.action
+    .update(User)
+    .values([
+      [User.fields.age, gen.expr.literal(gen.types.int(), { kind: "integer", integer_value: 30 })],
+    ])
+    .where(
+      gen.expr.predicate({
+        input_type: User,
+        value_type: gen.types.boolean(),
+        ast: {
+          kind: { kind: "literal" },
+          children: [],
+          literal: { kind: "boolean", boolean_value: true },
+        },
+        kind: "comparison",
+      }),
+    )
+    .build();
 
   expect(expr.kind.kind).toBe("update");
   expect(expr.phase).toBe("mutation");
   expect(expr.operations[0]!.kind).toBe("update_op");
 });
 
-test("buildActionDelete builds a delete ActionExpr", () => {
+test("action builder DSL builds a delete ActionExpr", () => {
   const { gen } = createGen();
   const User = gen.entity("User", { id: gen.types.uuid() });
 
-  const expr = gen.func.buildActionDelete(User);
+  const expr = gen.action
+    .delete(User)
+    .where(
+      gen.expr.predicate({
+        input_type: User,
+        value_type: gen.types.boolean(),
+        ast: {
+          kind: { kind: "literal" },
+          children: [],
+          literal: { kind: "boolean", boolean_value: true },
+        },
+        kind: "comparison",
+      }),
+    )
+    .build();
 
   expect(expr.kind.kind).toBe("delete");
   expect(expr.phase).toBe("mutation");
   expect(expr.operations[0]!.kind).toBe("delete_op");
 });
 
-test("buildActionSequence composes multiple actions including invalidation", () => {
+test("action builder DSL composes multiple actions including invalidation", () => {
   const { gen } = createGen();
   const User = gen.entity("User", { id: gen.types.uuid(), email: gen.types.email() });
   const UserKey = gen.key.entity(User);
 
-  const insert = gen.func.buildActionInsert(User, [
-    [
-      User.fields.email,
-      gen.expr.literal(gen.types.email(), { kind: "string", string_value: "a@b.com" }),
-    ],
-  ]);
-  const update = gen.func.buildActionUpdate(User, [
-    [
-      User.fields.email,
-      gen.expr.literal(gen.types.email(), { kind: "string", string_value: "c@d.com" }),
-    ],
-  ]);
-  const invalidate = gen.func.buildActionInvalidate(User, [
-    gen.key.patternExpr(UserKey, [gen.key.any(UserKey)]),
-  ]);
+  const insert = gen.action
+    .insert(User)
+    .values([
+      [
+        User.fields.email,
+        gen.expr.literal(gen.types.email(), { kind: "string", string_value: "a@b.com" }),
+      ],
+    ])
+    .build();
 
-  const seq = gen.func.buildActionSequence(User, [insert, update, invalidate]);
+  const update = gen.action
+    .update(User)
+    .values([
+      [
+        User.fields.email,
+        gen.expr.literal(gen.types.email(), { kind: "string", string_value: "c@d.com" }),
+      ],
+    ])
+    .build();
+
+  const invalidate = gen.action
+    .invalidate(User)
+    .patterns([gen.key.patternExpr(UserKey, [gen.key.any(UserKey)])])
+    .build();
+
+  const seq = gen.action.sequence(User, [insert, update, invalidate]).build();
 
   expect(seq.kind.kind).toBe("sequence");
   expect(seq.operations).toHaveLength(3);

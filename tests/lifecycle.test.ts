@@ -312,7 +312,7 @@ test("schema target inputs can be attached to targets through core helpers", () 
     };
   };
   const schema = pluginGen.db.schema({ tables: [] });
-  const input = gen.schemaInput(schema);
+  const input = gen.schemaInput("testSchema", schema);
 
   core.acceptTargetInput(ctx.targets[0]!, input);
 

@@ -160,41 +160,117 @@ export type KeyPatternExpression<Input = unknown, Payload extends KeyPayload = K
   | ConstantKeyPatternExpression<Input, Payload>
   | StaticKeyPatternExpression<Input, Payload>;
 
-export interface ReactiveResource<In = unknown, Value = unknown, Err = ErrorType> {
-  readonly kind: "reactive_resource";
+export type ResourceBackend = "memory" | "url_search_params" | "local_storage" | "session_storage";
+
+export interface ResourceBinding {
+  readonly kind: "resource_binding";
+  readonly backend: ResourceBackend;
+  readonly sync: "one_way" | "two_way";
+  readonly key?: string; // Optional custom key in the backend
+}
+
+export interface BaseResource<
+  In = unknown,
+  Value = unknown,
+  Err = ErrorType,
+  Req = unknown,
+  Eff = unknown,
+> {
   readonly name: string;
-  readonly query: QueryFunction<In, Value>;
+  readonly query: QueryFunction<In, Value, any, Err, Req, Eff>;
   readonly refresh: readonly RefreshPlan[];
   readonly enhancement?: EnhancementPlan;
+  readonly bindings?: readonly ResourceBinding[];
   readonly traits?: readonly TraitKind[];
+  readonly symbol?: import("../core/index.ts").SymbolMetadata;
   readonly _input?: In;
   readonly _value?: Value;
   readonly _error?: Err;
+  readonly _requires?: Req;
+  readonly _effects?: Eff;
 }
 
-export interface ReactiveMutation<In = unknown, Out = unknown, Err = ErrorType> {
+export interface ReactiveResource<
+  In = unknown,
+  Value = unknown,
+  Err = ErrorType,
+  Req = unknown,
+  Eff = unknown,
+> extends BaseResource<In, Value, Err, Req, Eff> {
+  readonly kind: "reactive_resource";
+}
+
+export interface PullResource<
+  In = unknown,
+  Value = unknown,
+  Err = ErrorType,
+  Req = unknown,
+  Eff = unknown,
+> extends BaseResource<In, Value, Err, Req, Eff> {
+  readonly kind: "pull_resource";
+}
+
+export interface InfiniteResource<
+  In = unknown,
+  Value = unknown,
+  Err = ErrorType,
+  Req = unknown,
+  Eff = unknown,
+> extends BaseResource<In, Value, Err, Req, Eff> {
+  readonly kind: "infinite_resource";
+  readonly cursor_field: Field;
+}
+
+export interface StreamResource<
+  In = unknown,
+  Value = unknown,
+  Err = ErrorType,
+  Req = unknown,
+  Eff = unknown,
+> extends BaseResource<In, Value, Err, Req, Eff> {
+  readonly kind: "stream_resource";
+  readonly stream_type: "sse" | "websocket" | "webrtc";
+}
+
+export type AnyResource =
+  | ReactiveResource<any, any, any, any, any>
+  | PullResource<any, any, any, any, any>
+  | InfiniteResource<any, any, any, any, any>
+  | StreamResource<any, any, any, any, any>;
+
+export interface ReactiveMutation<
+  In = unknown,
+  Out = unknown,
+  Err = ErrorType,
+  Req = unknown,
+  Eff = unknown,
+> {
   readonly kind: "reactive_mutation";
   readonly name: string;
-  readonly action: ActionFunction<In, Out>;
+  readonly action: ActionFunction<In, Out, Err, Req, Eff>;
   readonly invalidates: InvalidationPlan;
   readonly optimistic?: OptimisticPlan<In, Out>;
   readonly traits?: readonly TraitKind[];
+  readonly symbol?: import("../core/index.ts").SymbolMetadata;
   readonly _input?: In;
   readonly _output?: Out;
   readonly _error?: Err;
+  readonly _requires?: Req;
+  readonly _effects?: Eff;
 }
 
 export interface ResourceAll<
-  Branches extends Record<string, ReactiveResource<any, any, any>> = Record<
-    string,
-    ReactiveResource<any, any, any>
-  >,
+  Branches extends Record<string, AnyResource> = Record<string, AnyResource>,
+  Req = unknown,
+  Eff = unknown,
 > {
   readonly kind: "resource_all";
   readonly name: string;
   readonly branches: Branches;
   readonly mode: "parallel" | "target_decides";
   readonly _branches?: Branches;
+  readonly _requires?: Req;
+  readonly _effects?: Eff;
 }
 
 export interface ResourceChain<
@@ -204,18 +280,22 @@ export interface ResourceChain<
   NextValue = unknown,
   SourceErr = ErrorType,
   NextErr = ErrorType,
+  Req = unknown,
+  Eff = unknown,
 > {
   readonly kind: "resource_chain";
   readonly name: string;
-  readonly source: ReactiveResource<SourceIn, SourceValue, SourceErr>;
+  readonly source: AnyResource;
   readonly derive_next: StaticFunction<SourceValue, NextIn>;
-  readonly next_resource: ReactiveResource<NextIn, NextValue, NextErr>;
+  readonly next_resource: AnyResource;
   readonly _source_in?: SourceIn;
   readonly _source_value?: SourceValue;
   readonly _next_in?: NextIn;
   readonly _next_value?: NextValue;
   readonly _source_err?: SourceErr;
   readonly _next_err?: NextErr;
+  readonly _requires?: Req;
+  readonly _effects?: Eff;
 }
 
 export interface OptimisticPlan<In = unknown, Out = unknown> {
@@ -255,6 +335,10 @@ export interface ReactiveGraphNode {
   readonly renamed_from?: readonly string[];
   readonly scope_kind?: TrackingScopeKind;
   readonly owner?: string;
+  readonly call_plan?: import("../core/index.ts").CallPlan;
+  readonly symbol?: import("../core/index.ts").SymbolMetadata;
+  readonly resource_type?: "reactive" | "pull" | "infinite" | "stream";
+  readonly bindings?: readonly ResourceBinding[];
 }
 
 export type DerivationConfidence = "declared" | "derived" | "conservative";
@@ -660,12 +744,18 @@ export const keyPatternExpr = <Input = unknown, Payload extends KeyPayload = Key
   patterns,
 });
 
-export const defineReactiveResource = <In = unknown, Value = unknown, Err = ErrorType>(input: {
+export const defineReactiveResource = <
+  In = unknown,
+  Value = unknown,
+  Err = ErrorType,
+  Req = unknown,
+  Eff = unknown,
+>(input: {
   readonly name: string;
-  readonly query: QueryFunction<In, Value>;
+  readonly query: QueryFunction<In, Value, any, Err, Req, Eff>;
   readonly refresh?: readonly RefreshPlan[];
   readonly enhancement?: EnhancementPlan;
-}): ReactiveResource<In, Value, Err> => ({
+}): ReactiveResource<In, Value, Err, Req, Eff> => ({
   kind: "reactive_resource",
   name: input.name,
   query: input.query,
@@ -674,12 +764,18 @@ export const defineReactiveResource = <In = unknown, Value = unknown, Err = Erro
   traits: ["named", "readable", "reactive"],
 });
 
-export const defineReactiveMutation = <In = unknown, Out = unknown, Err = ErrorType>(input: {
+export const defineReactiveMutation = <
+  In = unknown,
+  Out = unknown,
+  Err = ErrorType,
+  Req = unknown,
+  Eff = unknown,
+>(input: {
   readonly name: string;
-  readonly action: ActionFunction<In, Out>;
+  readonly action: ActionFunction<In, Out, Err, Req, Eff>;
   readonly invalidates?: InvalidationPlan;
   readonly optimistic?: OptimisticPlan<In, Out>;
-}): ReactiveMutation<In, Out, Err> => {
+}): ReactiveMutation<In, Out, Err, Req, Eff> => {
   const patterns: readonly ReactiveKeyPattern[] =
     input.invalidates?.patterns ??
     (input.action.reactivity?.invalidates ?? []).flatMap((expr) =>
@@ -788,13 +884,21 @@ export const deriveDefaultOptimisticPlan = <In = unknown, Out = unknown>(
   }
 };
 
-export const defineResourceAll = <const Branches extends Record<string, ReactiveResource>>(
+export const defineResourceAll = <
+  const Branches extends Record<string, ReactiveResource<any, any, any, any, any>>,
+  const Req = Branches[keyof Branches] extends ReactiveResource<any, any, any, infer R, any>
+    ? R
+    : never,
+  const Eff = Branches[keyof Branches] extends ReactiveResource<any, any, any, any, infer E>
+    ? E
+    : never,
+>(
   name: string,
   input: {
     readonly branches: Branches;
     readonly mode?: "parallel" | "target_decides";
   },
-): ResourceAll<Branches> => ({
+): ResourceAll<Branches, Req, Eff> => ({
   kind: "resource_all",
   name,
   branches: input.branches,
@@ -808,14 +912,16 @@ export const defineResourceChain = <
   NextValue = unknown,
   SourceErr = ErrorType,
   NextErr = ErrorType,
+  const Req = unknown,
+  const Eff = unknown,
 >(
   name: string,
   input: {
-    readonly source: ReactiveResource<SourceIn, SourceValue, SourceErr>;
+    readonly source: ReactiveResource<SourceIn, SourceValue, SourceErr, Req, Eff>;
     readonly derive_next: StaticFunction<SourceValue, NextIn>;
-    readonly next_resource: ReactiveResource<NextIn, NextValue, NextErr>;
+    readonly next_resource: ReactiveResource<NextIn, NextValue, NextErr, Req, Eff>;
   },
-): ResourceChain<SourceIn, SourceValue, NextIn, NextValue, SourceErr, NextErr> => ({
+): ResourceChain<SourceIn, SourceValue, NextIn, NextValue, SourceErr, NextErr, Req, Eff> => ({
   kind: "resource_chain",
   name,
   source: input.source,
@@ -829,7 +935,7 @@ const queryId = (query: QueryFunction): string => query.ref?.id ?? `query:${quer
 const actionId = (action: ActionFunction): string => action.ref?.id ?? `action:${action.name}`;
 const nodeGraphId = (node: { name?: string; ref?: { id?: string }; id?: string }): string =>
   node.ref?.id ?? node.id ?? `node:${node.name ?? "unknown"}`;
-const resourceId = (resource: ReactiveResource): string => `resource:${resource.name}`;
+const resourceId = (resource: AnyResource): string => `resource:${resource.name}`;
 const mutationId = (mutation: ReactiveMutation): string => `mutation:${mutation.name}`;
 const resourceAllId = (ra: ResourceAll): string => `resource_all:${ra.name}`;
 const resourceChainId = (rc: ResourceChain): string => `resource_chain:${rc.name}`;
@@ -1531,7 +1637,14 @@ export const deriveConservativeInvalidations = <Payload extends KeyPayload = Key
 };
 
 const enrichGraphNode = (node: ReactiveGraphNode, ctx: GenContext): ReactiveGraphNode => {
-  const enrichment: { stable_id?: string; traits?: readonly string[] } = {};
+  const enrichment: {
+    stable_id?: string;
+    traits?: readonly string[];
+    symbol?: import("../core/index.ts").SymbolMetadata;
+    call_plan?: import("../core/index.ts").CallPlan;
+    resource_type?: "reactive" | "pull" | "infinite" | "stream";
+    bindings?: readonly ResourceBinding[];
+  } = {};
   switch (node.kind) {
     case "entity": {
       const entity = ctx.entities.find((e) => e.ref.id === node.id || e.name === node.name);
@@ -1545,6 +1658,8 @@ const enrichGraphNode = (node: ReactiveGraphNode, ctx: GenContext): ReactiveGrap
       if (query) {
         enrichment.traits = query.traits;
         enrichment.stable_id = query.ref?.id ?? query.id;
+        enrichment.symbol = query.symbol;
+        enrichment.call_plan = query.callPlan;
       }
       break;
     }
@@ -1555,13 +1670,25 @@ const enrichGraphNode = (node: ReactiveGraphNode, ctx: GenContext): ReactiveGrap
       if (action) {
         enrichment.traits = action.traits;
         enrichment.stable_id = action.ref?.id ?? action.id;
+        enrichment.symbol = action.symbol;
+        enrichment.call_plan = action.callPlan;
       }
       break;
     }
     case "resource": {
-      const resource = ctx.reactive_resources.find((r) => r.name === node.name);
+      const resource = ctx.reactive_resources.find((r) => r.name === node.name) as AnyResource;
       if (resource) {
         enrichment.traits = resource.traits;
+        enrichment.symbol = resource.symbol;
+        enrichment.resource_type =
+          resource.kind === "reactive_resource"
+            ? "reactive"
+            : resource.kind === "pull_resource"
+              ? "pull"
+              : resource.kind === "infinite_resource"
+                ? "infinite"
+                : "stream";
+        enrichment.bindings = resource.bindings;
       }
       break;
     }
@@ -1569,6 +1696,7 @@ const enrichGraphNode = (node: ReactiveGraphNode, ctx: GenContext): ReactiveGrap
       const mutation = ctx.reactive_mutations.find((m) => m.name === node.name);
       if (mutation) {
         enrichment.traits = mutation.traits;
+        enrichment.symbol = mutation.symbol;
       }
       break;
     }

@@ -31,14 +31,21 @@ export type MutationHandler<I = unknown, O = unknown> =
   | ReactiveMutation<I, O>;
 
 /** Backward-compatible concrete union for loaders stored on AppRoute. */
-export type AppRouteLoader = QueryFunction | ReactiveResource;
-/** Backward-compatible concrete union for actions stored on AppRoute. */
-export type AppRouteAction = ActionFunction | ReactiveMutation;
+export type AppRouteLoader<Req = unknown, Eff = unknown, Cap = unknown> =
+  | QueryFunction<any, any, any, any, Req, Eff, Cap>
+  | ReactiveResource<any, any, any, Req, Eff>;
+
+export type AppRouteAction<Req = unknown, Eff = unknown, Cap = unknown> =
+  | ActionFunction<any, any, any, Req, Eff, Cap>
+  | ReactiveMutation<any, any, any, Req, Eff>;
 
 export interface AppRoute<
   PathParams extends Record<string, SemanticType> = Record<string, SemanticType>,
   QueryParams extends Record<string, SemanticType> = Record<string, SemanticType>,
   HashParams extends Record<string, SemanticType> = Record<string, SemanticType>,
+  Req = unknown,
+  Eff = unknown,
+  Cap = unknown,
 > {
   readonly kind: "app_route";
   readonly path: string;
@@ -48,6 +55,9 @@ export interface AppRoute<
   readonly loaders: readonly AppRouteLoader[];
   readonly action?: AppRouteAction;
   readonly error_boundary?: string;
+  readonly _requires?: Req;
+  readonly _effects?: Eff;
+  readonly _capabilities?: Cap;
 }
 
 export type InferAppRoutePathParams<R> =
@@ -86,15 +96,18 @@ export const defineAppRoute = <
   PathParams extends Record<string, SemanticType> = Record<string, SemanticType>,
   QueryParams extends Record<string, SemanticType> = Record<string, SemanticType>,
   HashParams extends Record<string, SemanticType> = Record<string, SemanticType>,
+  const Req = unknown,
+  const Eff = unknown,
+  const Cap = unknown,
 >(input: {
   readonly path: string;
   readonly path_params?: PathParams;
   readonly query_params?: QueryParams;
   readonly hash_params?: HashParams;
-  readonly loaders?: readonly AppRouteLoader[];
-  readonly action?: AppRouteAction;
+  readonly loaders?: readonly AppRouteLoader<Req, Eff, Cap>[];
+  readonly action?: AppRouteAction<Req, Eff, Cap>;
   readonly error_boundary?: string;
-}): AppRoute<PathParams, QueryParams, HashParams> => ({
+}): AppRoute<PathParams, QueryParams, HashParams, Req, Eff, Cap> => ({
   kind: "app_route",
   path: input.path,
   path_params: (input.path_params ?? {}) as PathParams,

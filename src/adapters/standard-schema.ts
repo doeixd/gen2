@@ -27,7 +27,7 @@ import {
   type Plugin,
   type GenContext,
   type Artifact,
-  type TargetInput,
+  type TargetInputRecord,
   type Target,
 } from "../core/index.ts";
 import type { Entity, Field } from "../entity/index.ts";
@@ -194,7 +194,7 @@ export const defineStandardSchemaAdapter = (
           name: TARGET_NAME,
           accepts_inputs: [INPUT_KIND],
           generate: (input): readonly Artifact[] => {
-            const i = input as TargetInput;
+            const i = input as TargetInputRecord;
             const entity = (i.value as { entity?: Entity })?.entity;
             if (!entity) return [];
             return [

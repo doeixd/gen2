@@ -268,7 +268,7 @@ export type FieldsRecord = Readonly<Record<string, FieldShapeInput>>;
  * }, { store_name: "users" });
  * ```
  */
-export const defineEntity = <F extends FieldsRecord>(
+export const defineEntity = <const F extends FieldsRecord>(
   name: string,
   fields: F,
   options: { id?: EntityId; store_name?: string; metadata?: readonly MetadataEntry[] } = {},

@@ -26,7 +26,7 @@ import {
   type Plugin,
   type GenContext,
   type Artifact,
-  type TargetInput,
+  type TargetInputRecord,
   type Target,
 } from "../core/index.ts";
 import type { Store, Table, Column, StoreDialect } from "../storage/index.ts";
@@ -161,7 +161,7 @@ export const defineRelationalAdapter = (
           name: TARGET_NAME,
           accepts_inputs: [INPUT_KIND],
           generate: (input): readonly Artifact[] => {
-            const i = input as TargetInput;
+            const i = input as TargetInputRecord;
             const store = (i.value as { store?: Store })?.store;
             if (!store) return [];
             return [

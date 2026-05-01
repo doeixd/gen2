@@ -100,6 +100,12 @@ export const traits = {
   server_placeable: createTrait("server_placeable"),
 } as const;
 
+export interface SymbolMetadata {
+  readonly module_path: string;
+  readonly export_name: string;
+  readonly is_default: boolean;
+}
+
 export interface StaticMetadataEntry {
   readonly namespace: string;
   readonly key: string;
@@ -126,6 +132,7 @@ export interface StaticNode<
   readonly requirements?: readonly Requirement[];
   readonly effects?: readonly Effect[];
   readonly metadata?: readonly StaticMetadataEntry[];
+  readonly symbol?: SymbolMetadata;
   readonly _input?: In;
   readonly _output?: Out;
   readonly _errors?: Err;
@@ -145,11 +152,20 @@ export interface TypedNode<In = unknown, Out = unknown> {
   readonly _output?: Out;
 }
 
+export type CallArgMapping =
+  | { readonly kind: "context" }
+  | { readonly kind: "spread_input" }
+  | { readonly kind: "input_field"; readonly field: string }
+  | { readonly kind: "literal"; readonly value: unknown }
+  | { readonly kind: "injected_service"; readonly service_id: string };
+
 export interface CallPlan<In = unknown, Out = unknown> {
   readonly kind: "call_plan";
   readonly input?: SemanticType<In>;
   readonly output?: SemanticType<Out>;
   readonly target?: Ref;
+  readonly args?: readonly CallArgMapping[];
+  readonly is_async?: boolean;
   readonly _input?: In;
   readonly _output?: Out;
 }
@@ -257,13 +273,20 @@ export const missingTraits = (
   traits: readonly (TraitKind | TraitRef)[],
 ): readonly (TraitKind | TraitRef)[] => traits.filter((trait) => !hasTrait(node, trait));
 
+export type InferRequirements<T> = T extends RequiresNode<infer Req> ? Req : unknown;
+export type InferEffects<T> = T extends EffectfulNode<infer Eff> ? Eff : unknown;
+
 export const callPlan = <In = unknown, Out = unknown>(input: {
   readonly input?: SemanticType<In>;
   readonly output?: SemanticType<Out>;
   readonly target?: Ref;
+  readonly args?: readonly CallArgMapping[];
+  readonly is_async?: boolean;
 }): CallPlan<In, Out> => ({
   kind: "call_plan",
   input: input.input,
   output: input.output,
   target: input.target,
+  args: input.args,
+  is_async: input.is_async,
 });

@@ -692,6 +692,9 @@ export interface Gen<C extends GenConfig = GenConfig> extends GenPluginExtension
     };
   };
 
+  // Staged action DSL
+  action: typeof functionMod.actionBuilder;
+
   // API
   api: {
     buildQueryHandler: typeof apiMod.buildQueryHandler;

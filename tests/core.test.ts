@@ -552,7 +552,7 @@ test("schemaTargetInput wraps schemas as concrete target inputs", () => {
   });
 
   const schema = gen.db.schema({ tables: [] });
-  const input = gen.schemaInput(schema);
+  const input = gen.schemaInput("primarySchema", schema);
 
   expect(input.kind).toBe("schema");
   expect(input.name).toBe("primarySchema");

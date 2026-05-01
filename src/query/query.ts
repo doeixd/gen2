@@ -570,85 +570,96 @@ interface QueryBuilderState {
   target_stores: Store[];
 }
 
+class QueryBuilderImpl<Source = unknown, Result = Source> implements QueryBuilder<Source, Result> {
+  public state: QueryBuilderState;
+
+  constructor(source: QuerySource, result_type: SemanticType) {
+    this.state = {
+      kind: { kind: "select" },
+      source,
+      predicate: undefined,
+      projection: undefined,
+      joins: [],
+      order_by: [],
+      limit: undefined,
+      offset: undefined,
+      group_by: [],
+      result_type,
+      requirements: [],
+      effects: [],
+      target_runtimes: [],
+      target_stores: [],
+    };
+  }
+
+  where(predicate: Predicate<Source>): QueryBuilder<Source, Result> {
+    this.state.predicate = predicate;
+    return this;
+  }
+
+  select<Ts>(fields: readonly Field<Ts>[]): QueryBuilder<Source, Ts[]> {
+    this.state.projection = {
+      fields: fields.map((f) => ({ field: f })),
+      aggregates: [],
+    };
+    this.state.result_type = fields[0]?.semantic_type ?? this.state.result_type;
+    return this as unknown as QueryBuilder<Source, Ts[]>;
+  }
+
+  selectProjection(projection: QueryProjection): QueryBuilder<Source, unknown> {
+    this.state.projection = projection;
+    return this as unknown as QueryBuilder<Source, unknown>;
+  }
+
+  orderBy(field: Field, direction: OrderDirection = "asc"): QueryBuilder<Source, Result> {
+    this.state.order_by.push({ field, direction });
+    return this;
+  }
+
+  groupBy(field: Field): QueryBuilder<Source, Result> {
+    this.state.group_by.push(field);
+    return this;
+  }
+
+  limit(expr: Expr): QueryBuilder<Source, Result> {
+    this.state.limit = expr;
+    return this;
+  }
+
+  offset(expr: Expr): QueryBuilder<Source, Result> {
+    this.state.offset = expr;
+    return this;
+  }
+
+  join(kind: JoinKind, target: QuerySource, condition: Predicate): QueryBuilder<Source, Result> {
+    this.state.joins.push({ kind, target, condition });
+    return this;
+  }
+
+  build(): QueryExpression<Result> {
+    return {
+      kind: this.state.kind,
+      source: this.state.source,
+      predicate: this.state.predicate,
+      projection: this.state.projection,
+      joins: this.state.joins,
+      order_by: this.state.order_by,
+      limit: this.state.limit,
+      offset: this.state.offset,
+      group_by: this.state.group_by,
+      result_type: this.state.result_type,
+      requirements: this.state.requirements,
+      effects: this.state.effects,
+      target_runtimes: this.state.target_runtimes,
+      target_stores: this.state.target_stores,
+    } as QueryExpression<Result>;
+  }
+}
+
 const queryBuilder = <Source = unknown, Result = Source>(
   source: QuerySource,
   result_type: SemanticType,
-): QueryBuilder<Source, Result> => {
-  const state: QueryBuilderState = {
-    kind: { kind: "select" },
-    source,
-    predicate: undefined,
-    projection: undefined,
-    joins: [],
-    order_by: [],
-    limit: undefined,
-    offset: undefined,
-    group_by: [],
-    result_type,
-    requirements: [],
-    effects: [],
-    target_runtimes: [],
-    target_stores: [],
-  };
-
-  const self: QueryBuilder<Source, Result> = {
-    where: (predicate) => {
-      state.predicate = predicate;
-      return self;
-    },
-    select: <Ts>(fields: readonly Field<Ts>[]) => {
-      state.projection = {
-        fields: fields.map((f) => ({ field: f })),
-        aggregates: [],
-      };
-      state.result_type = fields[0]?.semantic_type ?? state.result_type;
-      return self as QueryBuilder<Source, Ts[]>;
-    },
-    selectProjection: (projection) => {
-      state.projection = projection;
-      return self as QueryBuilder<Source, unknown>;
-    },
-    orderBy: (field, direction = "asc") => {
-      state.order_by.push({ field, direction });
-      return self;
-    },
-    groupBy: (field) => {
-      state.group_by.push(field);
-      return self;
-    },
-    limit: (expr) => {
-      state.limit = expr;
-      return self;
-    },
-    offset: (expr) => {
-      state.offset = expr;
-      return self;
-    },
-    join: (kind, target, condition) => {
-      state.joins.push({ kind, target, condition });
-      return self;
-    },
-    build: () =>
-      ({
-        kind: state.kind,
-        source: state.source,
-        predicate: state.predicate,
-        projection: state.projection,
-        joins: state.joins,
-        order_by: state.order_by,
-        limit: state.limit,
-        offset: state.offset,
-        group_by: state.group_by,
-        result_type: state.result_type,
-        requirements: state.requirements,
-        effects: state.effects,
-        target_runtimes: state.target_runtimes,
-        target_stores: state.target_stores,
-      }) as QueryExpression<Result>,
-  };
-
-  return self;
-};
+): QueryBuilder<Source, Result> => new QueryBuilderImpl<Source, Result>(source, result_type);
 
 /**
  * Starts a fluent query builder from an entity source.

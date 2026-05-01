@@ -91,6 +91,20 @@ export const generateEffectAtomArtifacts = (
       );
     }
 
+    if (node.resource_type === "pull") {
+      return `export const ${node.name} = Atom.pull((get) => {\n  return ${queryNode.name}(get);\n});`;
+    }
+
+    const searchParamBinding = node.bindings?.find((b) => b.backend === "url_search_params");
+    if (searchParamBinding) {
+      return `export const ${node.name} = Atom.searchParam("${searchParamBinding.key ?? node.name}");`;
+    }
+
+    const localStorageBinding = node.bindings?.find((b) => b.backend === "local_storage");
+    if (localStorageBinding) {
+      return `export const ${node.name} = Atom.kvs("${localStorageBinding.key ?? node.name}", { storage: "local" });`;
+    }
+
     return `export const ${node.name} = Atom.make((get) => {\n  return ${queryNode.name}(get);\n});`;
   });
 

@@ -261,7 +261,7 @@ export interface View<
   readonly name: string;
   readonly slots: readonly Slot<E>[];
   readonly structure: string;
-  readonly slot_remaps: SlotRemap<E>[];
+  readonly slot_remaps: readonly SlotRemap<E>[];
   readonly target_platforms: readonly Platform<E>[];
 }
 
@@ -348,13 +348,24 @@ export interface FormErrorMapping {
 }
 
 /** A form bound to an action function with fields, slots, and error mapping. */
-export interface Form<Out = unknown, E = unknown> {
+export interface Form<
+  Out = unknown,
+  E = unknown,
+  Err = import("../function/index.ts").ErrorType,
+  Req = unknown,
+  Eff = unknown,
+  Cap = unknown,
+> {
   readonly name: string;
-  readonly source_function: ActionFunction;
+  readonly source_function: ActionFunction<any, Out, Err, Req, Eff, Cap>;
   readonly fields: readonly FormField[];
   readonly slots: readonly Slot<E>[];
   readonly submit_result: SemanticType<Out>;
   readonly error_mapping: readonly FormErrorMapping[];
+  readonly _errors?: Err;
+  readonly _requires?: Req;
+  readonly _effects?: Eff;
+  readonly _capabilities?: Cap;
 }
 
 // --- Constructors ----------------------------------------------------------
@@ -681,14 +692,28 @@ export const defineFormErrorMapping = (
  * @param error_mapping - Error mappings.
  * @returns A Form.
  */
-export const defineForm = <Out = unknown, E = unknown>(
+export const defineForm = <
+  Out = unknown,
+  E = unknown,
+  Err = import("../function/index.ts").ErrorType,
+  Req = unknown,
+  Eff = unknown,
+  Cap = unknown,
+>(
   name: string,
-  source_function: ActionFunction,
+  source_function: ActionFunction<any, Out, Err, Req, Eff, Cap>,
   fields: readonly FormField<unknown, E>[],
   slots: readonly Slot<E>[],
   submit_result: SemanticType<Out>,
   error_mapping: readonly FormErrorMapping[] = [],
-): Form<Out, E> => ({ name, source_function, fields, slots, submit_result, error_mapping });
+): Form<Out, E, Err, Req, Eff, Cap> => ({
+  name,
+  source_function,
+  fields,
+  slots,
+  submit_result,
+  error_mapping,
+});
 
 // --- Safe HTML -------------------------------------------------------------
 
@@ -696,10 +721,15 @@ export const defineForm = <Out = unknown, E = unknown>(
 export type SafeHtml = string & { readonly _safeHtmlBrand: unique symbol };
 
 /**
- * Marks a string as safe HTML. Only use this when the input is known to be
- * sanitized; never wrap untrusted user input.
+ * Marks a string as safe HTML.
  *
- * @param html - The sanitized HTML string.
+ * **DANGER:** This function is a pure type-level brand and performs **no runtime sanitization**.
+ * Only use this on explicit trust boundaries where the HTML string has already been scrubbed
+ * by a robust HTML sanitization library (like DOMPurify).
+ *
+ * Never wrap untrusted or raw user input with this function.
+ *
+ * @param html - The pre-sanitized HTML string.
  * @returns A branded SafeHtml.
  */
 export const safeHtml = (html: string): SafeHtml => html as SafeHtml;

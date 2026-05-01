@@ -48,27 +48,36 @@ export interface RouteParameter {
 }
 
 /** Loose input shape for a RouteHandler, used by validation functions. */
-export interface RouteHandlerInput {
+export interface RouteHandlerInput<Req = unknown, Eff = unknown, Cap = unknown> {
   readonly kind: "query" | "action" | "static";
   readonly query_func?: { readonly input_fields?: readonly Field[] };
   readonly action_func?: { readonly input_fields?: readonly Field[] };
   readonly static_func?: { readonly input_fields?: readonly Field[] };
+  readonly _requires?: Req;
+  readonly _effects?: Eff;
+  readonly _capabilities?: Cap;
 }
 
 /** Discriminated route handler — exactly one function is set per kind. */
-export type RouteHandler =
-  | { readonly kind: "query"; readonly query_func: QueryFunction }
-  | { readonly kind: "action"; readonly action_func: ActionFunction }
-  | { readonly kind: "static"; readonly static_func: StaticFunction };
+export type RouteHandler<Req = unknown, Eff = unknown, Cap = unknown> =
+  | {
+      readonly kind: "query";
+      readonly query_func: QueryFunction<any, any, any, any, Req, Eff, Cap>;
+    }
+  | { readonly kind: "action"; readonly action_func: ActionFunction<any, any, any, Req, Eff, Cap> }
+  | { readonly kind: "static"; readonly static_func: StaticFunction<any, any, any, Req, Eff, Cap> };
 
 /** An API route binding an HTTP method and path to a handler. */
-export interface Route {
+export interface Route<Req = unknown, Eff = unknown, Cap = unknown> {
   readonly method: HttpMethod;
   readonly path: RoutePath;
-  readonly handler: RouteHandlerInput;
+  readonly handler: RouteHandlerInput<Req, Eff, Cap>;
   readonly runtime?: string;
   readonly target?: string;
   readonly parameters: readonly RouteParameter[];
+  readonly _requires?: Req;
+  readonly _effects?: Eff;
+  readonly _capabilities?: Cap;
 }
 
 /** Links an operation kind to its route and handler. */
@@ -137,7 +146,9 @@ export interface Mutator {
  * const handler = queryHandler(listUsersQuery);
  * ```
  */
-export const buildQueryHandler = (f: QueryFunction): Extract<RouteHandler, { kind: "query" }> => ({
+export const buildQueryHandler = <Req = unknown, Eff = unknown, Cap = unknown>(
+  f: QueryFunction<any, any, any, any, Req, Eff, Cap>,
+): Extract<RouteHandler<Req, Eff, Cap>, { kind: "query" }> => ({
   kind: "query",
   query_func: f,
 });
@@ -153,9 +164,9 @@ export const buildQueryHandler = (f: QueryFunction): Extract<RouteHandler, { kin
  * const handler = actionHandler(createUserAction);
  * ```
  */
-export const buildActionHandler = (
-  f: ActionFunction,
-): Extract<RouteHandler, { kind: "action" }> => ({
+export const buildActionHandler = <Req = unknown, Eff = unknown, Cap = unknown>(
+  f: ActionFunction<any, any, any, Req, Eff, Cap>,
+): Extract<RouteHandler<Req, Eff, Cap>, { kind: "action" }> => ({
   kind: "action",
   action_func: f,
 });
@@ -171,9 +182,9 @@ export const buildActionHandler = (
  * const handler = staticHandler(hashPasswordStatic);
  * ```
  */
-export const buildStaticHandler = (
-  f: StaticFunction,
-): Extract<RouteHandler, { kind: "static" }> => ({
+export const buildStaticHandler = <Req = unknown, Eff = unknown, Cap = unknown>(
+  f: StaticFunction<any, any, any, Req, Eff, Cap>,
+): Extract<RouteHandler<Req, Eff, Cap>, { kind: "static" }> => ({
   kind: "static",
   static_func: f,
 });
@@ -428,14 +439,14 @@ export const checkApi = (
  * });
  * ```
  */
-export const defineRoute = (input: {
+export const defineRoute = <Req = unknown, Eff = unknown, Cap = unknown>(input: {
   method: HttpMethod;
   path: RoutePath;
-  handler: RouteHandlerInput;
+  handler: RouteHandlerInput<Req, Eff, Cap>;
   runtime?: string;
   target?: string;
   parameters?: readonly RouteParameter[];
-}): Route => ({
+}): Route<Req, Eff, Cap> => ({
   method: input.method,
   path: input.path,
   handler: input.handler,
