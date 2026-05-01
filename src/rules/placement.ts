@@ -37,9 +37,19 @@ export interface RulePlacementOption {
   readonly diagnostics: readonly Diagnostic[];
 }
 
+export type FallbackPlanKind =
+  | "server_check"
+  | "reject"
+  | "degrade_to_hint"
+  | "degrade_to_server_form"
+  | "degrade_to_refetch"
+  | "degrade_to_inline";
+
 export interface FallbackPlan {
-  readonly kind: "server_check" | "reject" | "degrade_to_hint";
+  readonly kind: FallbackPlanKind;
   readonly reason: string;
+  /** Optional degraded execution mode when the primary plan is unsupported. */
+  readonly degrade_to?: "server_form" | "refetch" | "inline" | "hint";
 }
 
 export interface RulePlacementAnalysis {

@@ -30,7 +30,7 @@ export const generateEffectAtomArtifacts = (
 
   const resourceById = new Map(resourceNodes.map((node) => [node.id, node]));
 
-  // Check for unsupported features (none currently in graph node kinds, but reserved for future)
+  // Check for unsupported features and progressive enhancement needs
   const unsupportedNodeKinds = ["form", "ui", "service", "store"] as string[];
   for (const node of graph.nodes) {
     if (unsupportedNodeKinds.includes(node.kind)) {
@@ -39,6 +39,22 @@ export const generateEffectAtomArtifacts = (
           severity: "warning",
           code: "effect-atom:unsupported-feature",
           message: `Effect-Atom target does not yet support ${node.kind} nodes`,
+        }),
+      );
+    }
+  }
+
+  // PE2: Progressive enhancement diagnostics
+  for (const node of resourceNodes) {
+    if (
+      node.bindings &&
+      node.bindings.some((b) => b.backend === "local_storage" || b.backend === "session_storage")
+    ) {
+      diagnostics.push(
+        diagnostic({
+          severity: "info",
+          code: "effect-atom:progressive-enhancement",
+          message: `Resource ${node.name} uses client storage bindings; generated code includes progressive enhancement fallback`,
         }),
       );
     }

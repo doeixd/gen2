@@ -24,6 +24,18 @@ import * as hydrationMod from "../hydration/index.ts";
 import * as servicesMod from "../services/index.ts";
 import * as rulesMod from "../rules/index.ts";
 import * as reactionMod from "../reaction/index.ts";
+import * as planMod from "../plan/index.ts";
+import * as contextMod from "../context/index.ts";
+import * as locationsMod from "../storage/locations.ts";
+import * as requirementsMod from "../requirements/index.ts";
+import * as stateMod from "../state/index.ts";
+import * as mergeMod from "../merge/index.ts";
+import * as offlineMod from "../offline/index.ts";
+import * as orchestrationMod from "../orchestration/index.ts";
+import * as workflowMod from "../workflow/index.ts";
+import * as boundaryMod from "../boundary/index.ts";
+import * as obligationsMod from "../obligations/index.ts";
+import * as targetsMod from "../targets/index.ts";
 
 import type { GenContext } from "../core/index.ts";
 import {
@@ -56,6 +68,11 @@ import {
   bindKeyFamily,
   bindReactiveMutation,
   bindReactiveResource,
+  bindStreamResource,
+  bindDerivedResource,
+  bindReactiveRuntime,
+  bindServiceLayer,
+  bindLifecycleRequirement,
   bindResourceAll,
   bindResourceChain,
   bindReactiveRegistry,
@@ -88,6 +105,20 @@ import type {
   ReactionNamespace,
   AuthzSurfaceNamespace,
   NodeNamespace,
+  PlanNamespace,
+  ContextNamespace,
+  StorageLocationNamespace,
+  RequirementNamespace,
+  ProviderNamespace,
+  StateNamespace,
+  MergeNamespace,
+  OfflineNamespace,
+  ScheduleNamespace,
+  CronNamespace,
+  WorkflowNamespace,
+  BoundaryNamespace,
+  ObligationsNamespace,
+  TargetsNamespace,
 } from "./types.ts";
 
 export const createKeyNamespace = <C extends GenConfig = GenConfig>(
@@ -119,6 +150,8 @@ export const createReactivityNamespace = <C extends GenConfig = GenConfig>(
 ): ReactivityNamespace<C> => ({
   resource: bindReactiveResource(ctx),
   mutation: bindReactiveMutation(ctx),
+  stream: bindStreamResource(ctx),
+  derived: bindDerivedResource(ctx),
   all: bindResourceAll(ctx),
   chain: bindResourceChain(ctx),
   registry: bindReactiveRegistry(ctx),
@@ -141,9 +174,13 @@ export const createReactivityNamespace = <C extends GenConfig = GenConfig>(
   singleFlight: reactivityMod.deriveSingleFlightPlan,
   ruleInvalidations: reactivityMod.deriveRuleInvalidationPlans,
   ivmPlans: reactivityMod.deriveIvmPlans,
+  patchPlans: reactivityMod.deriveRulePatchPlans,
   editableFields: reactivityMod.deriveEditableFieldsForRule,
   editabilityRules: reactivityMod.deriveEditabilityRulesForField,
   checkOptimisticPlans: reactivityMod.checkOptimisticPlans,
+  runtime: bindReactiveRuntime(ctx),
+  serviceLayer: bindServiceLayer(ctx),
+  lifecycleRequirement: bindLifecycleRequirement(ctx),
   refresh: {
     manual: reactivityMod.refreshManual,
     onMount: reactivityMod.refreshOnMount,
@@ -164,6 +201,13 @@ export const createHydrationNamespace = <C extends GenConfig = GenConfig>(
 ): HydrationNamespace<C> => ({
   plan: (route) => hydrationMod.deriveHydrationPlan(ctx, route),
   artifact: hydrationMod.hydrationSnapshotArtifact,
+  httpRpcTransport: hydrationMod.httpRpcTransport,
+  httpFormPostTransport: hydrationMod.httpFormPostTransport,
+  websocketTransport: hydrationMod.websocketTransport,
+  serverSentEventsTransport: hydrationMod.serverSentEventsTransport,
+  fixture: hydrationMod.generateBundledFetchFixture,
+  projection: hydrationMod.defineSafeProjection,
+  serializationContract: hydrationMod.defineSerializationContract,
 });
 
 export const createServicesNamespace = <C extends GenConfig = GenConfig>(
@@ -199,6 +243,12 @@ export const createRulesNamespace = <C extends GenConfig = GenConfig>(
   evaluate: rulesMod.evaluateRule,
   analyzePlacement: rulesMod.analyzeRulePlacement,
   classifyPlacement: rulesMod.classifyRulePlacement,
+  defineView: ((input) => {
+    const view = rulesMod.defineDerivedRuleView(input);
+    ctx.derived_rule_views.push(view);
+    return view;
+  }) as typeof rulesMod.defineDerivedRuleView,
+  viewDependencies: rulesMod.extractRuleViewDependencies,
 });
 
 export const createReactionNamespace = <C extends GenConfig = GenConfig>(
@@ -254,6 +304,7 @@ export const createTypesNamespace = <C extends GenConfig = GenConfig>(
   extend: semantic.extend,
   nullable: semantic.nullable,
   serializer: bindSerializer(ctx),
+  withMerge: semantic.withMerge,
   trait: traitMod.defineTrait,
   op: {
     unary: opMod.unaryOp,
@@ -639,4 +690,246 @@ export const createNodeNamespace = <C extends GenConfig = GenConfig>(
     return node;
   },
   register: (node) => core.registerNode(ctx, node),
+});
+
+export const createPlanNamespace = <C extends GenConfig = GenConfig>(
+  ctx: GenContext,
+): PlanNamespace<C> => ({
+  sequence: ((steps) => {
+    const plan = planMod.sequencePlan(steps);
+    ctx.composable_plans.push(plan);
+    return plan;
+  }) as typeof planMod.sequencePlan,
+  parallel: ((branches) => {
+    const plan = planMod.parallelPlan(branches);
+    ctx.composable_plans.push(plan);
+    return plan;
+  }) as typeof planMod.parallelPlan,
+  fallback: ((primary, alternative, reason) => {
+    const plan = planMod.fallbackPlanNode(primary, alternative, reason);
+    ctx.composable_plans.push(plan);
+    return plan;
+  }) as typeof planMod.fallbackPlanNode,
+  map: ((source, mapper) => {
+    const plan = planMod.mapPlan(source, mapper);
+    ctx.composable_plans.push(plan);
+    return plan;
+  }) as typeof planMod.mapPlan,
+  chain: ((first, second) => {
+    const plan = planMod.chainPlan(first, second);
+    ctx.composable_plans.push(plan);
+    return plan;
+  }) as typeof planMod.chainPlan,
+  retry: ((target, max_attempts, backoff) => {
+    const plan = planMod.retryPlan(target, max_attempts, backoff);
+    ctx.composable_plans.push(plan);
+    return plan;
+  }) as typeof planMod.retryPlan,
+  withPlacement: ((target, runtime, store) => {
+    const plan = planMod.placementPlan(target, runtime, store);
+    ctx.composable_plans.push(plan);
+    return plan;
+  }) as typeof planMod.placementPlan,
+  isComposable: planMod.isComposableNode,
+  validate: planMod.validatePlanComposition,
+  deriveRequirements: planMod.derivePlanRequirements,
+  deriveEffects: planMod.derivePlanEffects,
+  checkFallback: planMod.checkPlanFallbackCompatibility,
+});
+
+export const createContextNamespace = <C extends GenConfig = GenConfig>(
+  ctx: GenContext,
+): ContextNamespace<C> => ({
+  define: ((input) => {
+    const context = contextMod.defineContext(input);
+    ctx.contexts.push(context);
+    return context;
+  }) as typeof contextMod.defineContext,
+  provide: ((input) => {
+    const provision = contextMod.provideContext(input);
+    ctx.context_provisions.push(provision);
+    return provision;
+  }) as typeof contextMod.provideContext,
+  require: ((input) => {
+    const requirement = contextMod.requireContext(input);
+    ctx.context_requirements.push(requirement);
+    return requirement;
+  }) as typeof contextMod.requireContext,
+});
+
+export const createRequirementNamespace = <C extends GenConfig = GenConfig>(
+  ctx: GenContext,
+): RequirementNamespace<C> => ({
+  define: ((input) => {
+    const requirement = requirementsMod.defineRequirement(input);
+    ctx.requirements.push(requirement);
+    return requirement;
+  }) as typeof requirementsMod.defineRequirement,
+});
+
+export const createProviderNamespace = <C extends GenConfig = GenConfig>(
+  ctx: GenContext,
+): ProviderNamespace<C> => ({
+  define: ((input) => {
+    const provider = requirementsMod.defineProvider(input);
+    ctx.providers.push(provider);
+    return provider;
+  }) as typeof requirementsMod.defineProvider,
+  source: requirementsMod.providerSource,
+  plan: requirementsMod.deriveRequirementSatisfactionPlan,
+});
+
+export const createStateNamespace = <C extends GenConfig = GenConfig>(
+  ctx: GenContext,
+): StateNamespace<C> => ({
+  define: ((input) => {
+    const state = stateMod.defineStateResource(input);
+    ctx.state_resources.push(state);
+    return state;
+  }) as typeof stateMod.defineStateResource,
+});
+
+export const createMergeNamespace = <C extends GenConfig = GenConfig>(): MergeNamespace<C> => ({
+  replace: mergeMod.mergeReplace,
+  lastWriteWins: mergeMod.mergeLastWriteWins,
+  firstWriteWins: mergeMod.mergeFirstWriteWins,
+  max: mergeMod.mergeMax,
+  min: mergeMod.mergeMin,
+  sumDelta: mergeMod.mergeSumDelta,
+  append: mergeMod.mergeAppend,
+  prepend: mergeMod.mergePrepend,
+  setUnion: mergeMod.mergeSetUnion,
+  setIntersection: mergeMod.mergeSetIntersection,
+  addRemoveSet: mergeMod.mergeAddRemoveSet,
+  byIdCollection: mergeMod.mergeByIdCollection,
+  fieldWise: mergeMod.mergeFieldWise,
+  stateMachine: mergeMod.mergeStateMachine,
+  manualConflict: mergeMod.mergeManualConflict,
+  rejectConflict: mergeMod.mergeRejectConflict,
+  customExpr: mergeMod.mergeCustomExpr,
+  opaqueRuntime: mergeMod.mergeOpaqueRuntime,
+  plan: mergeMod.deriveEntityMergePlan,
+});
+
+export const createOfflineNamespace = <C extends GenConfig = GenConfig>(
+  ctx: GenContext,
+): OfflineNamespace<C> => ({
+  envelope: ((input) => {
+    const envelope = offlineMod.defineOfflineCommandEnvelope(input);
+    ctx.offline_commands.push(envelope);
+    return envelope;
+  }) as typeof offlineMod.defineOfflineCommandEnvelope,
+  queue: ((input) => {
+    const queue = offlineMod.defineOfflineQueuePlan(input);
+    ctx.offline_queues.push(queue);
+    return queue;
+  }) as typeof offlineMod.defineOfflineQueuePlan,
+  check: offlineMod.checkOfflinePlans,
+});
+
+export const createStorageLocationNamespace = <
+  C extends GenConfig = GenConfig,
+>(): StorageLocationNamespace<C> => ({
+  serverRequestContext: locationsMod.serverRequestContext,
+  serverSessionStore: locationsMod.serverSessionStore,
+  clientLocalStorage: locationsMod.clientLocalStorage,
+  clientSessionStorage: locationsMod.clientSessionStorage,
+  clientQueryCache: locationsMod.clientQueryCache,
+  clientMemory: locationsMod.clientMemory,
+  sharedCookie: locationsMod.sharedCookie,
+  sharedDatabase: locationsMod.sharedDatabase,
+  sharedCache: locationsMod.sharedCache,
+  sharedQueue: locationsMod.sharedQueue,
+});
+
+export const createScheduleNamespace = <C extends GenConfig = GenConfig>(
+  ctx: GenContext,
+): ScheduleNamespace<C> => ({
+  cron: orchestrationMod.cronExpression,
+  interval: orchestrationMod.intervalExpression,
+  daily: orchestrationMod.dailyExpression,
+  weekly: orchestrationMod.weeklyExpression,
+  define: ((input) => {
+    const schedule = orchestrationMod.defineSchedule(input);
+    ctx.schedules.push(schedule);
+    return schedule;
+  }) as typeof orchestrationMod.defineSchedule,
+});
+
+export const createCronNamespace = <C extends GenConfig = GenConfig>(
+  ctx: GenContext,
+): CronNamespace<C> => ({
+  define: ((input) => {
+    const job = orchestrationMod.defineCronJob(input);
+    ctx.cron_jobs.push(job);
+    return job;
+  }) as typeof orchestrationMod.defineCronJob,
+});
+
+export const createWorkflowNamespace = <C extends GenConfig = GenConfig>(
+  ctx: GenContext,
+): WorkflowNamespace<C> => ({
+  define: ((input) => {
+    const workflow = workflowMod.defineWorkflow(input);
+    ctx.workflows.push(workflow);
+    return workflow;
+  }) as typeof workflowMod.defineWorkflow,
+  call: workflowMod.workflowCall,
+  query: workflowMod.workflowQuery,
+  action: workflowMod.workflowAction,
+  sequence: workflowMod.workflowSequence,
+  parallel: workflowMod.workflowParallel,
+  branch: workflowMod.workflowBranch,
+  wait: workflowMod.workflowWait,
+  waitForEvent: workflowMod.workflowWaitForEvent,
+  child: workflowMod.workflowChild,
+  checkpoint: workflowMod.workflowCheckpoint,
+  compensate: workflowMod.workflowCompensate,
+  retry: workflowMod.workflowRetry,
+  emit: workflowMod.workflowEmit,
+  invalidate: workflowMod.workflowInvalidate,
+});
+
+export const createBoundaryNamespace = <C extends GenConfig = GenConfig>(
+  ctx: GenContext,
+): BoundaryNamespace<C> => ({
+  browser: boundaryMod.browserBoundary,
+  server: boundaryMod.serverBoundary,
+  database: boundaryMod.databaseBoundary,
+  worker: boundaryMod.workerBoundary,
+  edge: boundaryMod.edgeBoundary,
+  queue: boundaryMod.queueBoundary,
+  externalService: boundaryMod.externalServiceBoundary,
+  transport: ((input) => {
+    const plan = boundaryMod.defineTransportPlan(input);
+    return plan;
+  }) as typeof boundaryMod.defineTransportPlan,
+  callPlan: ((input) => {
+    const plan = boundaryMod.defineBoundaryCallPlan(input);
+    ctx.boundary_plans.push(plan);
+    return plan;
+  }) as typeof boundaryMod.defineBoundaryCallPlan,
+  derive: () => boundaryMod.deriveBoundaryPlans(ctx),
+});
+
+export const createObligationsNamespace = <C extends GenConfig = GenConfig>(
+  ctx: GenContext,
+): ObligationsNamespace<C> => ({
+  define: obligationsMod.defineSemanticObligation,
+  derive: () => {
+    const graph = obligationsMod.deriveObligationGraph(ctx);
+    ctx.obligation_graphs.push(graph);
+    return graph;
+  },
+});
+
+export const createTargetsNamespace = <C extends GenConfig = GenConfig>(
+  ctx: GenContext,
+): TargetsNamespace<C> => ({
+  docs: () => targetsMod.generateDocsArtifacts(ctx),
+  tests: () => targetsMod.generateTestSuites(ctx),
+  devtools: () => targetsMod.generateDevtoolsGraph(ctx),
+  server: () => targetsMod.lowerServerProviders(ctx),
+  client: () => targetsMod.lowerClientProviders(ctx),
+  matrix: () => targetsMod.buildTargetIntegrationMatrix(),
 });

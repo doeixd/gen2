@@ -39,6 +39,48 @@ export interface DeliveryPlan {
   readonly retry_delay_ms?: number;
 }
 
+// --- Outbox Plan -----------------------------------------------------------
+
+export interface OutboxPlan {
+  readonly kind: "outbox_plan";
+  /** Name of the outbox table/queue storage. */
+  readonly outbox_table: string;
+  /** Schema for the outbox record. */
+  readonly record_schema: {
+    readonly id: string;
+    readonly payload: string;
+    readonly created_at: string;
+    readonly processed_at?: string;
+    readonly retry_count: number;
+  };
+  /** Delivery guarantee for the outbox. */
+  readonly delivery_guarantee: "at_least_once" | "at_most_once" | "exactly_once";
+  /** Maximum number of retries before dead-lettering. */
+  readonly max_retries: number;
+  /** Delay between retries in milliseconds. */
+  readonly retry_delay_ms: number;
+}
+
+export const defineOutboxPlan = (input: {
+  readonly outbox_table: string;
+  readonly delivery_guarantee?: "at_least_once" | "at_most_once" | "exactly_once";
+  readonly max_retries?: number;
+  readonly retry_delay_ms?: number;
+}): OutboxPlan => ({
+  kind: "outbox_plan",
+  outbox_table: input.outbox_table,
+  record_schema: {
+    id: "uuid",
+    payload: "json",
+    created_at: "datetime",
+    processed_at: "datetime",
+    retry_count: 0,
+  },
+  delivery_guarantee: input.delivery_guarantee ?? "at_least_once",
+  max_retries: input.max_retries ?? 3,
+  retry_delay_ms: input.retry_delay_ms ?? 5000,
+});
+
 // --- Reaction IR -----------------------------------------------------------
 
 export interface Reaction<
@@ -56,6 +98,7 @@ export interface Reaction<
   readonly mode: ReactionMode;
   readonly idempotency?: IdempotencyPlan;
   readonly delivery?: DeliveryPlan;
+  readonly outbox?: OutboxPlan;
 }
 
 // --- Builder ---------------------------------------------------------------
@@ -73,6 +116,7 @@ export interface ReactionBuilder<
   mode(m: ReactionMode): ReactionBuilder<Name, Event, In, Out>;
   idempotency(plan: IdempotencyPlan): ReactionBuilder<Name, Event, In, Out>;
   delivery(plan: DeliveryPlan): ReactionBuilder<Name, Event, In, Out>;
+  outbox(plan: OutboxPlan): ReactionBuilder<Name, Event, In, Out>;
   build(): Reaction<Name, Event, In, Out>;
 }
 
@@ -84,6 +128,7 @@ export const createReactionBuilder = (): ReactionBuilder<never, unknown, unknown
   let currentMode: ReactionMode | undefined;
   let currentIdempotency: IdempotencyPlan | undefined;
   let currentDelivery: DeliveryPlan | undefined;
+  let currentOutbox: OutboxPlan | undefined;
 
   const builder = {
     name<N extends string>(n: N) {
@@ -114,6 +159,10 @@ export const createReactionBuilder = (): ReactionBuilder<never, unknown, unknown
       currentDelivery = plan;
       return this as unknown as ReactionBuilder<never, unknown, unknown, unknown>;
     },
+    outbox(plan: OutboxPlan) {
+      currentOutbox = plan;
+      return this as unknown as ReactionBuilder<never, unknown, unknown, unknown>;
+    },
     build(): Reaction<string, unknown, unknown, unknown> {
       if (!currentName) {
         throw new Error("reaction builder: .name() must be called before .build()");
@@ -135,6 +184,7 @@ export const createReactionBuilder = (): ReactionBuilder<never, unknown, unknown
         mode: currentMode,
         idempotency: currentIdempotency,
         delivery: currentDelivery,
+        outbox: currentOutbox,
       });
     },
   };
@@ -157,6 +207,7 @@ const defineReactionImpl = <
   readonly mode: ReactionMode;
   readonly idempotency?: IdempotencyPlan;
   readonly delivery?: DeliveryPlan;
+  readonly outbox?: OutboxPlan;
 }): Reaction<Name, Event, In, Out> => ({
   kind: "reaction",
   name: input.name,
@@ -166,6 +217,7 @@ const defineReactionImpl = <
   mode: input.mode,
   idempotency: input.idempotency,
   delivery: input.delivery,
+  outbox: input.outbox,
 });
 
 export function defineReaction<Name extends string, Event = unknown, In = unknown, Out = unknown>(
@@ -184,6 +236,7 @@ export function defineReaction<
   readonly mode: ReactionMode;
   readonly idempotency?: IdempotencyPlan;
   readonly delivery?: DeliveryPlan;
+  readonly outbox?: OutboxPlan;
 }): Reaction<Name, Event, In, Out>;
 export function defineReaction<Name extends string, Event = unknown, In = unknown, Out = unknown>(
   inputOrBuilder:
@@ -196,6 +249,7 @@ export function defineReaction<Name extends string, Event = unknown, In = unknow
         readonly mode: ReactionMode;
         readonly idempotency?: IdempotencyPlan;
         readonly delivery?: DeliveryPlan;
+        readonly outbox?: OutboxPlan;
       },
 ): Reaction<Name, Event, In, Out> {
   if (typeof inputOrBuilder === "function") {
@@ -332,6 +386,38 @@ export const checkReactions = (reactions: readonly Reaction[]): readonly Diagnos
           suggestion: "Use 'outbox' or 'job_queue' delivery for side-effect reactions.",
         }),
       );
+    }
+
+    // OutboxPlan validation
+    if (reaction.outbox) {
+      if (reaction.outbox.max_retries < 0) {
+        out.push(
+          diagnostic({
+            severity: "error",
+            code: "reaction:outbox-invalid-retries",
+            message: `Reaction "${reaction.name}" outbox plan has invalid max_retries (${reaction.outbox.max_retries})`,
+          }),
+        );
+      }
+      if (reaction.outbox.retry_delay_ms < 0) {
+        out.push(
+          diagnostic({
+            severity: "error",
+            code: "reaction:outbox-invalid-delay",
+            message: `Reaction "${reaction.name}" outbox plan has invalid retry_delay_ms (${reaction.outbox.retry_delay_ms})`,
+          }),
+        );
+      }
+      if (reaction.delivery?.kind !== "outbox" && reaction.delivery !== undefined) {
+        out.push(
+          diagnostic({
+            severity: "warning",
+            code: "reaction:outbox-delivery-mismatch",
+            message: `Reaction "${reaction.name}" has an outbox plan but delivery kind is "${reaction.delivery.kind}"`,
+            suggestion: "Set delivery.kind to 'outbox' when using an outbox plan.",
+          }),
+        );
+      }
     }
   }
 

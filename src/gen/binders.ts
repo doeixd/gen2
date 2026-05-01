@@ -77,9 +77,16 @@ export const bindReactiveResource = (
 ): typeof reactivityMod.defineReactiveResource =>
   ((input) => {
     const resource = reactivityMod.defineReactiveResource(input);
-    ctx.reactive_resources.push(resource as reactivityMod.ReactiveResource);
+    ctx.reactive_resources.push(resource as reactivityMod.AnyResource);
     return resource;
   }) as typeof reactivityMod.defineReactiveResource;
+
+export const bindStreamResource = (ctx: GenContext): typeof reactivityMod.defineStreamResource =>
+  ((input) => {
+    const resource = reactivityMod.defineStreamResource(input);
+    ctx.reactive_resources.push(resource as reactivityMod.AnyResource);
+    return resource;
+  }) as typeof reactivityMod.defineStreamResource;
 
 export const bindReactiveMutation = (
   ctx: GenContext,
@@ -91,6 +98,36 @@ export const bindReactiveMutation = (
     ctx.reactive_mutations.push(mutation as reactivityMod.ReactiveMutation);
     return mutation;
   }) as typeof reactivityMod.defineReactiveMutation;
+
+export const bindDerivedResource = (ctx: GenContext): typeof reactivityMod.defineDerivedResource =>
+  ((input) => {
+    const resource = reactivityMod.defineDerivedResource(input);
+    ctx.derived_resources.push(resource as reactivityMod.DerivedResource);
+    return resource;
+  }) as typeof reactivityMod.defineDerivedResource;
+
+export const bindReactiveRuntime = (ctx: GenContext): typeof reactivityMod.defineReactiveRuntime =>
+  ((input) => {
+    const runtime = reactivityMod.defineReactiveRuntime(input);
+    ctx.reactive_runtimes.push(runtime);
+    return runtime;
+  }) as typeof reactivityMod.defineReactiveRuntime;
+
+export const bindServiceLayer = (ctx: GenContext): typeof reactivityMod.defineServiceLayer =>
+  ((input) => {
+    const layer = reactivityMod.defineServiceLayer(input);
+    ctx.service_layers.push(layer);
+    return layer;
+  }) as typeof reactivityMod.defineServiceLayer;
+
+export const bindLifecycleRequirement = (
+  ctx: GenContext,
+): typeof reactivityMod.defineLifecycleRequirement =>
+  ((input) => {
+    const req = reactivityMod.defineLifecycleRequirement(input);
+    ctx.lifecycle_requirements.push(req);
+    return req;
+  }) as typeof reactivityMod.defineLifecycleRequirement;
 
 export const bindResourceAll = (ctx: GenContext): typeof reactivityMod.defineResourceAll =>
   ((name, input) => {

@@ -53,18 +53,34 @@ import type { Mapping, Projection, Store, StoreSchema, Table, Column } from "../
 import type { Runtime, Serializer, TraitApplication } from "../types/index.ts";
 import type { CrossStorePlanner } from "../lifecycle/index.ts";
 import type {
+  AnyResource,
+  DerivedResource,
   KeyFamily,
+  LifecycleRequirement,
   ReactiveMutation,
   ReactiveRegistry,
   ReactiveResource,
+  ReactiveRuntime,
   ResourceAll,
   ResourceChain,
+  ScopedResource,
+  ServiceLayer,
 } from "../reactivity/index.ts";
 import type { AppRoute } from "../router/index.ts";
 import type { ServiceRef } from "../services/index.ts";
-import type { Rule } from "../rules/index.ts";
+import type { Rule, DerivedRuleView } from "../rules/index.ts";
 import type { Reaction } from "../reaction/index.ts";
 import type { TraitMetadata, StaticNode } from "./node.ts";
+import type { ContextDef, ContextProvision, ContextRequirement } from "../context/index.ts";
+import type { StorageLocation } from "../storage/locations.ts";
+import type { ComposablePlan } from "../plan/index.ts";
+import type { Schedule, CronJob } from "../orchestration/index.ts";
+import type { Provider, RequirementRef } from "../requirements/index.ts";
+import type { Workflow } from "../workflow/index.ts";
+import type { BoundaryCallPlan } from "../boundary/index.ts";
+import type { ObligationGraph } from "../obligations/index.ts";
+import type { OfflineCommandEnvelope, OfflineQueuePlan } from "../offline/index.ts";
+import type { StateResource } from "../state/index.ts";
 
 /** Lifecycle status of a GenContext. */
 export type ContextStatus = "idle" | "checking" | "generating" | "ready" | "failed";
@@ -124,17 +140,53 @@ export interface GenContext {
   readonly cruds: Crud<unknown>[];
   readonly lists: List<unknown>[];
   readonly key_families: KeyFamily[];
-  readonly reactive_resources: ReactiveResource[];
+  readonly reactive_resources: AnyResource[];
   readonly reactive_mutations: ReactiveMutation[];
   readonly resource_alls: ResourceAll<Record<string, ReactiveResource<any, any, any>>>[];
   readonly resource_chains: ResourceChain<any, any, any, any, any, any>[];
+  readonly derived_resources: DerivedResource[];
+  readonly scoped_resources: ScopedResource[];
+  readonly reactive_runtimes: ReactiveRuntime[];
+  readonly service_layers: ServiceLayer[];
+  readonly lifecycle_requirements: LifecycleRequirement[];
   readonly reactive_registries: ReactiveRegistry[];
   readonly tracking_scopes: import("../reactivity/index.ts").TrackingScope[];
   readonly services: ServiceRef[];
   readonly rules: Rule[];
+  readonly derived_rule_views: DerivedRuleView[];
   readonly reactions: Reaction[];
   /** Plugin-defined and custom application-level static nodes. */
   readonly nodes: StaticNode[];
+  /** Typed context definitions (e.g. AuthSession, TenantContext). */
+  readonly contexts: ContextDef[];
+  /** Context provisions: which context is provided from which storage location. */
+  readonly context_provisions: ContextProvision[];
+  /** Context requirements declared by routes, components, workflows. */
+  readonly context_requirements: ContextRequirement[];
+  /** Abstract requirements that can be satisfied by providers. */
+  readonly requirements: RequirementRef[];
+  /** Provider IR describing how requirements, contexts, and services are satisfied. */
+  readonly providers: Provider[];
+  /** Non-query state resources such as URL state, preferences, drafts, and queues. */
+  readonly state_resources: StateResource[];
+  /** Storage locations used by the application. */
+  readonly storage_locations: StorageLocation[];
+  /** Composable plans (sequence, parallel, fallback). */
+  readonly composable_plans: ComposablePlan[];
+  /** Typed schedule definitions. */
+  readonly schedules: Schedule[];
+  /** Cron jobs binding schedules to callable run targets. */
+  readonly cron_jobs: CronJob[];
+  /** Typed workflow definitions. */
+  readonly workflows: Workflow[];
+  /** Cross-boundary call plans. */
+  readonly boundary_plans: BoundaryCallPlan[];
+  /** Semantic obligation graphs for tests/docs/devtools. */
+  readonly obligation_graphs: ObligationGraph[];
+  /** Offline command envelopes for queueable actions. */
+  readonly offline_commands: OfflineCommandEnvelope[];
+  /** Offline queue plans for replay semantics. */
+  readonly offline_queues: OfflineQueuePlan[];
   status: ContextStatus;
   /** Plugin-contributed helper namespaces, indexed by namespace name. */
   readonly helpers: Map<string, Record<string, unknown>>;
@@ -223,12 +275,33 @@ export const createGen = (input: CreateGenInput = {}): GenContext => {
     reactive_mutations: [],
     resource_alls: [],
     resource_chains: [],
+    derived_resources: [],
+    scoped_resources: [],
+    reactive_runtimes: [],
+    service_layers: [],
+    lifecycle_requirements: [],
     reactive_registries: [],
     tracking_scopes: [],
     services: [],
     rules: [],
+    derived_rule_views: [],
     reactions: [],
     nodes: [],
+    contexts: [],
+    context_provisions: [],
+    context_requirements: [],
+    requirements: [],
+    providers: [],
+    state_resources: [],
+    storage_locations: [],
+    composable_plans: [],
+    schedules: [],
+    cron_jobs: [],
+    workflows: [],
+    boundary_plans: [],
+    obligation_graphs: [],
+    offline_commands: [],
+    offline_queues: [],
     status: "idle",
     helpers: new Map(),
     contributions: new Map(),

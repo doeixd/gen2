@@ -4,3 +4,4 @@
  * @module
  */
 export * from "./storage.ts";
+export * from "./locations.ts";

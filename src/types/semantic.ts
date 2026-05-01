@@ -11,6 +11,7 @@
 import * as repr from "./representation.ts";
 import type { Representation } from "./representation.ts";
 import type { TypedExpression, Trait } from "./trait.ts";
+import type { MergeStrategy } from "../merge/index.ts";
 
 /**
  * Discriminated kind tag for a {@link SemanticType}.
@@ -87,6 +88,8 @@ export interface SemanticType<Ts = unknown> {
   readonly aggregate_on?: "semantic" | "storage";
   /** Optional runtime validator bridging compile-time and runtime safety. */
   readonly validate?: (value: unknown) => value is Ts;
+  /** Optional merge strategy for optimistic updates, offline replay, and conflict resolution. */
+  readonly merge_strategy?: MergeStrategy<Ts, unknown>;
 }
 
 /**
@@ -111,6 +114,21 @@ export const baseSemantic = <Ts = unknown>(
   server_only: false,
   traits: [],
   ...partial,
+});
+
+/**
+ * Attaches a merge strategy to a semantic type without mutating the original.
+ *
+ * @param type - The semantic type to augment.
+ * @param strategy - The merge strategy to attach.
+ * @returns A new semantic type with the merge strategy.
+ */
+export const withMerge = <Ts>(
+  type: SemanticType<Ts>,
+  strategy: MergeStrategy<Ts, unknown>,
+): SemanticType<Ts> => ({
+  ...type,
+  merge_strategy: strategy,
 });
 
 // --- Built-in semantic types ----------------------------------------------

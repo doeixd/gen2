@@ -40,11 +40,17 @@ export interface TargetInputRecord {
 }
 
 /** A generation target that bridges domain models to concrete artifacts. */
+export interface TargetCapabilities {
+  readonly tiers: readonly CapabilityTier[];
+  readonly effects: readonly string[];
+}
+
 export interface Target {
   readonly name: string;
   readonly plugin_id: string;
   readonly accepts_inputs: readonly string[];
   inputs: TargetInputRecord[];
+  capabilities?: TargetCapabilities;
   check_result?: CheckResult;
   generate_result?: GenerateResult;
 }

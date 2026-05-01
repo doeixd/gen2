@@ -9,3 +9,7 @@ export { deriveEditableFieldsForRule, deriveEditabilityRulesForField } from "./r
 // Explicit re-exports for new key expression primitives so they appear in
 // package-level type inference even when the wildcard above is tree-shaken.
 export type { KeyExpression, KeyPatternExpression } from "./reactivity.ts";
+
+// Re-export rule-derived patch and IVM plan types.
+export type { RulePatchPlan, IvmMaintenancePlan } from "./rule-derived.ts";
+export { deriveRulePatchPlans } from "./rule-derived.ts";

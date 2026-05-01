@@ -32,6 +32,7 @@ import type { FallbackPlan } from "../rules/placement.ts";
 import type { Event, Subscription } from "../events/index.ts";
 import type { Form } from "../ui/index.ts";
 import type { AppRoute } from "../router/index.ts";
+import type { StateResource } from "../state/index.ts";
 import type { SemanticType } from "../types/index.ts";
 import { object, json } from "../types/semantic.ts";
 import type { EnhancementPlan } from "../core/index.ts";
@@ -230,6 +231,74 @@ export interface StreamResource<
 > extends BaseResource<In, Value, Err, Req, Eff> {
   readonly kind: "stream_resource";
   readonly stream_type: "sse" | "websocket" | "webrtc";
+  readonly disposal_policy?: "auto" | "manual" | "deferred";
+}
+
+/** A derived resource computed from dependencies without a query backend. */
+export interface DerivedResource<Value = unknown, Err = ErrorType> {
+  readonly kind: "derived_resource";
+  readonly name: string;
+  readonly dependencies: readonly (
+    | KeyExpression
+    | ReactiveKey
+    | ReactiveResource
+    | DerivedResource
+  )[];
+  readonly output_type: SemanticType<Value>;
+  readonly resource_state: "reactive" | "pull" | "infinite" | "stream";
+  readonly traits?: readonly TraitKind[];
+  readonly symbol?: import("../core/index.ts").SymbolMetadata;
+  readonly _value?: Value;
+  readonly _error?: Err;
+}
+
+/** Static cleanup IR for scoped resources. */
+export interface Finalizer {
+  readonly kind: "finalizer";
+  readonly name: string;
+  readonly cleanup: "invalidate" | "unsubscribe" | "dispose" | "custom";
+  /** True if the cleanup is target-specific and not portable. */
+  readonly target_specific?: boolean;
+}
+
+/** A scoped resource with lifecycle owner and cleanup semantics. */
+export interface ScopedResource<Source extends AnyResource = AnyResource> {
+  readonly kind: "scoped_resource";
+  readonly name: string;
+  readonly source: Source;
+  readonly owner: string;
+  readonly finalizers: readonly Finalizer[];
+  readonly refresh_policy?: "on_invalidate" | "on_mount" | "manual";
+  readonly disposal_policy?: "auto" | "manual" | "deferred";
+}
+
+/** Runtime environment for reactive resources (e.g., SSR, edge, client). */
+export interface ReactiveRuntime {
+  readonly kind: "reactive_runtime";
+  readonly name: string;
+  readonly environment: "server" | "client" | "edge" | "ssr";
+  readonly capabilities: readonly string[];
+  readonly fallback_runtime?: string;
+}
+
+/** Service layer grouping related resources and their lifecycle. */
+export interface ServiceLayer {
+  readonly kind: "service_layer";
+  readonly name: string;
+  readonly resources: readonly AnyResource[];
+  readonly mutations?: readonly ReactiveMutation[];
+  readonly runtime?: ReactiveRuntime;
+  readonly scoped?: readonly ScopedResource[];
+}
+
+/** A requirement that expresses a lifecycle constraint (mount, unmount, cleanup). */
+export interface LifecycleRequirement {
+  readonly kind: "lifecycle_requirement";
+  readonly name: string;
+  readonly constraint: "mount" | "unmount" | "cleanup" | "refresh";
+  readonly target_resource: string;
+  readonly owner?: string;
+  readonly finalizers?: readonly Finalizer[];
 }
 
 export type AnyResource =
@@ -305,6 +374,19 @@ export interface OptimisticPlan<In = unknown, Out = unknown> {
   readonly reconcile?: PatchExpr;
   readonly fallback: FallbackPlan;
   readonly diagnostics: readonly Diagnostic[];
+  readonly temp_id_strategy?: "auto" | "uuid" | "client" | "server";
+  readonly affected_keys?: readonly KeyExpression[];
+  readonly affected_resources?: readonly string[];
+  readonly safety_classification?: "safe" | "degraded" | "unsafe";
+  readonly operation_laws?: {
+    readonly associative?: boolean;
+    readonly commutative?: boolean;
+    readonly idempotent?: boolean;
+    readonly invertible?: boolean;
+    readonly monotonic?: boolean;
+  };
+  readonly old_value?: unknown;
+  readonly target?: AnyResource;
   readonly _input?: In;
   readonly _output?: Out;
 }
@@ -323,7 +405,9 @@ export type ReactiveGraphNodeKind =
   | "form"
   | "event"
   | "subscription"
-  | "tracking_scope";
+  | "tracking_scope"
+  | "state_resource"
+  | "derived_resource";
 
 export interface ReactiveGraphNode {
   readonly id: string;
@@ -337,7 +421,7 @@ export interface ReactiveGraphNode {
   readonly owner?: string;
   readonly call_plan?: import("../core/index.ts").CallPlan;
   readonly symbol?: import("../core/index.ts").SymbolMetadata;
-  readonly resource_type?: "reactive" | "pull" | "infinite" | "stream";
+  readonly resource_type?: "reactive" | "pull" | "infinite" | "stream" | "derived";
   readonly bindings?: readonly ResourceBinding[];
 }
 
@@ -496,6 +580,48 @@ export interface SubscribesEventEdge {
   readonly to: string;
 }
 
+export interface ReadsStateEdge {
+  readonly kind: "reads_state";
+  readonly from: string;
+  readonly to: string;
+}
+
+export interface WritesStateEdge {
+  readonly kind: "writes_state";
+  readonly from: string;
+  readonly to: string;
+}
+
+export interface HydratesStateEdge {
+  readonly kind: "hydrates_state";
+  readonly from: string;
+  readonly to: string;
+}
+
+export interface ScopeReadsKeyEdge {
+  readonly kind: "scope_reads_key";
+  readonly from: string; // scope id
+  readonly to: string; // key id
+}
+
+export interface ScopeReadsQueryEdge {
+  readonly kind: "scope_reads_query";
+  readonly from: string; // scope id
+  readonly to: string; // query id
+}
+
+export interface ScopeReadsKeyEdge {
+  readonly kind: "scope_reads_key";
+  readonly from: string; // scope id
+  readonly to: string; // key id
+}
+
+export interface ScopeReadsQueryEdge {
+  readonly kind: "scope_reads_query";
+  readonly from: string; // scope id
+  readonly to: string; // query id
+}
+
 export interface ScopeReadsKeyEdge {
   readonly kind: "scope_reads_key";
   readonly from: string; // scope id
@@ -521,6 +647,9 @@ export type ReactiveGraphEdge =
   | FormSubmitsEdge
   | EmitsEventEdge
   | SubscribesEventEdge
+  | ReadsStateEdge
+  | WritesStateEdge
+  | HydratesStateEdge
   | ScopeReadsKeyEdge
   | ScopeReadsQueryEdge;
 
@@ -764,6 +893,30 @@ export const defineReactiveResource = <
   traits: ["named", "readable", "reactive"],
 });
 
+export const defineStreamResource = <
+  In = unknown,
+  Value = unknown,
+  Err = ErrorType,
+  Req = unknown,
+  Eff = unknown,
+>(input: {
+  readonly name: string;
+  readonly query: QueryFunction<In, Value, any, Err, Req, Eff>;
+  readonly stream_type: "sse" | "websocket" | "webrtc";
+  readonly refresh?: readonly RefreshPlan[];
+  readonly enhancement?: EnhancementPlan;
+  readonly disposal_policy?: "auto" | "manual" | "deferred";
+}): StreamResource<In, Value, Err, Req, Eff> => ({
+  kind: "stream_resource",
+  name: input.name,
+  query: input.query,
+  stream_type: input.stream_type,
+  refresh: input.refresh ?? [refreshOnInvalidate()],
+  enhancement: input.enhancement,
+  disposal_policy: input.disposal_policy,
+  traits: ["named", "readable", "reactive"],
+});
+
 export const defineReactiveMutation = <
   In = unknown,
   Out = unknown,
@@ -797,6 +950,17 @@ export const defineOptimisticPlan = <In = unknown, Out = unknown>(input: {
   readonly reconcile?: PatchExpr;
   readonly fallback: FallbackPlan;
   readonly diagnostics?: readonly Diagnostic[];
+  readonly temp_id_strategy?: "auto" | "uuid" | "client" | "server";
+  readonly affected_keys?: readonly KeyExpression[];
+  readonly affected_resources?: readonly string[];
+  readonly safety_classification?: "safe" | "degraded" | "unsafe";
+  readonly operation_laws?: {
+    readonly associative?: boolean;
+    readonly commutative?: boolean;
+    readonly idempotent?: boolean;
+    readonly invertible?: boolean;
+    readonly monotonic?: boolean;
+  };
 }): OptimisticPlan<In, Out> => ({
   kind: "optimistic_plan",
   apply: input.apply,
@@ -804,6 +968,11 @@ export const defineOptimisticPlan = <In = unknown, Out = unknown>(input: {
   reconcile: input.reconcile,
   fallback: input.fallback,
   diagnostics: input.diagnostics ?? [],
+  temp_id_strategy: input.temp_id_strategy,
+  affected_keys: input.affected_keys,
+  affected_resources: input.affected_resources,
+  safety_classification: input.safety_classification,
+  operation_laws: input.operation_laws,
 });
 
 const findEntityQuery = (
@@ -929,6 +1098,116 @@ export const defineResourceChain = <
   next_resource: input.next_resource,
 });
 
+export const defineDerivedResource = <Value, Err = ErrorType>(input: {
+  readonly name: string;
+  readonly dependencies: readonly (
+    | KeyExpression
+    | ReactiveKey
+    | ReactiveResource
+    | DerivedResource
+  )[];
+  readonly output_type: SemanticType<Value>;
+  readonly resource_state?: "reactive" | "pull" | "infinite" | "stream";
+  readonly traits?: readonly TraitKind[];
+}): DerivedResource<Value, Err> => ({
+  kind: "derived_resource",
+  name: input.name,
+  dependencies: input.dependencies,
+  output_type: input.output_type,
+  resource_state: input.resource_state ?? "reactive",
+  traits: input.traits,
+});
+
+export const defineFinalizer = (input: {
+  readonly name: string;
+  readonly cleanup: "invalidate" | "unsubscribe" | "dispose" | "custom";
+  readonly target_specific?: boolean;
+}): Finalizer => ({
+  kind: "finalizer",
+  name: input.name,
+  cleanup: input.cleanup,
+  target_specific: input.target_specific,
+});
+
+export const defineScopedResource = <Source extends AnyResource>(input: {
+  readonly name: string;
+  readonly source: Source;
+  readonly owner: string;
+  readonly finalizers: readonly Finalizer[];
+  readonly refresh_policy?: "on_invalidate" | "on_mount" | "manual";
+  readonly disposal_policy?: "auto" | "manual" | "deferred";
+}): ScopedResource<Source> => ({
+  kind: "scoped_resource",
+  name: input.name,
+  source: input.source,
+  owner: input.owner,
+  finalizers: input.finalizers,
+  refresh_policy: input.refresh_policy,
+  disposal_policy: input.disposal_policy,
+});
+
+export const defineReactiveRuntime = (input: {
+  readonly name: string;
+  readonly environment: "server" | "client" | "edge" | "ssr";
+  readonly capabilities?: readonly string[];
+  readonly fallback_runtime?: string;
+}): ReactiveRuntime => ({
+  kind: "reactive_runtime",
+  name: input.name,
+  environment: input.environment,
+  capabilities: input.capabilities ?? [],
+  fallback_runtime: input.fallback_runtime,
+});
+
+export const defineServiceLayer = (input: {
+  readonly name: string;
+  readonly resources: readonly AnyResource[];
+  readonly mutations?: readonly ReactiveMutation[];
+  readonly runtime?: ReactiveRuntime;
+  readonly scoped?: readonly ScopedResource[];
+}): ServiceLayer => ({
+  kind: "service_layer",
+  name: input.name,
+  resources: input.resources,
+  mutations: input.mutations,
+  runtime: input.runtime,
+  scoped: input.scoped,
+});
+
+export const defineLifecycleRequirement = (input: {
+  readonly name: string;
+  readonly constraint: "mount" | "unmount" | "cleanup" | "refresh";
+  readonly target_resource: string;
+  readonly owner?: string;
+  readonly finalizers?: readonly Finalizer[];
+}): LifecycleRequirement => ({
+  kind: "lifecycle_requirement",
+  name: input.name,
+  constraint: input.constraint,
+  target_resource: input.target_resource,
+  owner: input.owner,
+  finalizers: input.finalizers,
+});
+
+export const checkScopedResourcesAndStreams = (ctx: GenContext): readonly Diagnostic[] => {
+  const diagnostics: Diagnostic[] = [];
+
+  for (const resource of ctx.reactive_resources as AnyResource[]) {
+    if (resource.kind === "stream_resource" && resource.disposal_policy === undefined) {
+      diagnostics.push(
+        diagnostic({
+          severity: "warning",
+          code: "reactivity:missing-disposal-policy",
+          message: `Stream resource "${resource.name}" has no disposal policy`,
+          suggestion: "Add a disposal_policy to specify cleanup semantics.",
+        }),
+      );
+    }
+  }
+
+  return diagnostics;
+};
+
 const keyFamilyGraphId = (family: KeyFamily): string => family.ref.id ?? `key:${family.name}`;
 const entityId = (entity: Entity): string => entity.ref.id ?? `entity:${entity.name}`;
 const queryId = (query: QueryFunction): string => query.ref?.id ?? `query:${query.name}`;
@@ -945,6 +1224,9 @@ const appRouteId = (route: AppRoute): string => `app_route:${route.path}`;
 const formId = (form: Form): string => `form:${form.name}`;
 const eventId = (event: Event): string => `event:${event.name}`;
 const subscriptionId = (subscription: Subscription): string => `subscription:${subscription.name}`;
+const stateResourceId = (state: StateResource): string => `state_resource:${state.name}`;
+const derivedResourceId = (resource: DerivedResource): string =>
+  `derived_resource:${resource.name}`;
 
 const addNode = (nodes: Map<string, ReactiveGraphNode>, node: ReactiveGraphNode): void => {
   nodes.set(node.id, node);
@@ -1299,6 +1581,72 @@ export const deriveReactiveGraph = (ctx: GenContext): ReactiveGraph => {
     });
   }
 
+  for (const state of ctx.state_resources) {
+    const id = stateResourceId(state);
+    addNode(nodes, { id, kind: "state_resource", name: state.name });
+    if (state.key_family) {
+      addNode(nodes, {
+        id: keyFamilyGraphId(state.key_family),
+        kind: "key_family",
+        name: state.key_family.name,
+      });
+      edges.push({
+        kind: "reads_key",
+        from: id,
+        to: keyFamilyGraphId(state.key_family),
+        key: { kind: "constant_key_expression", family: state.key_family },
+        confidence: "declared",
+      });
+    }
+  }
+
+  for (const derived of ctx.derived_resources) {
+    const id = derivedResourceId(derived);
+    addNode(nodes, {
+      id,
+      kind: "derived_resource",
+      name: derived.name,
+      resource_type: derived.resource_state,
+    });
+    for (const dep of derived.dependencies) {
+      if (
+        dep.kind === "constant_key_expression" ||
+        dep.kind === "static_key_expression" ||
+        dep.kind === "reactive_key"
+      ) {
+        addNode(nodes, {
+          id: keyFamilyGraphId(dep.family),
+          kind: "key_family",
+          name: dep.family.name,
+        });
+        edges.push({
+          kind: "reads_key",
+          from: id,
+          to: keyFamilyGraphId(dep.family),
+          key:
+            dep.kind === "reactive_key"
+              ? { kind: "constant_key_expression", family: dep.family }
+              : dep,
+          confidence: "declared",
+        });
+      } else if (dep.kind === "reactive_resource") {
+        addNode(nodes, { id: resourceId(dep), kind: "resource", name: dep.name });
+        edges.push({
+          kind: "reads_resource",
+          from: id,
+          to: resourceId(dep),
+        });
+      } else if (dep.kind === "derived_resource") {
+        addNode(nodes, { id: derivedResourceId(dep), kind: "derived_resource", name: dep.name });
+        edges.push({
+          kind: "reads_resource",
+          from: id,
+          to: derivedResourceId(dep),
+        });
+      }
+    }
+  }
+
   for (const route of ctx.routes) {
     addNode(nodes, { id: routeId(route), kind: "route", name: route.path.template });
     if (route.handler.kind === "query" && route.handler.query_func) {
@@ -1392,6 +1740,41 @@ export const deriveReactiveGraph = (ctx: GenContext): ReactiveGraph => {
           kind: "route_submits",
           from: appRouteId(route),
           to: id,
+        });
+      }
+    }
+  }
+
+  // ARCH1: Plugin-defined nodes participate via traits and lowering
+  for (const node of ctx.nodes) {
+    const nodeId = node.id ?? `node:${node.name ?? node.kind}`;
+    // Only add if not already present from a concrete kind handler
+    if (!nodes.has(nodeId)) {
+      addNode(nodes, {
+        id: nodeId,
+        kind: "tracking_scope", // Reuse tracking_scope as a generic plugin node container
+        name: node.name ?? node.kind,
+        traits: node.traits as readonly string[],
+      });
+    }
+
+    // If the node is lowerable, expand its lowered children into the graph
+    const lowerable = node as import("../core/node.ts").LowerableNode;
+    if (lowerable.lowersTo !== undefined) {
+      for (const lowered of lowerable.lowersTo) {
+        const loweredId = lowered.id ?? `node:${lowered.name ?? lowered.kind}`;
+        if (!nodes.has(loweredId)) {
+          addNode(nodes, {
+            id: loweredId,
+            kind: "tracking_scope",
+            name: lowered.name ?? lowered.kind,
+            traits: lowered.traits as readonly string[],
+          });
+        }
+        edges.push({
+          kind: "composes_resource",
+          from: nodeId,
+          to: loweredId,
         });
       }
     }
@@ -1642,7 +2025,7 @@ const enrichGraphNode = (node: ReactiveGraphNode, ctx: GenContext): ReactiveGrap
     traits?: readonly string[];
     symbol?: import("../core/index.ts").SymbolMetadata;
     call_plan?: import("../core/index.ts").CallPlan;
-    resource_type?: "reactive" | "pull" | "infinite" | "stream";
+    resource_type?: "reactive" | "pull" | "infinite" | "stream" | "derived";
     bindings?: readonly ResourceBinding[];
   } = {};
   switch (node.kind) {
@@ -1739,15 +2122,33 @@ export interface LoaderBundle {
   readonly loaders: readonly ReactiveGraphNode[];
 }
 
+export interface ResponseMapping {
+  readonly kind: "response_mapping";
+  /** The loader that receives the mapped payload. */
+  readonly loader: ReactiveGraphNode;
+  /** Path into the mutation response to extract. */
+  readonly response_path: readonly string[];
+}
+
 export interface MutationRefreshPlan {
   readonly kind: "mutation_refresh_plan";
   readonly mutation: ReactiveMutation;
   readonly bundles: readonly LoaderBundle[];
+  /** Mappings from mutation response to loader updates, preventing double round-trips. */
+  readonly response_mappings?: readonly ResponseMapping[];
+}
+
+export interface BundledQuery {
+  readonly kind: "bundled_query";
+  readonly query: QueryFunction;
+  readonly key: KeyExpression;
 }
 
 export interface SingleFlightPlan {
   readonly kind: "single_flight_plan";
   readonly mutations: readonly MutationRefreshPlan[];
+  /** All loader queries that can be bundled into a single request. */
+  readonly bundled_queries?: readonly BundledQuery[];
 }
 
 export const createLoaderBundle = (loaders: readonly ReactiveGraphNode[]): LoaderBundle => ({
@@ -1758,26 +2159,44 @@ export const createLoaderBundle = (loaders: readonly ReactiveGraphNode[]): Loade
 export const createMutationRefreshPlan = (
   mutation: ReactiveMutation,
   bundles: readonly LoaderBundle[],
+  response_mappings?: readonly ResponseMapping[],
 ): MutationRefreshPlan => ({
   kind: "mutation_refresh_plan",
   mutation,
   bundles,
+  response_mappings,
 });
 
 export const createSingleFlightPlan = (
   mutations: readonly MutationRefreshPlan[],
+  bundled_queries?: readonly BundledQuery[],
 ): SingleFlightPlan => ({
   kind: "single_flight_plan",
   mutations,
+  bundled_queries,
 });
 
 /**
  * Derives a SingleFlightPlan from the reactive graph and registered mutations.
  * Each mutation gets bundled with the routes and resources that become stale
- * after the mutation invalidates its keys.
+ * after the mutation invalidates its keys. Also bundles all loader queries
+ * and maps mutation responses to updated loader payloads.
  */
 export const deriveSingleFlightPlan = (ctx: GenContext, graph: ReactiveGraph): SingleFlightPlan => {
   const plans: MutationRefreshPlan[] = [];
+
+  // Collect all loader queries that can be bundled
+  const bundledQueries: BundledQuery[] = [];
+  for (const query of ctx.query_functions) {
+    const declaredKey = query.reactivity?.key;
+    if (declaredKey) {
+      bundledQueries.push({
+        kind: "bundled_query",
+        query,
+        key: declaredKey,
+      });
+    }
+  }
 
   for (const mutation of ctx.reactive_mutations) {
     const resources = affectedResourcesForMutation(graph, mutation);
@@ -1788,11 +2207,22 @@ export const deriveSingleFlightPlan = (ctx: GenContext, graph: ReactiveGraph): S
     );
 
     if (loaders.length > 0) {
-      plans.push(createMutationRefreshPlan(mutation, [createLoaderBundle(loaders)]));
+      // Derive response mappings: mutation output can populate loader cache directly
+      const responseMappings: ResponseMapping[] = loaders
+        .filter((loader) => loader.kind === "resource")
+        .map((loader) => ({
+          kind: "response_mapping" as const,
+          loader,
+          response_path: ["data"],
+        }));
+
+      plans.push(
+        createMutationRefreshPlan(mutation, [createLoaderBundle(loaders)], responseMappings),
+      );
     }
   }
 
-  return createSingleFlightPlan(plans);
+  return createSingleFlightPlan(plans, bundledQueries);
 };
 
 // --- Reactivity invariants -------------------------------------------------
@@ -1825,7 +2255,7 @@ const keyPayloadFields = (family: KeyFamily): readonly string[] | undefined => {
  */
 export const checkReactivity = (input: {
   readonly key_families: readonly KeyFamily[];
-  readonly reactive_resources: readonly ReactiveResource[];
+  readonly reactive_resources: readonly AnyResource[];
   readonly reactive_mutations: readonly ReactiveMutation[];
   readonly query_functions?: readonly QueryFunction[];
   readonly action_functions?: readonly ActionFunction[];
@@ -2031,6 +2461,56 @@ export const checkOptimisticPlans = (input: {
           severity: "error",
           code: "reactivity:optimistic-empty-rollback",
           message: `Optimistic plan for mutation ${mutation.name} has an empty rollback patch`,
+        }),
+      );
+    }
+
+    if (
+      mutation.optimistic.apply.kind.kind === "optimistic_insert" &&
+      mutation.optimistic.temp_id_strategy === undefined
+    ) {
+      out.push(
+        diagnostic({
+          severity: "warning",
+          code: "reactivity:optimistic-missing-temp-id",
+          message: `Optimistic plan for mutation ${mutation.name} is an insert but has no temp_id_strategy`,
+          suggestion: "Add a temp_id_strategy to specify how temporary IDs are reconciled.",
+        }),
+      );
+    }
+
+    if (mutation.optimistic.safety_classification === "unsafe") {
+      out.push(
+        diagnostic({
+          severity: "error",
+          code: "optimistic:rollback-missing",
+          message: `Optimistic plan for mutation ${mutation.name} is unsafe and lacks a safe rollback`,
+          suggestion: "Provide a safe rollback or degrade to refetch/pending state.",
+        }),
+      );
+    }
+
+    if (
+      mutation.optimistic.apply.kind.kind === "optimistic_update" &&
+      !mutation.optimistic.old_value
+    ) {
+      out.push(
+        diagnostic({
+          severity: "warning",
+          code: "optimistic:old-value-required",
+          message: `Optimistic update plan for mutation ${mutation.name} may require old_value for safe rollback`,
+          suggestion: "Provide old_value so the rollback can restore the previous state.",
+        }),
+      );
+    }
+
+    if (mutation.optimistic.target && !mutation.optimistic.target.traits?.includes("patchable")) {
+      out.push(
+        diagnostic({
+          severity: "warning",
+          code: "optimistic:target-cannot-patch",
+          message: `Optimistic plan target for mutation ${mutation.name} does not support patching`,
+          suggestion: "Use a patchable target or switch to refetch-based optimistic updates.",
         }),
       );
     }

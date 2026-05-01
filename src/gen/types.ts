@@ -33,6 +33,17 @@ import * as hydrationMod from "../hydration/index.ts";
 import * as servicesMod from "../services/index.ts";
 import * as rulesMod from "../rules/index.ts";
 import * as reactionMod from "../reaction/index.ts";
+import * as planMod from "../plan/index.ts";
+import * as contextMod from "../context/index.ts";
+import * as locationsMod from "../storage/locations.ts";
+import * as requirementsMod from "../requirements/index.ts";
+import * as stateMod from "../state/index.ts";
+import * as mergeMod from "../merge/index.ts";
+import * as offlineMod from "../offline/index.ts";
+import * as orchestrationMod from "../orchestration/index.ts";
+import * as workflowMod from "../workflow/index.ts";
+import * as boundaryMod from "../boundary/index.ts";
+import * as obligationsMod from "../obligations/index.ts";
 
 import type { Plugin } from "../core/index.ts";
 import type { GenContext } from "../core/index.ts";
@@ -282,6 +293,8 @@ export interface ReactivityNamespace<C extends GenConfig = GenConfig> {
   readonly _config?: C;
   resource: typeof reactivityMod.defineReactiveResource;
   mutation: typeof reactivityMod.defineReactiveMutation;
+  stream: typeof reactivityMod.defineStreamResource;
+  derived: typeof reactivityMod.defineDerivedResource;
   all: typeof reactivityMod.defineResourceAll;
   chain: typeof reactivityMod.defineResourceChain;
   registry: typeof reactivityMod.defineReactiveRegistry;
@@ -303,9 +316,13 @@ export interface ReactivityNamespace<C extends GenConfig = GenConfig> {
   singleFlight: typeof reactivityMod.deriveSingleFlightPlan;
   ruleInvalidations: typeof reactivityMod.deriveRuleInvalidationPlans;
   ivmPlans: typeof reactivityMod.deriveIvmPlans;
+  patchPlans: typeof reactivityMod.deriveRulePatchPlans;
   editableFields: typeof reactivityMod.deriveEditableFieldsForRule;
   editabilityRules: typeof reactivityMod.deriveEditabilityRulesForField;
   checkOptimisticPlans: typeof reactivityMod.checkOptimisticPlans;
+  runtime: typeof reactivityMod.defineReactiveRuntime;
+  serviceLayer: typeof reactivityMod.defineServiceLayer;
+  lifecycleRequirement: typeof reactivityMod.defineLifecycleRequirement;
   refresh: {
     manual: typeof reactivityMod.refreshManual;
     onMount: typeof reactivityMod.refreshOnMount;
@@ -325,6 +342,13 @@ export interface HydrationNamespace<C extends GenConfig = GenConfig> {
   /** Derive a hydration snapshot for an app route. */
   plan: (route: AppRoute) => hydrationMod.HydrationSnapshot;
   artifact: typeof hydrationMod.hydrationSnapshotArtifact;
+  httpRpcTransport: typeof hydrationMod.httpRpcTransport;
+  httpFormPostTransport: typeof hydrationMod.httpFormPostTransport;
+  websocketTransport: typeof hydrationMod.websocketTransport;
+  serverSentEventsTransport: typeof hydrationMod.serverSentEventsTransport;
+  fixture: typeof hydrationMod.generateBundledFetchFixture;
+  projection: typeof hydrationMod.defineSafeProjection;
+  serializationContract: typeof hydrationMod.defineSerializationContract;
 }
 
 export interface ServicesNamespace<C extends GenConfig = GenConfig> {
@@ -354,11 +378,150 @@ export interface RulesNamespace<C extends GenConfig = GenConfig> {
   evaluate: typeof rulesMod.evaluateRule;
   analyzePlacement: typeof rulesMod.analyzeRulePlacement;
   classifyPlacement: typeof rulesMod.classifyRulePlacement;
+  defineView: typeof rulesMod.defineDerivedRuleView;
+  viewDependencies: typeof rulesMod.extractRuleViewDependencies;
 }
 
 export interface ReactionNamespace<C extends GenConfig = GenConfig> {
   readonly _config?: C;
   define: typeof reactionMod.defineReaction;
+}
+
+export interface PlanNamespace<C extends GenConfig = GenConfig> {
+  readonly _config?: C;
+  sequence: typeof planMod.sequencePlan;
+  parallel: typeof planMod.parallelPlan;
+  fallback: typeof planMod.fallbackPlanNode;
+  map: typeof planMod.mapPlan;
+  chain: typeof planMod.chainPlan;
+  retry: typeof planMod.retryPlan;
+  withPlacement: typeof planMod.placementPlan;
+  isComposable: typeof planMod.isComposableNode;
+  validate: typeof planMod.validatePlanComposition;
+  deriveRequirements: typeof planMod.derivePlanRequirements;
+  deriveEffects: typeof planMod.derivePlanEffects;
+  checkFallback: typeof planMod.checkPlanFallbackCompatibility;
+}
+
+export interface ContextNamespace<C extends GenConfig = GenConfig> {
+  readonly _config?: C;
+  define: typeof contextMod.defineContext;
+  provide: typeof contextMod.provideContext;
+  require: typeof contextMod.requireContext;
+}
+
+export interface RequirementNamespace<C extends GenConfig = GenConfig> {
+  readonly _config?: C;
+  define: typeof requirementsMod.defineRequirement;
+}
+
+export interface ProviderNamespace<C extends GenConfig = GenConfig> {
+  readonly _config?: C;
+  define: typeof requirementsMod.defineProvider;
+  source: typeof requirementsMod.providerSource;
+  plan: typeof requirementsMod.deriveRequirementSatisfactionPlan;
+}
+
+export interface StateNamespace<C extends GenConfig = GenConfig> {
+  readonly _config?: C;
+  define: typeof stateMod.defineStateResource;
+}
+
+export interface MergeNamespace<C extends GenConfig = GenConfig> {
+  readonly _config?: C;
+  replace: typeof mergeMod.mergeReplace;
+  lastWriteWins: typeof mergeMod.mergeLastWriteWins;
+  firstWriteWins: typeof mergeMod.mergeFirstWriteWins;
+  max: typeof mergeMod.mergeMax;
+  min: typeof mergeMod.mergeMin;
+  sumDelta: typeof mergeMod.mergeSumDelta;
+  append: typeof mergeMod.mergeAppend;
+  prepend: typeof mergeMod.mergePrepend;
+  setUnion: typeof mergeMod.mergeSetUnion;
+  setIntersection: typeof mergeMod.mergeSetIntersection;
+  addRemoveSet: typeof mergeMod.mergeAddRemoveSet;
+  byIdCollection: typeof mergeMod.mergeByIdCollection;
+  fieldWise: typeof mergeMod.mergeFieldWise;
+  stateMachine: typeof mergeMod.mergeStateMachine;
+  manualConflict: typeof mergeMod.mergeManualConflict;
+  rejectConflict: typeof mergeMod.mergeRejectConflict;
+  customExpr: typeof mergeMod.mergeCustomExpr;
+  opaqueRuntime: typeof mergeMod.mergeOpaqueRuntime;
+  plan: typeof mergeMod.deriveEntityMergePlan;
+}
+
+export interface OfflineNamespace<C extends GenConfig = GenConfig> {
+  readonly _config?: C;
+  envelope: typeof offlineMod.defineOfflineCommandEnvelope;
+  queue: typeof offlineMod.defineOfflineQueuePlan;
+  check: typeof offlineMod.checkOfflinePlans;
+}
+
+export interface ScheduleNamespace<C extends GenConfig = GenConfig> {
+  readonly _config?: C;
+  cron: typeof orchestrationMod.cronExpression;
+  interval: typeof orchestrationMod.intervalExpression;
+  daily: typeof orchestrationMod.dailyExpression;
+  weekly: typeof orchestrationMod.weeklyExpression;
+  define: typeof orchestrationMod.defineSchedule;
+}
+
+export interface CronNamespace<C extends GenConfig = GenConfig> {
+  readonly _config?: C;
+  define: typeof orchestrationMod.defineCronJob;
+}
+
+export interface WorkflowNamespace<C extends GenConfig = GenConfig> {
+  readonly _config?: C;
+  define: typeof workflowMod.defineWorkflow;
+  call: typeof workflowMod.workflowCall;
+  query: typeof workflowMod.workflowQuery;
+  action: typeof workflowMod.workflowAction;
+  sequence: typeof workflowMod.workflowSequence;
+  parallel: typeof workflowMod.workflowParallel;
+  branch: typeof workflowMod.workflowBranch;
+  wait: typeof workflowMod.workflowWait;
+  waitForEvent: typeof workflowMod.workflowWaitForEvent;
+  child: typeof workflowMod.workflowChild;
+  checkpoint: typeof workflowMod.workflowCheckpoint;
+  compensate: typeof workflowMod.workflowCompensate;
+  retry: typeof workflowMod.workflowRetry;
+  emit: typeof workflowMod.workflowEmit;
+  invalidate: typeof workflowMod.workflowInvalidate;
+}
+
+export interface BoundaryNamespace<C extends GenConfig = GenConfig> {
+  readonly _config?: C;
+  browser: typeof boundaryMod.browserBoundary;
+  server: typeof boundaryMod.serverBoundary;
+  database: typeof boundaryMod.databaseBoundary;
+  worker: typeof boundaryMod.workerBoundary;
+  edge: typeof boundaryMod.edgeBoundary;
+  queue: typeof boundaryMod.queueBoundary;
+  externalService: typeof boundaryMod.externalServiceBoundary;
+  transport: typeof boundaryMod.defineTransportPlan;
+  callPlan: typeof boundaryMod.defineBoundaryCallPlan;
+  derive: () => readonly import("../boundary/index.ts").BoundaryCallPlan[];
+}
+
+export interface ObligationsNamespace<C extends GenConfig = GenConfig> {
+  readonly _config?: C;
+  define: typeof obligationsMod.defineSemanticObligation;
+  derive: () => import("../obligations/index.ts").ObligationGraph;
+}
+
+export interface StorageLocationNamespace<C extends GenConfig = GenConfig> {
+  readonly _config?: C;
+  serverRequestContext: typeof locationsMod.serverRequestContext;
+  serverSessionStore: typeof locationsMod.serverSessionStore;
+  clientLocalStorage: typeof locationsMod.clientLocalStorage;
+  clientSessionStorage: typeof locationsMod.clientSessionStorage;
+  clientQueryCache: typeof locationsMod.clientQueryCache;
+  clientMemory: typeof locationsMod.clientMemory;
+  sharedCookie: typeof locationsMod.sharedCookie;
+  sharedDatabase: typeof locationsMod.sharedDatabase;
+  sharedCache: typeof locationsMod.sharedCache;
+  sharedQueue: typeof locationsMod.sharedQueue;
 }
 
 export interface AuthzSurfaceNamespace<C extends GenConfig = GenConfig> {
@@ -379,6 +542,16 @@ export interface AuthzSurfaceNamespace<C extends GenConfig = GenConfig> {
   uiHint: typeof authzMod.uiHint;
   binding: typeof authzMod.defineAccessSurfaceBinding;
   defaultDeny: typeof authzMod.deriveDefaultDeny;
+}
+
+export interface TargetsNamespace<C extends GenConfig = GenConfig> {
+  readonly _config?: C;
+  docs: () => readonly import("../targets/index.ts").DocsArtifact[];
+  tests: () => readonly import("../targets/index.ts").TestSuite[];
+  devtools: () => import("../targets/index.ts").DevtoolsGraph;
+  server: () => import("../targets/index.ts").ServerProviderArtifact;
+  client: () => import("../targets/index.ts").ClientProviderArtifact;
+  matrix: () => import("../targets/index.ts").TargetIntegrationMatrix;
 }
 
 export interface UiBackendRegistry {
@@ -488,6 +661,9 @@ export interface Gen<C extends GenConfig = GenConfig> extends GenPluginExtension
     // Serializer
     serializer: typeof semantic.defineSerializer;
 
+    // Merge
+    withMerge: typeof semantic.withMerge;
+
     // Trait
     trait: typeof traitMod.defineTrait;
 
@@ -575,6 +751,42 @@ export interface Gen<C extends GenConfig = GenConfig> extends GenPluginExtension
 
   // Reactions
   reaction: ReactionNamespace<C>;
+
+  // Plan composition
+  plan: PlanNamespace<C>;
+
+  // Typed contexts
+  context: ContextNamespace<C>;
+
+  // Requirement/provider planning
+  requirement: RequirementNamespace<C>;
+  provider: ProviderNamespace<C>;
+  state: StateNamespace<C>;
+
+  // Merge strategies
+  merge: MergeNamespace<C>;
+
+  // Offline commands and queues
+  offline: OfflineNamespace<C>;
+
+  // Schedules and cron jobs
+  schedule: ScheduleNamespace<C>;
+  cron: CronNamespace<C>;
+
+  // Workflows
+  workflow: WorkflowNamespace<C>;
+
+  // Boundary/transport graph
+  boundary: BoundaryNamespace<C>;
+
+  // Semantic obligations for tests/docs/devtools
+  obligations: ObligationsNamespace<C>;
+
+  // Target fixtures (docs, tests, devtools)
+  targets: TargetsNamespace<C>;
+
+  // Storage locations
+  location: StorageLocationNamespace<C>;
 
   // Expressions
   expr: {

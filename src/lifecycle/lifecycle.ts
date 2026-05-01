@@ -42,16 +42,30 @@ import { checkEditors } from "../editor/index.ts";
 import { checkCrud } from "../crud/index.ts";
 import { checkList } from "../list/index.ts";
 import { checkAuthz, checkMutationAccessPlans } from "../authz/index.ts";
-import { checkOptimisticPlans, checkReactivity, checkRuleReactivity } from "../reactivity/index.ts";
+import {
+  checkOptimisticPlans,
+  checkReactivity,
+  checkRuleReactivity,
+  checkScopedResourcesAndStreams,
+} from "../reactivity/index.ts";
 import { checkAppRoute } from "../router/index.ts";
 import { checkServices } from "../services/index.ts";
-import { checkRules } from "../rules/index.ts";
+import { checkRules, checkDerivedRuleViews } from "../rules/index.ts";
 import { checkReactions } from "../reaction/index.ts";
+import { checkRequirements } from "../requirements/index.ts";
+import { checkActionMergeSemantics, checkPlanMergeSemantics } from "../merge/index.ts";
+import { checkOfflinePlans } from "../offline/index.ts";
+import { checkCronJobs } from "../orchestration/index.ts";
+import { checkWorkflows } from "../workflow/index.ts";
+import { checkBoundaryPlans } from "../boundary/index.ts";
+import { checkObligations } from "../obligations/index.ts";
+import { checkStateResources } from "../state/index.ts";
 import type { FallbackPolicy, PlanExpr } from "../expression/index.ts";
 import type { Mutator } from "../api/index.ts";
 import type { QueryExpression } from "../query/index.ts";
 import type { Store } from "../storage/index.ts";
 import type { Runtime } from "../types/index.ts";
+import { isSensitivePlacementUnsafe } from "../storage/locations.ts";
 
 /** Represents the execution status of a lifecycle phase. */
 export type PhaseStatus = "pending" | "running" | "completed" | "failed";
@@ -354,6 +368,21 @@ export const registerBuiltInModuleCheckers = (ctx: GenContext): void => {
   );
   registerModuleChecker(ctx, (ctx) => checkCrossStoreWriteCoordinator(ctx.mutators));
   registerModuleChecker(ctx, (ctx) => checkPlanFallback(ctx.plan_functions.map((f) => f.body)));
+  registerModuleChecker(ctx, (ctx) => checkContextAndStorage(ctx));
+  registerModuleChecker(ctx, (ctx) => checkRequirements(ctx));
+  registerModuleChecker(ctx, (ctx) => checkStateResources(ctx));
+  registerModuleChecker(ctx, (ctx) => checkScopedResourcesAndStreams(ctx));
+  registerModuleChecker(ctx, (ctx) => checkTargetCapabilities(ctx));
+  registerModuleChecker(ctx, (ctx) => checkCronJobs(ctx));
+  registerModuleChecker(ctx, (ctx) => checkWorkflows(ctx));
+  registerModuleChecker(ctx, (ctx) => checkBoundaryPlans(ctx));
+  registerModuleChecker(ctx, (ctx) => checkObligations(ctx));
+  registerModuleChecker(ctx, (ctx) => checkDerivedRuleViews(ctx.derived_rule_views));
+  registerModuleChecker(ctx, (ctx) =>
+    ctx.action_functions.flatMap((a) => checkActionMergeSemantics(a)),
+  );
+  registerModuleChecker(ctx, (ctx) => checkPlanMergeSemantics(ctx));
+  registerModuleChecker(ctx, (ctx) => checkOfflinePlans(ctx.offline_commands, ctx.offline_queues));
 
   ctx.builtInModuleCheckersRegistered = true;
 };
@@ -509,6 +538,155 @@ export const checkPlanFallback = (plans: readonly PlanExpr[]): readonly Diagnost
   return out;
 };
 
+// --- Context and Storage diagnostics --------------------------------------
+
+/**
+ * Validates context provisions and storage locations for unsafe placements.
+ *
+ * - Sensitive contexts stored in client-readable locations
+ * - Required contexts with no matching provision
+ * - Duplicate context definitions
+ */
+export const checkContextAndStorage = (ctx: GenContext): readonly Diagnostic[] => {
+  const out: Diagnostic[] = [];
+  const seenContexts = new Set<string>();
+
+  // Duplicate context definitions
+  for (const context of ctx.contexts) {
+    if (seenContexts.has(context.name)) {
+      out.push(
+        diagnostic({
+          severity: "error",
+          code: "lifecycle:duplicate-context",
+          message: `Context "${context.name}" is defined more than once`,
+        }),
+      );
+    }
+    seenContexts.add(context.name);
+  }
+
+  // Unsafe sensitive placements
+  for (const provision of ctx.context_provisions) {
+    if (isSensitivePlacementUnsafe(provision.from)) {
+      out.push(
+        diagnostic({
+          severity: "warning",
+          code: "context:unsafe-storage-location",
+          message: `Context "${provision.context.name}" is stored in "${provision.from.name}" which is not marked sensitive-safe`,
+          suggestion: "Use a server-side storage location for sensitive contexts.",
+        }),
+      );
+    }
+  }
+
+  // Required contexts with no provision
+  const provisionedNames = new Set(ctx.context_provisions.map((p) => p.context.name));
+  for (const requirement of ctx.context_requirements) {
+    if (!requirement.optional && !provisionedNames.has(requirement.context.name)) {
+      out.push(
+        diagnostic({
+          severity: "error",
+          code: "context:missing-provider",
+          message: `Required context "${requirement.context.name}" has no matching provision`,
+          suggestion: "Add a context provision or mark the requirement as optional.",
+        }),
+      );
+    }
+  }
+
+  return out;
+};
+
+// --- Target capability diagnostics -----------------------------------------
+
+/**
+ * Validates that target capabilities can satisfy resource/mutation enhancement plans.
+ *
+ * Emits diagnostics when a preferred capability tier is unsupported by any target
+ * or when a fallback is selected.
+ */
+export const checkTargetCapabilities = (ctx: GenContext): readonly Diagnostic[] => {
+  const out: Diagnostic[] = [];
+
+  // Collect target capability tiers
+  const targetTiers = new Set<string>();
+  for (const target of ctx.targets) {
+    for (const tier of target.capabilities?.tiers ?? []) {
+      targetTiers.add(tier);
+    }
+  }
+
+  // Check reactive resources
+  for (const resource of ctx.reactive_resources) {
+    if (!resource.enhancement) continue;
+    const preferred = resource.enhancement.preferred;
+    if (!targetTiers.has(preferred)) {
+      out.push(
+        diagnostic({
+          severity: "warning",
+          code: "target:capability-missing",
+          message: `Resource "${resource.name}" prefers capability tier "${preferred}" but no target supports it`,
+          suggestion: "Add a target that supports this tier or adjust the enhancement plan.",
+        }),
+      );
+    }
+    // Check if a fallback is explicitly selected
+    for (const fallback of resource.enhancement.fallbacks) {
+      if (targetTiers.has(fallback)) {
+        out.push(
+          diagnostic({
+            severity: "info",
+            code: "target:fallback-selected",
+            message: `Resource "${resource.name}" will fall back to tier "${fallback}"`,
+          }),
+        );
+        break;
+      }
+    }
+  }
+
+  // Check reactive mutations
+  for (const mutation of ctx.reactive_mutations) {
+    if (!mutation.action.optimistic) continue;
+    // Optimistic mutations require enhanced client capabilities
+    if (!targetTiers.has("optimistic_offline") && !targetTiers.has("reactive")) {
+      out.push(
+        diagnostic({
+          severity: "warning",
+          code: "target:capability-missing",
+          message: `Mutation "${mutation.name}" uses optimistic updates but no target supports "optimistic_offline" or "reactive"`,
+          suggestion: "Add a reactive target or remove optimistic updates.",
+        }),
+      );
+    }
+  }
+
+  // Check Phase 4 capabilities
+  const phase4Features: { collection: readonly unknown[]; name: string; tier: string }[] = [
+    { collection: ctx.derived_resources, name: "derived resources", tier: "derived_reactivity" },
+    { collection: ctx.scoped_resources, name: "scoped resources", tier: "scoped_lifecycle" },
+    { collection: ctx.schedules, name: "schedules", tier: "cron_scheduling" },
+    { collection: ctx.workflows, name: "workflows", tier: "workflow_engine" },
+    { collection: ctx.boundary_plans, name: "boundary plans", tier: "cross_boundary" },
+    { collection: ctx.offline_commands, name: "offline commands", tier: "optimistic_offline" },
+  ];
+
+  for (const feature of phase4Features) {
+    if (feature.collection.length > 0 && !targetTiers.has(feature.tier)) {
+      out.push(
+        diagnostic({
+          severity: "warning",
+          code: "target:phase4-capability-missing",
+          message: `Application uses ${feature.name} but no target supports "${feature.tier}"`,
+          suggestion: `Add a target that supports ${feature.tier} or remove ${feature.name}.`,
+        }),
+      );
+    }
+  }
+
+  return out;
+};
+
 // --- Runner ---------------------------------------------------------------
 
 /**
@@ -545,6 +723,7 @@ export interface RunResult {
  */
 export const check = (ctx: GenContext): RunResult => {
   ctx.status = "checking";
+  registerBuiltInModuleCheckers(ctx);
   const phases = standardPhases();
 
   // collect_refs / resolve_plugins phases are mostly bookkeeping; the kernel

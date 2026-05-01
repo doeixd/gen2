@@ -581,6 +581,136 @@ export const checkRules = (rules: readonly Rule[]): Diagnostic[] => {
 
     // FieldOwnership
     collectFieldOwnershipIssues(rule.body, rule.name, out);
+
+    // UnboundOutputVariable
+    for (const v of rule.vars) {
+      if (!usedVars.has(v.name)) {
+        out.push(
+          diagnostic({
+            severity: "warning",
+            code: "rules:unbound-output-variable",
+            message: `Rule "${rule.name}" declares variable "${v.name}" but never uses it`,
+            suggestion: "Remove the unused variable or reference it in the rule body.",
+          }),
+        );
+      }
+    }
+  }
+
+  return out;
+};
+
+// --- Derived Rule Views ----------------------------------------------------
+
+export interface DerivedRuleView<
+  Name extends string = string,
+  In extends Record<string, unknown> = Record<string, unknown>,
+  Out = unknown,
+> {
+  readonly kind: "derived_rule_view";
+  readonly name: Name;
+  readonly input_vars: readonly RuleVarDecl[];
+  readonly output_type: SemanticType<Out>;
+  readonly body: RuleExpr<boolean>;
+  readonly projection: readonly RuleVarDecl[];
+  readonly maintenance: "incremental" | "rebuild" | "manual";
+  readonly _in?: In;
+  readonly _out?: Out;
+}
+
+export const defineDerivedRuleView = <
+  const Name extends string,
+  In extends Record<string, unknown>,
+  Out,
+>(input: {
+  readonly name: Name;
+  readonly input_vars: readonly RuleVarDecl[];
+  readonly output_type: SemanticType<Out>;
+  readonly body: RuleExpr<boolean>;
+  readonly projection: readonly RuleVarDecl[];
+  readonly maintenance?: "incremental" | "rebuild" | "manual";
+}): DerivedRuleView<Name, In, Out> => ({
+  kind: "derived_rule_view",
+  name: input.name,
+  input_vars: input.input_vars,
+  output_type: input.output_type,
+  body: input.body,
+  projection: input.projection,
+  maintenance: input.maintenance ?? "incremental",
+});
+
+export const extractRuleViewDependencies = (view: DerivedRuleView): RuleDependencies => {
+  const entities: Entity[] = [];
+  const fields: Field[] = [];
+  const relations: Relation[] = [];
+  const variables: string[] = [];
+  collectExprDeps(view.body, { entities, fields, relations, variables });
+  return { entities, fields, relations, variables };
+};
+
+export const checkDerivedRuleViews = (views: readonly DerivedRuleView[]): Diagnostic[] => {
+  const out: Diagnostic[] = [];
+  const seen = new Set<string>();
+
+  for (const view of views) {
+    // DuplicateViewName
+    if (seen.has(view.name)) {
+      out.push(
+        diagnostic({
+          severity: "error",
+          code: "rules:duplicate-view-name",
+          message: `Derived view name "${view.name}" is already defined`,
+        }),
+      );
+    } else {
+      seen.add(view.name);
+    }
+
+    // NonBooleanBody
+    if (!isBooleanExpr(view.body)) {
+      out.push(
+        diagnostic({
+          severity: "error",
+          code: "rules:view-non-boolean-body",
+          message: `Derived view "${view.name}" body must be a boolean expression`,
+        }),
+      );
+    }
+
+    // UnboundOutputVariable
+    const declaredVars = new Set(view.input_vars.map((v) => v.name));
+    const projectedVars = new Set(view.projection.map((v) => v.name));
+    const usedVars = new Set<string>();
+    collectVarsInExpr(view.body, usedVars);
+    for (const v of projectedVars) {
+      if (!declaredVars.has(v) && !usedVars.has(v)) {
+        out.push(
+          diagnostic({
+            severity: "error",
+            code: "rules:view-unbound-output-variable",
+            message: `Derived view "${view.name}" projects unbound variable "${v}"`,
+            suggestion: "Bind the variable in the view body or declare it as an input.",
+          }),
+        );
+      }
+    }
+
+    // UnsafeNegation
+    if (hasUnsafeNegation(view.body)) {
+      out.push(
+        diagnostic({
+          severity: "warning",
+          code: "rules:view-unsafe-negation",
+          message: `Derived view "${view.name}" contains negation that may not be safely translatable to SQL`,
+        }),
+      );
+    }
+
+    // TypeMismatch
+    collectTypeMismatches(view.body, view.name, out);
+
+    // FieldOwnership
+    collectFieldOwnershipIssues(view.body, view.name, out);
   }
 
   return out;

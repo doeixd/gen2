@@ -63,31 +63,6 @@ const isSimpleEqualityRule = <Name extends string, Vars = unknown>(
   return body.kind === "rule.eq";
 };
 
-const ruleHasNegation = (expr: RuleExpr): boolean => {
-  if (expr.kind === "rule.not") return true;
-  if (expr.kind === "rule.and" || expr.kind === "rule.or") {
-    return expr.terms.some((t) => ruleHasNegation(t));
-  }
-  if (expr.kind === "rule.exists") {
-    return ruleHasNegation(expr.where);
-  }
-  return false;
-};
-
-const ruleHasDisjunction = (expr: RuleExpr): boolean => {
-  if (expr.kind === "rule.or") return true;
-  if (expr.kind === "rule.and") {
-    return expr.terms.some((t) => ruleHasDisjunction(t));
-  }
-  if (expr.kind === "rule.exists") {
-    return ruleHasDisjunction(expr.where);
-  }
-  if (expr.kind === "rule.not") {
-    return ruleHasDisjunction(expr.term);
-  }
-  return false;
-};
-
 const ruleHasExists = (expr: RuleExpr): boolean => {
   if (expr.kind === "rule.exists") return true;
   if (expr.kind === "rule.and" || expr.kind === "rule.or") {
@@ -186,6 +161,16 @@ export interface IvmMaintenancePlan {
   readonly deltaMode: "insert" | "delete" | "update" | "unsupported";
 }
 
+export interface RulePatchPlan {
+  readonly kind: "rule_patch_plan";
+  readonly rule: Rule;
+  readonly mutation: ActionFunction;
+  readonly keyFamily?: import("./reactivity.ts").KeyFamily;
+  readonly operation: "insert" | "update" | "delete" | "key_patch";
+  readonly provenance: "proven" | "conservative";
+  readonly field?: Field;
+}
+
 // --- Derivation ------------------------------------------------------------
 
 export const deriveRuleInvalidationPlans = (ctx: GenContext): DerivedInvalidationPlan[] => {
@@ -234,7 +219,7 @@ export const deriveRuleInvalidationPlans = (ctx: GenContext): DerivedInvalidatio
         affectedRules,
         invalidates,
         precision: overallPrecision,
-        appliedPrecision: "broad",
+        appliedPrecision: overallPrecision === "patchable" ? "patchable" : "broad",
         confidence: overallConfidence,
       });
     }
@@ -243,17 +228,45 @@ export const deriveRuleInvalidationPlans = (ctx: GenContext): DerivedInvalidatio
   return plans;
 };
 
-// --- IVM stub --------------------------------------------------------------
+// --- Monotonicity analysis -------------------------------------------------
+
+const isMonotonicRule = (expr: RuleExpr): boolean => {
+  switch (expr.kind) {
+    case "rule.eq":
+    case "rule.compare":
+      return true;
+    case "rule.and":
+      return expr.terms.every(isMonotonicRule);
+    case "rule.or":
+      return false; // Disjunction breaks monotonicity for IVM
+    case "rule.not":
+      return false; // Negation breaks monotonicity for IVM
+    case "rule.exists":
+      return false; // Exists breaks monotonicity for IVM
+    default:
+      return true;
+  }
+};
+
+// --- IVM -------------------------------------------------------------------
 
 export const deriveIvmPlans = (ctx: GenContext): readonly IvmMaintenancePlan[] => {
   const plans: IvmMaintenancePlan[] = [];
   for (const rule of ctx.rules) {
-    if (ruleHasNegation(rule.body) || ruleHasDisjunction(rule.body)) {
+    if (!isMonotonicRule(rule.body)) {
       plans.push({
         kind: "ivm_maintenance_plan",
         rule,
         maintainedRelation: `ivm_${rule.name}`,
         deltaMode: "unsupported",
+      });
+    } else {
+      // Monotonic rule: all deltas are supported
+      plans.push({
+        kind: "ivm_maintenance_plan",
+        rule,
+        maintainedRelation: `ivm_${rule.name}`,
+        deltaMode: "insert", // Primary delta mode for monotonic rules
       });
     }
   }
@@ -287,12 +300,13 @@ export const checkRuleReactivity = (ctx: GenContext): readonly Diagnostic[] => {
       );
     }
 
-    if (plan.precision === "patchable") {
+    if (plan.precision === "patchable" && plan.appliedPrecision !== "patchable") {
       out.push(
         diagnostic({
-          severity: "info",
-          code: "rules-reactivity:patchable-advisory-only",
-          message: `Mutation "${plan.mutation.name}" could use patchable invalidation, but this is currently advisory as exact affected-set determination is not fully implemented`,
+          severity: "warning",
+          code: "rules-reactivity:patchable-not-applied",
+          message: `Mutation "${plan.mutation.name}" could use patchable invalidation, but it was not applied`,
+          suggestion: "Enable patchable invalidation in the target configuration.",
         }),
       );
     }
@@ -356,7 +370,7 @@ export const checkRuleReactivity = (ctx: GenContext): readonly Diagnostic[] => {
     }
   }
 
-  // IVM delta unsupported
+  // IVM delta support
   const ivmPlans = deriveIvmPlans(ctx);
   for (const plan of ivmPlans) {
     if (plan.deltaMode === "unsupported") {
@@ -364,13 +378,112 @@ export const checkRuleReactivity = (ctx: GenContext): readonly Diagnostic[] => {
         diagnostic({
           severity: "warning",
           code: "rules-reactivity:ivm-delta-unsupported",
-          message: `Rule "${plan.rule.name}" contains negation or disjunction; IVM delta maintenance is not supported`,
+          message: `Rule "${plan.rule.name}" contains negation, disjunction, or exists; IVM delta maintenance is not supported`,
+          suggestion: "Rewrite the rule to use only conjunction and equality/comparison for IVM.",
+        }),
+      );
+    } else {
+      out.push(
+        diagnostic({
+          severity: "info",
+          code: "rules-reactivity:ivm-delta-supported",
+          message: `Rule "${plan.rule.name}" is monotonic; IVM delta maintenance is supported (${plan.deltaMode} mode)`,
         }),
       );
     }
   }
 
   return out;
+};
+
+// --- Patch plan derivation --------------------------------------------------
+
+/**
+ * Derives explicit patch plans for rule-derived invalidations.
+ *
+ * Only simple equality rules on a single field produce patchable plans.
+ * Everything else falls back to broad invalidation.
+ */
+export const deriveRulePatchPlans = (ctx: GenContext): readonly RulePatchPlan[] => {
+  const plans: RulePatchPlan[] = [];
+  const invalidationPlans = deriveRuleInvalidationPlans(ctx);
+  const seen = new Set<string>();
+
+  const addPlan = (input: {
+    readonly rule: Rule;
+    readonly mutation: ActionFunction;
+    readonly field: Field;
+    readonly keyFamily?: import("./reactivity.ts").KeyFamily;
+    readonly provenance: "proven" | "conservative";
+  }): void => {
+    const key = `${input.mutation.name}:${input.rule.name}:${input.field.name}:${input.keyFamily?.name ?? "none"}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    plans.push({
+      kind: "rule_patch_plan",
+      rule: input.rule,
+      mutation: input.mutation,
+      keyFamily: input.keyFamily,
+      operation: "key_patch",
+      provenance: input.provenance,
+      field: input.field,
+    });
+  };
+
+  for (const invPlan of invalidationPlans) {
+    if (invPlan.precision !== "patchable") continue;
+
+    for (const rule of invPlan.affectedRules) {
+      const deps = extractRuleDependencies(rule);
+      if (deps.fields.length !== 1) continue;
+      const field = deps.fields[0];
+      if (!field) continue;
+
+      if (invPlan.invalidates.length > 0) {
+        for (const pattern of invPlan.invalidates) {
+          addPlan({
+            rule,
+            mutation: invPlan.mutation,
+            keyFamily: pattern.family,
+            provenance: invPlan.confidence === "proven" ? "proven" : "conservative",
+            field,
+          });
+        }
+      } else {
+        // Derive key family from the rule's entity when no policy-query chain exists
+        const entity = deps.entities[0];
+        if (entity) {
+          const family = ctx.key_families.find((kf) => kf.name === entity.name);
+          if (family) {
+            addPlan({
+              rule,
+              mutation: invPlan.mutation,
+              keyFamily: family,
+              provenance: invPlan.confidence === "proven" ? "proven" : "conservative",
+              field,
+            });
+          }
+        }
+      }
+    }
+  }
+
+  for (const action of ctx.action_functions) {
+    const writeSet = extractWriteSet(action);
+    if (writeSet.fields.length !== 1) continue;
+    const field = writeSet.fields[0];
+    if (!field) continue;
+
+    for (const rule of ctx.rules) {
+      if (!isSimpleEqualityRule(rule)) continue;
+      const deps = extractRuleDependencies(rule);
+      if (deps.fields.length === 1 && deps.fields[0] === field) {
+        addPlan({ rule, mutation: action, field, provenance: "proven" });
+      }
+    }
+  }
+
+  return plans;
 };
 
 // --- UI Editability Integration --------------------------------------------
