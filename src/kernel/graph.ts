@@ -1,18 +1,19 @@
 /* @__NO_SIDE_EFFECTS__ */
 /**
- * Kernel graph - registry of all kernel objects.
+ * Kernel graph - registry of all kernel objects using typed symbol definitions.
  *
- * The central registry for kernel objects. Models the revised core Graph primitive.
+ * The central registry for kernel objects. Models the revised core Graph primitive
+ * with no-magic-string philosophy.
  */
 
 import type { KernelId } from "./id.ts";
 import type { KernelMetadata } from "./metadata.ts";
-import type { KernelTrait } from "./trait.ts";
+import type { TraitDef } from "./trait.ts";
 import type { KernelType } from "./type.ts";
 import type { KernelExpr } from "./expr.ts";
 import type { KernelTransform } from "./transform.ts";
-import type { KernelNode } from "./node.ts";
-import type { KernelEdge } from "./edge.ts";
+import type { KernelNode, NodeKind } from "./node.ts";
+import type { KernelEdge, EdgeKind } from "./edge.ts";
 
 /** Kernel graph - the registry of all kernel objects. */
 export interface KernelGraph {
@@ -22,7 +23,7 @@ export interface KernelGraph {
   readonly types: ReadonlyMap<string, KernelType>;
   readonly transforms: ReadonlyMap<string, KernelTransform>;
   readonly exprs: ReadonlyMap<string, KernelExpr>;
-  readonly traits: ReadonlyMap<string, KernelTrait>;
+  readonly traits: ReadonlyMap<string, TraitDef>;
   readonly nodes: ReadonlyMap<string, KernelNode>;
   readonly edges: ReadonlyMap<string, KernelEdge>;
 }
@@ -66,25 +67,25 @@ export const registerExpr = <T>(
 /** Register a trait in the graph. */
 export const registerTrait = (
   graph: KernelGraph,
-  trait: KernelTrait,
+  trait: TraitDef,
 ): KernelGraph => ({
   ...graph,
   traits: new Map(graph.traits).set(trait.id, trait),
 });
 
 /** Register a node in the graph. */
-export const registerNode = <In, Out>(
+export const registerNode = <Kind extends NodeKind, In, Out>(
   graph: KernelGraph,
-  node: KernelNode<In, Out>,
+  node: KernelNode<Kind, In, Out>,
 ): KernelGraph => ({
   ...graph,
   nodes: new Map(graph.nodes).set(node.id, node),
 });
 
 /** Register an edge in the graph. */
-export const registerEdge = (
+export const registerEdge = <Kind extends EdgeKind>(
   graph: KernelGraph,
-  edge: KernelEdge,
+  edge: KernelEdge<Kind>,
 ): KernelGraph => ({
   ...graph,
   edges: new Map(graph.edges).set(edge.id, edge),
@@ -93,18 +94,18 @@ export const registerEdge = (
 /** Query: get all nodes with a specific trait. */
 export const nodesWithTrait = (
   graph: KernelGraph,
-  trait: string,
+  trait: TraitDef,
 ): readonly KernelNode[] =>
   Array.from(graph.nodes.values()).filter((node) =>
-    node.traits.some((t) => t === trait)
+    node.traits.some((t) => t.id === trait.id)
   );
 
-/** Query: get all edges of a specific kind. */
-export const edgesOfKind = (
+/** Query: get all edges of a specific kind (typed). */
+export const edgesOfKind = <Kind extends EdgeKind>(
   graph: KernelGraph,
-  kind: string,
+  kind: Kind,
 ): readonly KernelEdge[] =>
-  Array.from(graph.edges.values()).filter((edge) => edge.kind === kind);
+  Array.from(graph.edges.values()).filter((edge) => edge.kind.id === kind.id);
 
 /** Query: get edges from a specific node. */
 export const edgesFrom = (
@@ -135,8 +136,8 @@ export const edgesBetween = (
   toId: string,
 ): readonly KernelEdge[] =>
   Array.from(graph.edges.values()).filter((edge) => {
-    const from = edge.endpoints.find((e) => e.role === "from" || e.role === "source" || e.role === "owner" || e.role === "writer" || e.role === "reader");
-    const to = edge.endpoints.find((e) => e.role === "to" || e.role === "target" || e.role === "owned" || e.role === "field");
+    const from = edge.endpoints.find((ep) => ep.role.id.startsWith("edge.role.owner") || ep.role.id.startsWith("edge.role.source") || ep.role.id.startsWith("edge.role.from") || ep.role.id.startsWith("edge.role.writer") || ep.role.id.startsWith("edge.role.reader"));
+    const to = edge.endpoints.find((ep) => ep.role.id.startsWith("edge.role.to") || ep.role.id.startsWith("edge.role.target") || ep.role.id.startsWith("edge.role.owned") || ep.role.id.startsWith("edge.role.field"));
     return (
       (from?.target && typeof from.target === "object" && "id" in from.target && from.target.id === fromId) &&
       (to?.target && typeof to.target === "object" && "id" in to.target && to.target.id === toId)
@@ -162,9 +163,9 @@ export const neighborhood = (
     const incoming = edgesTo(graph, currentId);
 
     for (const e of outgoing) {
-      if (!options?.kinds || options.kinds.includes(e.kind)) {
+      if (!options?.kinds || options.kinds.includes(e.kind.id)) {
         resultEdges.push(e);
-        const target = e.endpoints.find((ep) => ep.role !== "owner" && ep.role !== "source" && ep.role !== "from" && ep.role !== "writer" && ep.role !== "reader");
+        const target = e.endpoints.find((ep) => !ep.role.id.startsWith("edge.role.owner") && !ep.role.id.startsWith("edge.role.source") && !ep.role.id.startsWith("edge.role.from") && !ep.role.id.startsWith("edge.role.writer") && !ep.role.id.startsWith("edge.role.reader"));
         if (target?.target && typeof target.target === "object" && "id" in target.target) {
           const targetId = target.target.id;
           if (targetId) {
@@ -178,9 +179,9 @@ export const neighborhood = (
     }
 
     for (const e of incoming) {
-      if (!options?.kinds || options.kinds.includes(e.kind)) {
+      if (!options?.kinds || options.kinds.includes(e.kind.id)) {
         resultEdges.push(e);
-        const source = e.endpoints.find((ep) => ep.role === "owner" || ep.role === "source" || ep.role === "from" || ep.role === "writer" || ep.role === "reader");
+        const source = e.endpoints.find((ep) => ep.role.id.startsWith("edge.role.owner") || ep.role.id.startsWith("edge.role.source") || ep.role.id.startsWith("edge.role.from") || ep.role.id.startsWith("edge.role.writer") || ep.role.id.startsWith("edge.role.reader"));
         if (source?.target && typeof source.target === "object" && "id" in source.target) {
           const targetId = source.target.id;
           if (targetId) {
@@ -213,13 +214,13 @@ export const graphToJson = (graph: KernelGraph): object => ({
   typeCount: graph.types.size,
   nodes: Array.from(graph.nodes.values()).map((n) => ({
     id: n.id,
-    kind: n.kind,
+    kind: n.kind.id,
     name: n.name,
-    traits: n.traits,
+    traits: n.traits.map((t) => t.id),
   })),
   edges: Array.from(graph.edges.values()).map((e) => ({
     id: e.id,
-    kind: e.kind,
-    endpoints: e.endpoints.map((ep) => ({ role: ep.role, target: ep.target })),
+    kind: e.kind.id,
+    endpoints: e.endpoints.map((ep) => ({ role: ep.role.id, target: ep.target })),
   })),
 });
