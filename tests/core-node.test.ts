@@ -4,7 +4,7 @@ import { core, types } from "../src/index.ts";
 test("trait helpers detect present and missing traits", () => {
   const node: core.StaticNode<"demo.workflow"> = {
     kind: "demo.workflow",
-    id: core.workflowId("workflow.onboarding"),
+    id: core.workflowId({ name: "onboarding" }),
     name: "onboarding",
     traits: ["static", "named", "callable", "effectful", "plan"],
   };
@@ -19,7 +19,7 @@ test("callPlan records typed input and output metadata", () => {
   const output = types.boolean();
   const target = core.makeRef({
     kind: "FunctionRef",
-    id: core.functionId("function.canView"),
+    id: core.functionId({ name: "canView" }),
     owner: { kind: "Function", name: "canView" },
     name: "canView",
     value_type: "function",

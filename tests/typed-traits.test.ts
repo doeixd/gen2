@@ -15,6 +15,7 @@ import {
 import { defineNode, registerNode } from "../src/core/node-lowering.ts";
 import { registerTraitMetadata, getTraitMetadata } from "../src/core/context.ts";
 import { defineNodeKind, definePlugin } from "../src/core/plugin.ts";
+import { check } from "../src/lifecycle/lifecycle.ts";
 
 test("createTrait produces branded string refs", () => {
   const readable = createTrait("readable");
@@ -96,7 +97,7 @@ test("plugin can register custom trait and use it in defineNodeKind", () => {
   registerNode(ctx, node);
 
   // The node should pass checks without unknown-trait diagnostics
-  const diags = ctx.moduleCheckers.flatMap((checker) => checker(ctx));
+  const diags = check(ctx).diagnostics;
   expect(diags.some((d) => d.code === "trait:unknown")).toBe(false);
 });
 
@@ -119,7 +120,6 @@ test("checkNodes emits trait:unknown for unregistered custom traits", () => {
   const node = defineNode({ kind: "custom_node", name: "bad", traits: ["myPlugin:required"] });
   registerNode(ctx, node);
 
-  // Run module checkers
-  const diags = ctx.moduleCheckers.flatMap((checker) => checker(ctx));
+  const diags = check(ctx).diagnostics;
   expect(diags.some((d) => d.code === "trait:unknown")).toBe(true);
 });

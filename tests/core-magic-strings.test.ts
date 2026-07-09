@@ -1,4 +1,5 @@
 import { expect, test } from "vite-plus/test";
+import { DIAGNOSTIC_CODES } from "../src/kernel/index.ts";
 import { core, createGen } from "../src/index.ts";
 
 test("checkMagicStrings warns when an entity is authored without a stable ID", () => {
@@ -16,14 +17,54 @@ test("checkMagicStrings warns when an entity is authored without a stable ID", (
   expect(entityWarning?.suggestion).toMatch(/core\.entityId/);
 });
 
+test("stable ID diagnostics respect gen.config identity strictness", () => {
+  const off = createGen({ identity: { stableIds: "off" } });
+  off.gen.entity("Project", { id: off.gen.types.uuid() });
+  expect(core.checkMagicStrings(off.ctx).some((d) => d.code === "ref:missing-stable-id")).toBe(
+    false,
+  );
+
+  const required = createGen({ identity: { stableIds: "required" } });
+  required.gen.entity("Project", { id: required.gen.types.uuid() });
+  const missing = core
+    .checkMagicStrings(required.ctx)
+    .find((d) => d.code === "ref:missing-stable-id");
+  expect(missing?.severity).toBe("error");
+
+  required.gen.config({ identity: { stableIds: "warn" } });
+  const afterConfig = core
+    .checkMagicStrings(required.ctx)
+    .find((d) => d.code === "ref:missing-stable-id");
+  expect(afterConfig?.severity).toBe("warning");
+});
+
+test("stable ID diagnostics include the four standard identity codes", () => {
+  expect(DIAGNOSTIC_CODES.REF_MISSING_STABLE_ID).toBe("ref:missing-stable-id");
+  expect(DIAGNOSTIC_CODES.REF_RENAME_WITHOUT_STABLE_ID).toBe("ref:rename-without-stable-id");
+  expect(DIAGNOSTIC_CODES.REF_DUPLICATE_STABLE_ID).toBe("ref:duplicate-stable-id");
+  expect(DIAGNOSTIC_CODES.REF_UNSTABLE_NAME_DERIVED_ID).toBe("ref:unstable-name-derived-id");
+});
+
+test("checkMagicStrings reports duplicate stable IDs", () => {
+  const { ctx, gen } = createGen();
+  gen.entity("Project", { id: gen.types.uuid() }, { id: core.entityId("shared") });
+  gen.entity("Task", { id: gen.types.uuid() }, { id: core.entityId("shared") });
+
+  const duplicate = core.checkMagicStrings(ctx).find((d) => d.code === "ref:duplicate-stable-id");
+
+  expect(duplicate).toBeDefined();
+  expect(duplicate?.severity).toBe("warning");
+  expect(duplicate?.message).toContain("shared");
+});
+
 test("checkMagicStrings is silent when entities have stable IDs", () => {
   const { ctx, gen } = createGen();
   gen.entity(
     "Project",
     {
-      id: { type: gen.types.uuid(), id: core.fieldId("field.project.id") },
+      id: { type: gen.types.uuid(), id: core.fieldId({ entity: "Project", name: "id" }) },
     },
-    { id: core.entityId("entity.project") },
+    { id: core.entityId({ name: "Project" }) },
   );
 
   const findings = core.checkMagicStrings(ctx);
@@ -39,7 +80,7 @@ test("checkMagicStrings errors when a field has renamedFrom but no stable ID", (
       id: gen.types.uuid(),
       title: { type: gen.types.string(), renamedFrom: ["name"] },
     },
-    { id: core.entityId("entity.project") },
+    { id: core.entityId({ name: "Project" }) },
   );
 
   const findings = core.checkMagicStrings(ctx);

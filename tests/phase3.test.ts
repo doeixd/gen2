@@ -242,7 +242,6 @@ describe("Phase 3 Milestones", () => {
     expect(reaction.outbox).toBeDefined();
     expect(reaction.outbox?.outbox_table).toBe("reaction_outbox");
     expect(reaction.outbox?.max_retries).toBe(5);
-    ctx.reactions.push(reaction);
 
     const result = gen.lifecycle.check(ctx);
     const outboxMismatch = result.diagnostics.find(

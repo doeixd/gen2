@@ -4,7 +4,8 @@
  * restrictions.
  */
 import { expect, test } from "vite-plus/test";
-import { core, createGen, fn } from "../src/index.ts";
+import { core, createGen, fn, kernel, dialects } from "../src/index.ts";
+import { getRefsFromGraph } from "../src/core/refs.ts";
 
 test("emptyFunctionCatalog starts empty", () => {
   const cat = fn.emptyFunctionCatalog();
@@ -34,11 +35,46 @@ test("query functions can declare reactivity keys", () => {
   });
 });
 
+test("query and action functions expose composable graph fragments", () => {
+  const { gen } = createGen();
+  const User = gen.entity("User", { id: gen.types.uuid() });
+  const query = gen.func.query({
+    name: "getUser",
+    input_type: gen.types.uuid(),
+    returns: User,
+    body: gen.query.build({
+      source: { kind: "entity_source", entity: User },
+      result_type: gen.types.uuid(),
+    }),
+  });
+  const action = gen.func.action({
+    name: "updateUser",
+    input_type: gen.types.uuid(),
+    returns: User,
+    body: fn.buildActionUpdate(
+      User,
+      new Map([
+        [User.fields.id, gen.expr.literal(gen.types.uuid(), { kind: "string", string_value: "x" })],
+      ]),
+    ),
+  });
+
+  const graph = kernel.graph.pipe(query.fragment, action.fragment);
+
+  expect(kernel.nodesOfKindDef(graph, dialects.QUERY_NODE_KIND).map((node) => node.name)).toEqual([
+    "getUser",
+  ]);
+  expect(kernel.nodesOfKindDef(graph, dialects.ACTION_NODE_KIND).map((node) => node.name)).toEqual([
+    "updateUser",
+  ]);
+  expect(kernel.edgesOfKindDef(graph, dialects.ACTION_WRITES_FIELD_EDGE_KIND)).toHaveLength(1);
+});
+
 test("function constructors attach refs, stable IDs, traits, and call plans", () => {
   const { ctx, gen } = createGen();
   const User = gen.entity("User", { id: gen.types.uuid() });
   const query = gen.func.query({
-    id: core.functionId("function.getUser"),
+    id: core.functionId({ name: "getUser" }),
     name: "getUser",
     input_type: gen.types.uuid(),
     returns: User,
@@ -54,7 +90,7 @@ test("function constructors attach refs, stable IDs, traits, and call plans", ()
   expect(query.traits).toContain("callable");
   expect(query.traits).toContain("readable");
   expect(query.callPlan?.target).toBe(query.ref);
-  expect(ctx.refs).toContain(query.ref);
+  expect(getRefsFromGraph(ctx.graph)).toContain(query.ref);
 });
 
 test("legacy query invalidations lower to key patterns", () => {

@@ -6,24 +6,27 @@ test("rename via renamedFrom is reported as a rename, not drop+add", () => {
   const before = beforeGen.gen.entity(
     "Project",
     {
-      id: { type: beforeGen.gen.types.uuid(), id: core.fieldId("field.project.id") },
-      name: { type: beforeGen.gen.types.string(), id: core.fieldId("field.project.name") },
+      id: { type: beforeGen.gen.types.uuid(), id: core.fieldId({ entity: "Project", name: "id" }) },
+      name: {
+        type: beforeGen.gen.types.string(),
+        id: core.fieldId({ entity: "Project", name: "name" }),
+      },
     },
-    { id: core.entityId("entity.project") },
+    { id: core.entityId({ name: "Project" }) },
   );
 
   const afterGen = createGen();
   const after = afterGen.gen.entity(
     "Project",
     {
-      id: { type: afterGen.gen.types.uuid(), id: core.fieldId("field.project.id") },
+      id: { type: afterGen.gen.types.uuid(), id: core.fieldId({ entity: "Project", name: "id" }) },
       title: {
         type: afterGen.gen.types.string(),
-        id: core.fieldId("field.project.name"),
+        id: core.fieldId({ entity: "Project", name: "name" }),
         renamedFrom: ["name"],
       },
     },
-    { id: core.entityId("entity.project") },
+    { id: core.entityId({ name: "Project" }) },
   );
 
   const lineage = core.deriveMigrationLineage([before], [after]);
@@ -47,20 +50,26 @@ test("dropping and adding unrelated fields shows up as drop+add", () => {
   const before = beforeGen.gen.entity(
     "Project",
     {
-      id: { type: beforeGen.gen.types.uuid(), id: core.fieldId("field.project.id") },
-      legacy: { type: beforeGen.gen.types.string(), id: core.fieldId("field.project.legacy") },
+      id: { type: beforeGen.gen.types.uuid(), id: core.fieldId({ entity: "Project", name: "id" }) },
+      legacy: {
+        type: beforeGen.gen.types.string(),
+        id: core.fieldId({ entity: "Project", name: "legacy" }),
+      },
     },
-    { id: core.entityId("entity.project") },
+    { id: core.entityId({ name: "Project" }) },
   );
 
   const afterGen = createGen();
   const after = afterGen.gen.entity(
     "Project",
     {
-      id: { type: afterGen.gen.types.uuid(), id: core.fieldId("field.project.id") },
-      summary: { type: afterGen.gen.types.string(), id: core.fieldId("field.project.summary") },
+      id: { type: afterGen.gen.types.uuid(), id: core.fieldId({ entity: "Project", name: "id" }) },
+      summary: {
+        type: afterGen.gen.types.string(),
+        id: core.fieldId({ entity: "Project", name: "summary" }),
+      },
     },
-    { id: core.entityId("entity.project") },
+    { id: core.entityId({ name: "Project" }) },
   );
 
   const lineage = core.deriveMigrationLineage([before], [after]);
@@ -75,15 +84,19 @@ test("entity rename via shared stable ID is preserved", () => {
   const beforeGen = createGen();
   const before = beforeGen.gen.entity(
     "OldProject",
-    { id: { type: beforeGen.gen.types.uuid(), id: core.fieldId("field.project.id") } },
-    { id: core.entityId("entity.project") },
+    {
+      id: { type: beforeGen.gen.types.uuid(), id: core.fieldId({ entity: "Project", name: "id" }) },
+    },
+    { id: core.entityId({ name: "Project" }) },
   );
 
   const afterGen = createGen();
   const after = afterGen.gen.entity(
     "Project",
-    { id: { type: afterGen.gen.types.uuid(), id: core.fieldId("field.project.id") } },
-    { id: core.entityId("entity.project") },
+    {
+      id: { type: afterGen.gen.types.uuid(), id: core.fieldId({ entity: "Project", name: "id" }) },
+    },
+    { id: core.entityId({ name: "Project" }) },
   );
 
   const lineage = core.deriveMigrationLineage([before], [after]);
@@ -99,8 +112,8 @@ test("reactive graph node IDs are stable across entity rename when stable IDs ar
     const { ctx, gen } = createGen();
     const Project = gen.entity(
       entityName,
-      { id: { type: gen.types.uuid(), id: core.fieldId("field.project.id") } },
-      { id: core.entityId("entity.project") },
+      { id: { type: gen.types.uuid(), id: core.fieldId({ entity: "Project", name: "id" }) } },
+      { id: core.entityId({ name: "Project" }) },
     );
     const family = gen.key.entity(Project);
     return { ctx, family };

@@ -58,7 +58,7 @@ describe("query builder type changes", () => {
     const builder = gen.query.from(User);
 
     const selected = builder.select([User.fields.id]);
-    expectTypeOf(selected).toMatchTypeOf<QueryBuilder<unknown, string[]>>();
+    expectTypeOf(selected).toMatchTypeOf<QueryBuilder<typeof User, readonly string[]>>();
   });
 });
 

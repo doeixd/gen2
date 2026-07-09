@@ -4,16 +4,23 @@
 
 import { test, expect } from "vite-plus/test";
 import { createGen } from "../src/index.ts";
-import { defineNode, registerNode, lowerNode, checkNodes } from "../src/core/node-lowering.ts";
+import {
+  defineNode,
+  registerNode,
+  lowerNode,
+  checkNodes,
+  getStaticNodesFromGraph,
+} from "../src/core/node-lowering.ts";
 import { defineNodeKind, defineLowering, definePlugin } from "../src/core/plugin.ts";
 import type { StaticNode } from "../src/core/node.ts";
 
-test("registerNode adds node to ctx.nodes", () => {
+test("registerNode adds node to graph", () => {
   const { ctx } = createGen();
   const node = defineNode({ kind: "test", name: "myNode", traits: [] });
   registerNode(ctx, node);
-  expect(ctx.nodes).toHaveLength(1);
-  expect(ctx.nodes[0].name).toBe("myNode");
+  const staticNodes = getStaticNodesFromGraph(ctx.graph);
+  expect(staticNodes).toHaveLength(1);
+  expect(staticNodes[0].name).toBe("myNode");
 });
 
 test("registerNode detects duplicate IDs", () => {
@@ -22,7 +29,7 @@ test("registerNode detects duplicate IDs", () => {
   const node2 = defineNode({ kind: "test", id: "n1", name: "second", traits: [] });
   registerNode(ctx, node1);
   registerNode(ctx, node2);
-  expect(ctx.nodes).toHaveLength(1);
+  expect(getStaticNodesFromGraph(ctx.graph)).toHaveLength(1);
   expect(ctx.diagnostics.some((d) => d.code === "node:duplicate-id")).toBe(true);
 });
 

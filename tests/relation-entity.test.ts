@@ -3,7 +3,8 @@
  * refs, name collision detection with ordinary entities, and type inference helpers.
  */
 import { expect, test } from "vite-plus/test";
-import { core, createGen } from "../src/index.ts";
+import { core, createGen, dialects, kernel } from "../src/index.ts";
+import { getRefsFromGraph } from "../src/core/refs.ts";
 import type { InferRelationFrom, InferRelationTo } from "../src/relation/index.ts";
 
 test("relations have auto-populated refs", () => {
@@ -23,7 +24,7 @@ test("relations have auto-populated refs", () => {
   expect(rel.ref.kind).toBe("RelationRef");
   expect(rel.ref.owner.kind).toBe("Relation");
   expect(rel.ref.owner.name).toBe("user_org");
-  expect(ctx.refs).toContain(rel.ref);
+  expect(getRefsFromGraph(ctx.graph)).toContain(rel.ref);
 });
 
 test("relations preserve explicit stable IDs", () => {
@@ -32,7 +33,7 @@ test("relations preserve explicit stable IDs", () => {
   const Org = gen.entity("Org", { id: gen.types.uuid() });
 
   const rel = gen.relation({
-    id: core.relationId("relation.user.org"),
+    id: core.relationId({ from: "User", to: "Org" }),
     name: "user_org",
     kind: "many_to_one",
     from_entity: User,
@@ -44,7 +45,26 @@ test("relations preserve explicit stable IDs", () => {
   expect(rel.id).toBe("relation.user.org");
   expect(rel.ref.id).toBe(rel.id);
   expect(core.refIdentity(rel.ref)).toBe("relation.user.org");
-  expect(ctx.refs).toContain(rel.ref);
+  expect(getRefsFromGraph(ctx.graph)).toContain(rel.ref);
+});
+
+test("relations expose composable domain graph fragments", () => {
+  const { gen } = createGen();
+  const User = gen.entity("User", { id: gen.types.uuid(), org_id: gen.types.uuid() });
+  const Org = gen.entity("Org", { id: gen.types.uuid() });
+  const rel = gen.relation({
+    name: "user_org",
+    kind: "many_to_one",
+    from_entity: User,
+    to_entity: Org,
+    from_field: User.fields.org_id,
+    to_field: Org.fields.id,
+  });
+
+  const graph = kernel.graph.pipe(User.fragment, Org.fragment, rel.fragment);
+
+  expect(kernel.nodesOfKindDef(graph, dialects.ENTITY_NODE_KIND)).toHaveLength(2);
+  expect(kernel.edgesOfKindDef(graph, dialects.DOMAIN_RELATION_EDGE_KIND)).toHaveLength(1);
 });
 
 test("relation shorthand constructors register refs", () => {
@@ -53,12 +73,12 @@ test("relation shorthand constructors register refs", () => {
   const Org = gen.entity("Org", { id: gen.types.uuid() });
 
   const rel = gen.rel.manyToOne(User, Org, User.fields.org_id, Org.fields.id, {
-    id: core.relationId("relation.user.org.short"),
+    id: core.relationId({ from: "User", to: "Org", name: "short" }),
   });
 
   expect(rel.ref.id).toBe("relation.user.org.short");
   expect(ctx.relations).toContain(rel);
-  expect(ctx.refs).toContain(rel.ref);
+  expect(getRefsFromGraph(ctx.graph)).toContain(rel.ref);
 });
 
 test("defineRelationEntity creates a RelationEntity with ref", () => {
@@ -73,7 +93,7 @@ test("defineRelationEntity creates a RelationEntity with ref", () => {
       { name: "role", target_entity: Role, cardinality: "one" },
     ],
     [User.fields.id, Role.fields.id],
-    { id: core.relationId("relation.user_role") },
+    { id: core.namedRelationIdFor({ name: "user_role" }) },
   );
 
   expect(re.id).toBe("relation.user_role");
@@ -81,7 +101,7 @@ test("defineRelationEntity creates a RelationEntity with ref", () => {
   expect(re.roles).toHaveLength(2);
   expect(re.ref.kind).toBe("RelationRef");
   expect(ctx.relation_entities).toContain(re);
-  expect(ctx.refs).toContain(re.ref);
+  expect(getRefsFromGraph(ctx.graph)).toContain(re.ref);
 });
 
 test("checkRelationEntities detects name collision with ordinary entity", () => {

@@ -9,6 +9,7 @@
 
 import { describe, expect, test } from "vite-plus/test";
 import { createGen } from "../src/gen.ts";
+import { getQueryFunctionsFromGraph, getActionFunctionsFromGraph } from "../src/function/kernel.ts";
 import { defineEntity } from "../src/entity/index.ts";
 import { defineExprFunction } from "../src/function/index.ts";
 import {
@@ -364,8 +365,8 @@ describe("Editor validation (checkEditors)", () => {
     const diagnostics = checkEditors({
       editors: ctx.editors,
       entities: ctx.entities,
-      queries: ctx.query_functions,
-      actions: ctx.action_functions,
+      queries: getQueryFunctionsFromGraph(ctx.graph),
+      actions: getActionFunctionsFromGraph(ctx.graph),
       expr_functions: ctx.expr_functions,
       static_functions: ctx.static_functions,
     });
@@ -387,8 +388,8 @@ describe("Editor validation (checkEditors)", () => {
     const diagnostics = checkEditors({
       editors: ctx.editors,
       entities: ctx.entities,
-      queries: ctx.query_functions,
-      actions: ctx.action_functions,
+      queries: getQueryFunctionsFromGraph(ctx.graph),
+      actions: getActionFunctionsFromGraph(ctx.graph),
       expr_functions: ctx.expr_functions,
       static_functions: ctx.static_functions,
     });
@@ -432,8 +433,8 @@ describe("Editor validation (checkEditors)", () => {
     const diagnostics = checkEditors({
       editors: ctx.editors,
       entities: ctx.entities,
-      queries: ctx.query_functions,
-      actions: ctx.action_functions,
+      queries: getQueryFunctionsFromGraph(ctx.graph),
+      actions: getActionFunctionsFromGraph(ctx.graph),
       expr_functions: ctx.expr_functions,
       static_functions: ctx.static_functions,
     });
@@ -476,8 +477,8 @@ describe("Editor validation (checkEditors)", () => {
     const diagnostics = checkEditors({
       editors: ctx.editors,
       entities: ctx.entities,
-      queries: ctx.query_functions,
-      actions: ctx.action_functions,
+      queries: getQueryFunctionsFromGraph(ctx.graph),
+      actions: getActionFunctionsFromGraph(ctx.graph),
       expr_functions: ctx.expr_functions,
       static_functions: ctx.static_functions,
     });
@@ -510,8 +511,8 @@ describe("Editor validation (checkEditors)", () => {
     const diagnostics = checkEditors({
       editors: ctx.editors,
       entities: ctx.entities,
-      queries: ctx.query_functions,
-      actions: ctx.action_functions,
+      queries: getQueryFunctionsFromGraph(ctx.graph),
+      actions: getActionFunctionsFromGraph(ctx.graph),
       expr_functions: ctx.expr_functions,
       static_functions: ctx.static_functions,
     });
@@ -546,8 +547,8 @@ describe("Editor validation (checkEditors)", () => {
     const diagnostics = checkEditors({
       editors: ctx.editors,
       entities: ctx.entities,
-      queries: ctx.query_functions,
-      actions: ctx.action_functions,
+      queries: getQueryFunctionsFromGraph(ctx.graph),
+      actions: getActionFunctionsFromGraph(ctx.graph),
       expr_functions: ctx.expr_functions,
       static_functions: ctx.static_functions,
     });
@@ -587,8 +588,8 @@ describe("Editor validation (checkEditors)", () => {
     const diagnostics = checkEditors({
       editors: ctx.editors,
       entities: ctx.entities,
-      queries: ctx.query_functions,
-      actions: ctx.action_functions,
+      queries: getQueryFunctionsFromGraph(ctx.graph),
+      actions: getActionFunctionsFromGraph(ctx.graph),
       expr_functions: ctx.expr_functions,
       static_functions: ctx.static_functions,
     });
@@ -644,8 +645,8 @@ describe("Editor validation (checkEditors)", () => {
     const diagnostics = checkEditors({
       editors: ctx.editors,
       entities: ctx.entities,
-      queries: ctx.query_functions,
-      actions: ctx.action_functions,
+      queries: getQueryFunctionsFromGraph(ctx.graph),
+      actions: getActionFunctionsFromGraph(ctx.graph),
       expr_functions: ctx.expr_functions,
       static_functions: ctx.static_functions,
     });
@@ -682,8 +683,8 @@ describe("Editor validation (checkEditors)", () => {
     const diagnostics = checkEditors({
       editors: ctx.editors,
       entities: ctx.entities,
-      queries: ctx.query_functions,
-      actions: ctx.action_functions,
+      queries: getQueryFunctionsFromGraph(ctx.graph),
+      actions: getActionFunctionsFromGraph(ctx.graph),
       expr_functions: ctx.expr_functions,
       static_functions: ctx.static_functions,
     });
@@ -715,8 +716,8 @@ describe("Editor validation (checkEditors)", () => {
     const diagnostics = checkEditors({
       editors: ctx.editors,
       entities: ctx.entities,
-      queries: ctx.query_functions,
-      actions: ctx.action_functions,
+      queries: getQueryFunctionsFromGraph(ctx.graph),
+      actions: getActionFunctionsFromGraph(ctx.graph),
       expr_functions: ctx.expr_functions,
       static_functions: ctx.static_functions,
     });
@@ -751,8 +752,8 @@ describe("Editor validation (checkEditors)", () => {
     const diagnostics = checkEditors({
       editors: ctx.editors,
       entities: ctx.entities,
-      queries: ctx.query_functions,
-      actions: ctx.action_functions,
+      queries: getQueryFunctionsFromGraph(ctx.graph),
+      actions: getActionFunctionsFromGraph(ctx.graph),
       expr_functions: ctx.expr_functions,
       static_functions: ctx.static_functions,
     });
@@ -789,8 +790,8 @@ describe("Editor validation (checkEditors)", () => {
     const diagnostics = checkEditors({
       editors: ctx.editors,
       entities: ctx.entities,
-      queries: ctx.query_functions,
-      actions: ctx.action_functions,
+      queries: getQueryFunctionsFromGraph(ctx.graph),
+      actions: getActionFunctionsFromGraph(ctx.graph),
       expr_functions: ctx.expr_functions,
       static_functions: ctx.static_functions,
     });
@@ -823,8 +824,8 @@ describe("Editor validation (checkEditors)", () => {
     const diagnostics = checkEditors({
       editors: ctx.editors,
       entities: ctx.entities,
-      queries: ctx.query_functions,
-      actions: ctx.action_functions,
+      queries: getQueryFunctionsFromGraph(ctx.graph),
+      actions: getActionFunctionsFromGraph(ctx.graph),
       expr_functions: ctx.expr_functions,
       static_functions: ctx.static_functions,
     });
@@ -864,8 +865,8 @@ describe("Editor validation (checkEditors)", () => {
     const diagnostics = checkEditors({
       editors: ctx.editors,
       entities: ctx.entities,
-      queries: ctx.query_functions,
-      actions: ctx.action_functions,
+      queries: getQueryFunctionsFromGraph(ctx.graph),
+      actions: getActionFunctionsFromGraph(ctx.graph),
       expr_functions: ctx.expr_functions,
       static_functions: ctx.static_functions,
     });
@@ -946,8 +947,8 @@ describe("Editor validation (checkEditors)", () => {
     const diagnostics = checkEditors({
       editors: ctx.editors,
       entities: ctx.entities,
-      queries: ctx.query_functions,
-      actions: ctx.action_functions,
+      queries: getQueryFunctionsFromGraph(ctx.graph),
+      actions: getActionFunctionsFromGraph(ctx.graph),
       expr_functions: ctx.expr_functions,
       static_functions: ctx.static_functions,
     });
@@ -1165,8 +1166,8 @@ describe("autoEditor", () => {
     const diagnostics = checkEditors({
       editors: ctx.editors,
       entities: ctx.entities,
-      queries: ctx.query_functions,
-      actions: ctx.action_functions,
+      queries: getQueryFunctionsFromGraph(ctx.graph),
+      actions: getActionFunctionsFromGraph(ctx.graph),
       expr_functions: ctx.expr_functions,
       static_functions: ctx.static_functions,
     });

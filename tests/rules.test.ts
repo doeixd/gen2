@@ -1,7 +1,7 @@
 import { expect, test } from "vite-plus/test";
-import { createGen, rules, lifecycle } from "../src/index.ts";
+import { createGen, rules, lifecycle, kernel, dialects } from "../src/index.ts";
 
-test("gen.rule.define registers rules in context", () => {
+test("gen.rule.define registers rule node in graph", () => {
   const { gen, ctx } = createGen();
   const rule = gen.rule.define({
     name: "canEdit",
@@ -13,7 +13,30 @@ test("gen.rule.define registers rules in context", () => {
 
   expect(rule.kind).toBe("rule");
   expect(rule.name).toBe("canEdit");
-  expect(ctx.rules).toEqual([rule]);
+
+  const ruleNodes = [...ctx.graph.nodes.values()].filter((n) => n.kind.id === "node.kind.rule");
+  expect(ruleNodes).toHaveLength(1);
+  expect(ruleNodes[0]!.name).toBe("canEdit");
+});
+
+test("rule exposes a composable graph fragment with lowered expression facts", () => {
+  const { gen } = createGen();
+  const User = gen.entity("User", { id: gen.types.uuid() });
+  const rule = gen.rule.define({
+    name: "canReadUser",
+    when: gen.rule.eq(
+      gen.rule.field(User, User.fields.id, gen.types.uuid()),
+      gen.rule.literal("x", gen.types.uuid()),
+    ),
+  });
+
+  const graph = kernel.graph.pipe(rule.fragment);
+
+  expect(kernel.nodesOfKindDef(graph, dialects.RULE_NODE_KIND).map((node) => node.name)).toEqual([
+    "canReadUser",
+  ]);
+  expect(kernel.edgesOfKindDef(graph, dialects.RULE_HAS_BODY_EDGE_KIND)).toHaveLength(1);
+  expect(kernel.edgesOfKindDef(graph, dialects.RULE_READS_EDGE_KIND)).not.toHaveLength(0);
 });
 
 test("extractRuleDependencies finds variables", () => {
@@ -78,18 +101,17 @@ test("extractRuleDependencies finds relations in exists", () => {
 });
 
 test("checkRules flags duplicate names", () => {
-  const { gen, ctx } = createGen();
+  const { gen } = createGen();
   gen.rule.define({
     name: "dup",
     when: gen.rule.eq(gen.rule.literal(1, gen.types.int()), gen.rule.literal(1, gen.types.int())),
   });
-  gen.rule.define({
-    name: "dup",
-    when: gen.rule.eq(gen.rule.literal(2, gen.types.int()), gen.rule.literal(2, gen.types.int())),
-  });
-
-  const result = lifecycle.check(ctx);
-  expect(result.diagnostics.some((d) => d.code === "rules:duplicate-rule-name")).toBe(true);
+  expect(() =>
+    gen.rule.define({
+      name: "dup",
+      when: gen.rule.eq(gen.rule.literal(2, gen.types.int()), gen.rule.literal(2, gen.types.int())),
+    }),
+  ).toThrow('Rule name "dup" is already defined');
 });
 
 test("checkRules flags unknown variables", () => {
@@ -197,11 +219,13 @@ test("lifecycle.check integrates rule diagnostics", () => {
     name: "dup",
     when: gen.rule.eq(gen.rule.literal(1, gen.types.int()), gen.rule.literal(1, gen.types.int())),
   });
-  gen.rule.define({
-    name: "dup",
-    when: gen.rule.eq(gen.rule.literal(2, gen.types.int()), gen.rule.literal(2, gen.types.int())),
-  });
+  expect(() =>
+    gen.rule.define({
+      name: "dup",
+      when: gen.rule.eq(gen.rule.literal(2, gen.types.int()), gen.rule.literal(2, gen.types.int())),
+    }),
+  ).toThrow('Rule name "dup" is already defined');
 
   const result = lifecycle.check(ctx);
-  expect(result.diagnostics.some((d) => d.code === "rules:duplicate-rule-name")).toBe(true);
+  expect(result.diagnostics.some((d) => d.code === "rules:duplicate-rule-name")).toBe(false);
 });

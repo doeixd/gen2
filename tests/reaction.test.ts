@@ -5,6 +5,7 @@ import { defineRule, ruleEq, ruleLiteral, ruleVar } from "../src/rules/rules.ts"
 import { buildActionInsert, defineActionFunction } from "../src/function/function.ts";
 import { defineEntity } from "../src/entity/entity.ts";
 import { string as stringType, uuid as uuidType } from "../src/types/semantic.ts";
+import { getReactionsFromGraph } from "../src/reaction/kernel.ts";
 
 describe("reactions", () => {
   const User = defineEntity("User", {
@@ -56,7 +57,7 @@ describe("reactions", () => {
       delivery: { kind: "outbox" },
     });
 
-    expect(ctx.reactions).toContain(reaction);
+    expect(getReactionsFromGraph(ctx.graph)).toContain(reaction);
   });
 
   test("checkReactions emits duplicate-name diagnostic", () => {

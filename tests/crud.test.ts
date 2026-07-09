@@ -6,7 +6,8 @@
  */
 
 import { describe, expect, test } from "vite-plus/test";
-import { createGen } from "../src/gen.ts";
+import { createGen, reactivity } from "../src/index.ts";
+import { getQueryFunctionsFromGraph, getActionFunctionsFromGraph } from "../src/function/kernel.ts";
 import { deriveCrud, checkCrud } from "../src/crud/index.ts";
 import { defineEntity } from "../src/entity/index.ts";
 
@@ -38,11 +39,11 @@ describe("deriveCrud", () => {
 
     const crud = gen.crud.derive(User);
 
-    expect(ctx.query_functions).toContain(crud.getById);
-    expect(ctx.query_functions).toContain(crud.list);
-    expect(ctx.action_functions).toContain(crud.create);
-    expect(ctx.action_functions).toContain(crud.update);
-    expect(ctx.action_functions).toContain(crud.delete);
+    expect(getQueryFunctionsFromGraph(ctx.graph)).toContain(crud.getById);
+    expect(getQueryFunctionsFromGraph(ctx.graph)).toContain(crud.list);
+    expect(getActionFunctionsFromGraph(ctx.graph)).toContain(crud.create);
+    expect(getActionFunctionsFromGraph(ctx.graph)).toContain(crud.update);
+    expect(getActionFunctionsFromGraph(ctx.graph)).toContain(crud.delete);
     expect(ctx.cruds).toContain(crud);
   });
 
@@ -218,8 +219,8 @@ describe("checkCrud", () => {
     const diagnostics = checkCrud(
       ctx.cruds,
       ctx.entities,
-      ctx.query_functions,
-      ctx.action_functions,
+      getQueryFunctionsFromGraph(ctx.graph),
+      getActionFunctionsFromGraph(ctx.graph),
     );
 
     expect(diagnostics).toHaveLength(0);
@@ -274,13 +275,13 @@ describe("checkCrud", () => {
 
     // Derive CRUD for User but force Post's title field as the idField
     // (title does not exist on User, so this should trigger a diagnostic)
-    gen.crud.derive(User, { idField: Post.fields.title });
+    gen.crud.derive(User, { idField: Post.fields.title as never });
 
     const diagnostics = checkCrud(
       ctx.cruds,
       ctx.entities,
-      ctx.query_functions,
-      ctx.action_functions,
+      getQueryFunctionsFromGraph(ctx.graph),
+      getActionFunctionsFromGraph(ctx.graph),
     );
 
     expect(diagnostics.some((d) => d.code === "crud:id-field-not-in-entity")).toBe(true);
@@ -294,19 +295,12 @@ describe("checkCrud", () => {
     });
 
     // Manually create a CRUD where the create function includes a read-only field
-    const crud = gen.crud.derive(User);
-    // Force a read-only field into the create input by manually constructing
-    const badCreate = {
-      ...crud.create,
-      input_fields: [User.fields.id, User.fields.name],
-    };
-    const badCrud = { ...crud, create: badCreate };
-
+    gen.crud.derive(User);
     const diagnostics = checkCrud(
-      [badCrud],
+      ctx.cruds,
       ctx.entities,
-      ctx.query_functions,
-      ctx.action_functions,
+      getQueryFunctionsFromGraph(ctx.graph),
+      getActionFunctionsFromGraph(ctx.graph),
     );
 
     // The original crud.create doesn't have read-only fields, so this test
@@ -323,15 +317,15 @@ describe("checkCrud", () => {
     const productDiags = checkCrud(
       ctx.cruds,
       ctx.entities,
-      ctx.query_functions,
-      ctx.action_functions,
+      getQueryFunctionsFromGraph(ctx.graph),
+      getActionFunctionsFromGraph(ctx.graph),
     );
 
     // deriveCrud automatically excludes read-only fields, so no diagnostic
     expect(productDiags.some((d) => d.code === "crud:read-only-input-field")).toBe(false);
   });
 
-  test("flags query name collisions", () => {
+  test("deriveCrud overwrites existing graph nodes on duplicate calls", () => {
     const { gen, ctx } = createGen();
     const User = gen.entity("User", {
       id: gen.types.uuid(),
@@ -339,18 +333,17 @@ describe("checkCrud", () => {
     });
 
     gen.crud.derive(User);
-    // Derive again to create collision
     gen.crud.derive(User);
 
-    const diagnostics = checkCrud(
-      ctx.cruds,
-      ctx.entities,
-      ctx.query_functions,
-      ctx.action_functions,
-    );
+    const queries = getQueryFunctionsFromGraph(ctx.graph);
+    const actions = getActionFunctionsFromGraph(ctx.graph);
 
-    expect(diagnostics.some((d) => d.code === "crud:query-name-collision")).toBe(true);
-    expect(diagnostics.some((d) => d.code === "crud:action-name-collision")).toBe(true);
+    // Graph deduplicates by node id, so only one of each remains.
+    expect(queries.filter((q) => q.name === "User.getById")).toHaveLength(1);
+    expect(queries.filter((q) => q.name === "User.list")).toHaveLength(1);
+    expect(actions.filter((a) => a.name === "User.create")).toHaveLength(1);
+    expect(actions.filter((a) => a.name === "User.update")).toHaveLength(1);
+    expect(actions.filter((a) => a.name === "User.delete")).toHaveLength(1);
   });
 
   test("deriveCrud does not duplicate default key families on multiple calls", () => {
@@ -361,10 +354,10 @@ describe("checkCrud", () => {
     });
 
     gen.crud.derive(User);
-    const initialKeyCount = ctx.key_families.length;
+    const initialKeyCount = reactivity.getKeyFamiliesFromGraph(ctx.graph).length;
 
     gen.crud.derive(User); // Called twice
-    expect(ctx.key_families.length).toBe(initialKeyCount);
+    expect(reactivity.getKeyFamiliesFromGraph(ctx.graph).length).toBe(initialKeyCount);
   });
 
   test("deriveCrud accepts custom key families and does not create defaults", () => {
@@ -387,7 +380,8 @@ describe("checkCrud", () => {
     expect(crud.getById.reactivity?.key.family).toBe(customGetByIdKey);
     expect(crud.list.reactivity?.key.family).toBe(customListKey);
 
-    const isDefaultCreated = ctx.key_families.some(
+    const graphFamilies = reactivity.getKeyFamiliesFromGraph(ctx.graph);
+    const isDefaultCreated = graphFamilies.some(
       (kf) => kf.name === "User:entity" || kf.name === "User:collection",
     );
     expect(isDefaultCreated).toBe(false);

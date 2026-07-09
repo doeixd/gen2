@@ -1,5 +1,6 @@
 import { expect, test } from "vite-plus/test";
 import { core, createGen, lifecycle } from "../src/index.ts";
+import { getRefsFromGraph } from "../src/core/refs.ts";
 
 test("gen.services.define registers service refs in context", () => {
   const { gen, ctx } = createGen();
@@ -18,17 +19,17 @@ test("gen.services.define registers service refs in context", () => {
   expect(service.name).toBe("EmailService");
   expect(service.ref.kind).toBe("ServiceRef");
   expect(ctx.services).toEqual([service]);
-  expect(ctx.refs).toContain(service.ref);
+  expect(getRefsFromGraph(ctx.graph)).toContain(service.ref);
 });
 
 test("services preserve explicit stable IDs", () => {
   const { gen, ctx } = createGen();
   const service = gen.services.define({
-    id: core.serviceId("service.email"),
+    id: core.serviceId({ name: "Email" }),
     name: "EmailService",
     methods: [
       gen.services.method({
-        id: core.methodId("method.email.send"),
+        id: core.methodId({ service: "Email", name: "send" }),
         name: "send",
         input_type: gen.types.string(),
         output_type: gen.types.boolean(),
@@ -40,8 +41,9 @@ test("services preserve explicit stable IDs", () => {
   expect(service.ref.id).toBe("service.email");
   expect(service.methods[0]!.id).toBe("method.email.send");
   expect(service.methods[0]!.ref.id).toBe("method.email.send");
-  expect(ctx.refs).toContain(service.ref);
-  expect(ctx.refs).toContain(service.methods[0]!.ref);
+  const refs = getRefsFromGraph(ctx.graph);
+  expect(refs).toContain(service.ref);
+  expect(refs).toContain(service.methods[0]!.ref);
 });
 
 test("deriveModuleGraph bubbles query requirements through resources", () => {

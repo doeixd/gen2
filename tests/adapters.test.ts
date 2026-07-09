@@ -12,6 +12,7 @@ import {
   defineStandardSchemaAdapter,
   lifecycle,
 } from "../src/index.ts";
+import { POSTGRES_COLUMN_NODE_KIND, POSTGRES_TABLE_NODE_KIND } from "../src/dialects/postgres.ts";
 
 test("debug adapter emits a project snapshot artifact", () => {
   const { ctx, gen } = createGen({ plugins: [defineDebugAdapter()] });
@@ -91,6 +92,37 @@ test("relational adapter emits SQL DDL per store", () => {
   expect(sql!.content).toContain('CREATE TABLE "users"');
   expect(sql!.content).toContain('"id" uuid NOT NULL');
   expect(sql!.content).toContain('"email" text NOT NULL');
+  expect(
+    Array.from(ctx.graph.nodes.values()).some(
+      (node) => node.kind.id === POSTGRES_TABLE_NODE_KIND.id,
+    ),
+  ).toBe(true);
+  expect(
+    Array.from(ctx.graph.nodes.values()).some(
+      (node) => node.kind.id === POSTGRES_COLUMN_NODE_KIND.id,
+    ),
+  ).toBe(true);
+});
+
+test("relational adapter emit pass rejects missing postgres target IR", () => {
+  const { ctx, gen } = createGen({ plugins: [defineRelationalAdapter()] });
+  const store = gen.store({ name: "main", dialect: "postgres" });
+  gen.table(store, "users", [
+    {
+      name: "id",
+      physical_type: "uuid",
+      semantic_type: gen.types.uuid(),
+      nullable: false,
+    },
+  ]);
+  gen.adapters.relational.fromStore(store);
+
+  const result = ctx.passRegistry.run("emit.sql", ctx.graph, {
+    options: { genContext: ctx, target: ctx.targets[0] },
+  });
+
+  expect(result.success).toBe(false);
+  expect(result.diagnostics?.some((d) => d.code === "postgres:missing-legalized-ir")).toBe(true);
 });
 
 test("relational adapter escapes default values to prevent SQL injection", () => {

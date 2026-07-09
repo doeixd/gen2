@@ -120,7 +120,11 @@ test("checkRules flags field-not-on-variable for field from wrong entity", () =>
   gen.rule.define({
     name: "wrongField",
     when: gen.rule.eq(
-      gen.rule.field(User, Post.fields.user_id, gen.types.uuid()),
+      gen.rule.field(
+        User,
+        Post.fields.user_id as unknown as typeof User.fields.id,
+        gen.types.uuid(),
+      ),
       gen.rule.literal("x", gen.types.uuid()),
     ),
   });

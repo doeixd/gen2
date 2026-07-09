@@ -1,5 +1,6 @@
 import { expect, test } from "vite-plus/test";
 import { createGen, lifecycle } from "../src/index.ts";
+import { getReactionsFromGraph } from "../src/reaction/kernel.ts";
 
 test("reaction builder creates reaction with all fields", () => {
   const { gen, ctx } = createGen();
@@ -45,7 +46,7 @@ test("reaction builder creates reaction with all fields", () => {
   expect(reaction.mode).toBe("on_true");
   expect(reaction.idempotency).toEqual({ key: "auto" });
   expect(reaction.delivery).toEqual({ kind: "outbox" });
-  expect(ctx.reactions).toContain(reaction);
+  expect(getReactionsFromGraph(ctx.graph)).toContain(reaction);
 });
 
 test("reaction builder supports optional select", () => {
@@ -271,5 +272,5 @@ test("reaction builder preserves backward compatibility with object form", () =>
 
   expect(reaction.kind).toBe("reaction");
   expect(reaction.name).toBe("legacy");
-  expect(ctx.reactions).toContain(reaction);
+  expect(getReactionsFromGraph(ctx.graph)).toContain(reaction);
 });

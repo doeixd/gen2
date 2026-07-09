@@ -20,4 +20,22 @@ describe("stable ID branding", () => {
     expectTypeOf<StatusRef["kind"]>().toEqualTypeOf<"FieldRef">();
     expectTypeOf<StatusRef["id"]>().toMatchTypeOf<core.FieldId | undefined>();
   });
+
+  test("structured object overloads return correct brands", () => {
+    const entity = core.entityId({ name: "Project" });
+    const field = core.fieldId({ entity: "Project", name: "status" });
+    const relation = core.relationId({ from: "User", to: "Org" });
+
+    expectTypeOf(entity).toMatchTypeOf<core.EntityId>();
+    expectTypeOf(field).toMatchTypeOf<core.FieldId>();
+    expectTypeOf(relation).toMatchTypeOf<core.RelationId>();
+  });
+
+  test("_for helpers return correct brands from duck-typed objects", () => {
+    const entity = { name: "Project" };
+    const field = { name: "status", owning_entity: entity };
+
+    expectTypeOf(core.entityIdFor(entity)).toMatchTypeOf<core.EntityId>();
+    expectTypeOf(core.fieldIdFor(field)).toMatchTypeOf<core.FieldId>();
+  });
 });

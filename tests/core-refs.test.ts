@@ -66,3 +66,47 @@ test("refEquals falls back to legacy identity without stable IDs", () => {
   expect(core.refEquals(a, b)).toBe(true);
   expect(core.refEquals(a, c)).toBe(false);
 });
+
+test("structured entityId builds correct stable ID", () => {
+  expect(core.entityId({ name: "Project" })).toBe("entity.project");
+});
+
+test("structured fieldId builds correct stable ID", () => {
+  expect(core.fieldId({ entity: "Project", name: "status" })).toBe("field.project.status");
+});
+
+test("structured relationId builds correct stable IDs", () => {
+  expect(core.relationId({ from: "User", to: "Org" })).toBe("relation.user.org");
+  expect(core.relationId({ from: "User", to: "Org", name: "short" })).toBe(
+    "relation.user.org.short",
+  );
+  expect(core.relationId({ name: "user_role" })).toBe("relation.user_role");
+});
+
+test("entityIdFor derives ID from object name", () => {
+  const entity = { name: "Project" };
+  expect(core.entityIdFor(entity)).toBe("entity.project");
+});
+
+test("fieldIdFor derives ID from field and owning entity", () => {
+  const field = { name: "status", owning_entity: { name: "Project" } };
+  expect(core.fieldIdFor(field)).toBe("field.project.status");
+});
+
+test("relationIdFor derives ID from relation endpoints", () => {
+  const relation = {
+    name: "user_org",
+    from_entity: { name: "User" },
+    to_entity: { name: "Org" },
+  };
+  expect(core.relationIdFor(relation)).toBe("relation.user.org.user_org");
+});
+
+test("namedRelationIdFor derives ID from name", () => {
+  expect(core.namedRelationIdFor({ name: "user_role" })).toBe("relation.user_role");
+});
+
+test("methodId supports optional service prefix", () => {
+  expect(core.methodId({ service: "Email", name: "send" })).toBe("method.email.send");
+  expect(core.methodId({ name: "send" })).toBe("method.send");
+});

@@ -4,9 +4,16 @@
 
 import { test, expect } from "vite-plus/test";
 import { createGen } from "../src/index.ts";
-import { defineNode, lowerNode, checkNodes } from "../src/core/node-lowering.ts";
+import {
+  defineNode,
+  lowerNode,
+  checkNodes,
+  registerNode,
+  getStaticNodesFromGraph,
+} from "../src/core/node-lowering.ts";
 import { defineNodeKind, defineLowering, definePlugin } from "../src/core/plugin.ts";
 import type { StaticNode } from "../src/core/node.ts";
+import { nodeKinds } from "../src/kernel/index.ts";
 
 test("plugin can define workflow node kind and lower it to an action sequence", () => {
   const workflowPlugin = definePlugin({
@@ -52,7 +59,13 @@ test("plugin can define workflow node kind and lower it to an action sequence", 
     traits: ["callable", "effectful", "plan"],
   });
 
-  expect(ctx.nodes).toContain(workflow);
+  expect(
+    [...ctx.graph.nodes.values()].some(
+      (n) =>
+        n.kind === nodeKinds.STATIC &&
+        (n.metadata?.custom as { node?: unknown } | undefined)?.node === workflow,
+    ),
+  ).toBe(true);
 
   // Lower the workflow toward a target
   const lowered = lowerNode(ctx, workflow, "artifact");
@@ -119,7 +132,7 @@ test("plugin auto-registers trait metadata via contributions", () => {
 
   // Registering a node with the custom trait should not produce unknown-trait diagnostics
   const node = defineNode({ kind: "custom_node", name: "custom", traits: ["myPlugin:custom"] });
-  ctx.nodes.push(node);
+  registerNode(ctx, node);
   const diags = checkNodes(ctx);
   expect(diags.some((d) => d.code === "trait:unknown")).toBe(false);
 });
@@ -142,12 +155,12 @@ test("checkNodes emits unknown-trait when metadata is not registered", () => {
   const { ctx } = createGen({ plugins: [plugin] });
 
   const node = defineNode({ kind: "custom_node", name: "custom", traits: ["myPlugin:custom"] });
-  ctx.nodes.push(node);
+  registerNode(ctx, node);
   const diags = checkNodes(ctx);
   expect(diags.some((d) => d.code === "trait:unknown")).toBe(true);
 });
 
-test("gen.node.define auto-registers node in ctx.nodes", () => {
+test("gen.node.define auto-registers node in graph", () => {
   const { gen, ctx } = createGen();
 
   const node = gen.node.define({
@@ -156,7 +169,7 @@ test("gen.node.define auto-registers node in ctx.nodes", () => {
     traits: ["callable"],
   });
 
-  expect(ctx.nodes).toContain(node);
+  expect(getStaticNodesFromGraph(ctx.graph)).toContain(node);
   expect(node.name).toBe("myNode");
   expect(node.kind).toBe("test_node");
 });

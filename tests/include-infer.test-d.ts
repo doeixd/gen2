@@ -46,7 +46,7 @@ const Profile = defineEntity("Profile", {
 
 // --- Relation construction carries kind + entity types ---------------------
 
-const userPosts = oneToMany(User, Post, User.fields.id, Post.fields.user_id);
+const userPosts = oneToMany(User, Post, Post.fields.user_id, User.fields.id);
 const userProfile = oneToOne(User, Profile, User.fields.id, Profile.fields.user_id);
 const postAuthor = manyToOne(Post, User, Post.fields.user_id, User.fields.id);
 const postTags = manyToMany(Post, Tag, PostTag.fields.post_id, PostTag.fields.tag_id, PostTag);

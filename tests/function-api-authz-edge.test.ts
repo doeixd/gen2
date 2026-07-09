@@ -413,10 +413,15 @@ test("authz owner field from wrong entity produces diagnostic", () => {
   const { gen } = createGen();
   const User = gen.entity("User", { id: gen.types.uuid() });
   const Post = gen.entity("Post", { title: gen.types.string() });
-  const p = gen.authz.policy({
+  const p = gen.authz.dynamicPolicy({
     name: "bad",
     target_entity: User,
-    actions: [{ action_name: "read", condition: gen.authz.allowOwner(Post.fields.title) }],
+    actions: [
+      {
+        action_name: "read",
+        condition: { kind: "AllowOwner", owner_field: Post.fields.title },
+      },
+    ],
   });
   const diags = authz.checkAuthz({ policies: [p], translations: [], exposures: [] });
   expect(diags.some((d) => d.code === "authz:owner-field-wrong-entity")).toBe(true);

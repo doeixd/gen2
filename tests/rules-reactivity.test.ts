@@ -176,7 +176,7 @@ test("deriveRuleInvalidationPlans deduplicates key families", () => {
   expect(plans[0]!.invalidates).toHaveLength(1);
 });
 
-test("checkRuleReactivity emits mutation-writes-rule-dependency diagnostic", () => {
+test("checkRuleReactivity no longer emits duplicate mutation-writes-rule-dependency diagnostic", () => {
   const { ctx, gen } = createGen();
 
   const Project = gen.entity("Project", {
@@ -232,10 +232,12 @@ test("checkRuleReactivity emits mutation-writes-rule-dependency diagnostic", () 
   const diag = result.diagnostics.find(
     (d) => d.code === "rules-reactivity:mutation-writes-rule-dependency",
   );
-  expect(diag).toBeDefined();
-  expect(diag!.severity).toBe("info");
-  expect(diag!.message).toContain("updateProjectStatus");
-  expect(diag!.message).toContain("canViewProject");
+  expect(diag).toBeUndefined();
+
+  const plans = deriveRuleInvalidationPlans(ctx);
+  expect(plans).toHaveLength(1);
+  expect(plans[0]!.mutation.name).toBe("updateProjectStatus");
+  expect(plans[0]!.affectedRules.map((rule) => rule.name)).toContain("canViewProject");
 });
 
 test("checkRuleReactivity emits broad-invalidation-selected warning", () => {

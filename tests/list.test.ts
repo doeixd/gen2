@@ -7,6 +7,7 @@
 
 import { describe, expect, test } from "vite-plus/test";
 import { createGen } from "../src/gen.ts";
+import { getQueryFunctionsFromGraph, getActionFunctionsFromGraph } from "../src/function/kernel.ts";
 import { defineList, checkList, listColumn, cursorPagination } from "../src/list/index.ts";
 import { defineEntity } from "../src/entity/index.ts";
 
@@ -275,8 +276,8 @@ describe("checkList", () => {
     const diagnostics = checkList(
       ctx.lists,
       ctx.entities,
-      ctx.query_functions,
-      ctx.action_functions,
+      getQueryFunctionsFromGraph(ctx.graph),
+      getActionFunctionsFromGraph(ctx.graph),
     );
     expect(diagnostics).toHaveLength(0);
   });
@@ -341,8 +342,8 @@ describe("checkList", () => {
     const diagnostics = checkList(
       ctx.lists,
       ctx.entities,
-      ctx.query_functions,
-      ctx.action_functions,
+      getQueryFunctionsFromGraph(ctx.graph),
+      getActionFunctionsFromGraph(ctx.graph),
     );
     expect(diagnostics.some((d) => d.code === "list:column-field-not-in-entity")).toBe(true);
   });
@@ -364,8 +365,8 @@ describe("checkList", () => {
     const diagnostics = checkList(
       ctx.lists,
       ctx.entities,
-      ctx.query_functions,
-      ctx.action_functions,
+      getQueryFunctionsFromGraph(ctx.graph),
+      getActionFunctionsFromGraph(ctx.graph),
     );
     // string type CAN be sorted, so no warning
     expect(diagnostics.some((d) => d.code === "list:sortable-type-may-not-be-orderable")).toBe(
@@ -389,8 +390,8 @@ describe("checkList", () => {
     const diagnostics = checkList(
       ctx.lists,
       ctx.entities,
-      ctx.query_functions,
-      ctx.action_functions,
+      getQueryFunctionsFromGraph(ctx.graph),
+      getActionFunctionsFromGraph(ctx.graph),
     );
     expect(diagnostics.some((d) => d.code === "list:searchable-type-not-text")).toBe(true);
   });
@@ -413,8 +414,8 @@ describe("checkList", () => {
     const diagnostics = checkList(
       ctx.lists,
       ctx.entities,
-      ctx.query_functions,
-      ctx.action_functions,
+      getQueryFunctionsFromGraph(ctx.graph),
+      getActionFunctionsFromGraph(ctx.graph),
     );
     expect(diagnostics.some((d) => d.code === "list:default-sort-not-in-columns")).toBe(true);
   });
@@ -440,8 +441,8 @@ describe("checkList", () => {
     const diagnostics = checkList(
       ctx.lists,
       ctx.entities,
-      ctx.query_functions,
-      ctx.action_functions,
+      getQueryFunctionsFromGraph(ctx.graph),
+      getActionFunctionsFromGraph(ctx.graph),
     );
     expect(diagnostics.some((d) => d.code === "list:cursor-field-not-in-entity")).toBe(true);
   });

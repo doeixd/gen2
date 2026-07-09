@@ -3,7 +3,7 @@
  * cross-store relation policies, getter mismatches, and safe exposure checks.
  */
 import { expect, test } from "vite-plus/test";
-import { createGen, authz } from "../src/index.ts";
+import { createGen, authz, dialects, kernel } from "../src/index.ts";
 
 test("definePolicy wires rules back to the policy", () => {
   const { gen } = createGen();
@@ -16,14 +16,36 @@ test("definePolicy wires rules back to the policy", () => {
   expect(p.actions[0]!.policy).toBe(p);
 });
 
+test("policy exposes a composable auth graph fragment", () => {
+  const { gen } = createGen();
+  const User = gen.entity("User", { id: gen.types.uuid() });
+  const p = gen.authz.policy({
+    name: "userPolicy",
+    target_entity: User,
+    actions: [{ action_name: "read", condition: gen.authz.allowAuthenticated() }],
+  });
+
+  const graph = kernel.graph.pipe(p.fragment);
+
+  expect(kernel.nodesOfKindDef(graph, dialects.POLICY_NODE_KIND).map((node) => node.name)).toEqual([
+    "userPolicy",
+  ]);
+  expect(kernel.edgesOfKindDef(graph, dialects.POLICY_TARGETS_ENTITY_EDGE_KIND)).toHaveLength(1);
+});
+
 test("checkAuthz flags owner field from wrong entity", () => {
   const { gen } = createGen();
   const User = gen.entity("User", { id: gen.types.uuid() });
   const Post = gen.entity("Post", { title: gen.types.string() });
-  const p = gen.authz.policy({
+  const p = gen.authz.dynamicPolicy({
     name: "bad",
     target_entity: User,
-    actions: [{ action_name: "read", condition: gen.authz.allowOwner(Post.fields.title) }],
+    actions: [
+      {
+        action_name: "read",
+        condition: { kind: "AllowOwner", owner_field: Post.fields.title },
+      },
+    ],
   });
   const diags = authz.checkAuthz({ policies: [p], translations: [], exposures: [] });
   expect(diags.some((d) => d.code === "authz:owner-field-wrong-entity")).toBe(true);

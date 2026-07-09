@@ -4,6 +4,7 @@
  */
 import { expect, test } from "vite-plus/test";
 import { createGen } from "../src/index.ts";
+import { getActionFunctionsFromGraph } from "../src/function/kernel.ts";
 
 test("action builder DSL builds an insert ActionExpr", () => {
   const { gen } = createGen();
@@ -142,5 +143,5 @@ test("action functions accept ActionExpr bodies built with DSL", () => {
 
   expect(action.name).toBe("createUser");
   expect(action.body.kind.kind).toBe("insert");
-  expect(ctx.action_functions).toContain(action);
+  expect(getActionFunctionsFromGraph(ctx.graph)).toContain(action);
 });

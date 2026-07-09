@@ -12,6 +12,9 @@ import {
   db,
   definePlugin,
 } from "../src/index.ts";
+import { getRefsFromGraph } from "../src/core/refs.ts";
+import { getContractsFromGraph, getActorsFromGraph } from "../src/core/contract-kernel.ts";
+import { getReducersFromGraph, getSubscriptionsFromGraph } from "../src/events/kernel.ts";
 
 declare module "../src/index.ts" {
   interface UiBackendRegistry {
@@ -30,7 +33,7 @@ test("createGen produces an idle context with no plugins", () => {
   expect(ctx.status).toBe("idle");
   expect(ctx.plugins.length).toBe(0);
   expect(ctx.entities.length).toBe(0);
-  expect(ctx.refs.length).toBe(0);
+  expect(getRefsFromGraph(ctx.graph).length).toBe(0);
   expect(typeof gen.entity).toBe("function");
 });
 
@@ -48,7 +51,10 @@ test("context-bound gen constructors register created objects", () => {
   });
 
   expect(ctx.entities).toContain(User);
-  expect(ctx.refs).toEqual([User.ref, User.fields.id.ref, User.fields.email.ref]);
+  const refs = getRefsFromGraph(ctx.graph);
+  expect(refs).toContain(User.ref);
+  expect(refs).toContain(User.fields.id.ref);
+  expect(refs).toContain(User.fields.email.ref);
   expect(ctx.stores).toContain(store);
   expect(ctx.runtimes).toContain(runtime);
   expect(ctx.queries).toContain(query);
@@ -84,8 +90,8 @@ test("serializer, contract, actor, config entry, and default instance register i
   );
 
   expect(ctx.serializers).toContain(serializer);
-  expect(ctx.contracts).toContain(contract);
-  expect(ctx.actors).toContain(actor);
+  expect(getContractsFromGraph(ctx.graph)).toContain(contract);
+  expect(getActorsFromGraph(ctx.graph)).toContain(actor);
   expect(ctx.config.entries).toContain(entry);
   expect(ctx.defaults).toContain(defaults);
 });
@@ -152,7 +158,7 @@ test("graph emits eager diagnostic for relations whose entities are missing from
     kind: "many_to_one",
     from_entity: Post,
     to_entity: User,
-    from_field: Post.fields.authorId,
+    from_field: Post.fields.authorId as any,
     to_field: User.fields.id,
   });
 
@@ -211,7 +217,7 @@ test("relation emits eager diagnostics for wrong field ownership and type mismat
     kind: "many_to_one",
     from_entity: User,
     to_entity: Post,
-    from_field: Post.fields.authorId,
+    from_field: Post.fields.authorId as never,
     to_field: Post.fields.title,
   });
 
@@ -650,8 +656,8 @@ test("event reducer and subscription register into context", () => {
     gen.types.string(),
   );
 
-  expect(ctx.reducers).toContain(reducer);
-  expect(ctx.subscriptions).toContain(subscription);
+  expect(getReducersFromGraph(ctx.graph)).toContain(reducer);
+  expect(getSubscriptionsFromGraph(ctx.graph)).toContain(subscription);
 });
 
 test("relation helper family creates typed relations", () => {

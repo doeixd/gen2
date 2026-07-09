@@ -1,6 +1,6 @@
 import { expect, test } from "vite-plus/test";
 import { core, createGen, reactivity } from "../src/index.ts";
-import { entityId } from "../src/core/refs.ts";
+import { entityId, getRefsFromGraph } from "../src/core/refs.ts";
 
 test("key families produce inspectable static records", () => {
   const UserKey = reactivity.defineKeyFamily<{ readonly id: string }>("User");
@@ -14,7 +14,7 @@ test("key families produce inspectable static records", () => {
 
 test("key families preserve explicit stable IDs", () => {
   const UserKey = reactivity.defineKeyFamily<{ readonly id: string }>("User", {
-    id: core.keyFamilyId("key.user.detail"),
+    id: core.keyFamilyId({ name: "user.detail" }),
   });
 
   expect(UserKey.id).toBe("key.user.detail");
@@ -22,7 +22,7 @@ test("key families preserve explicit stable IDs", () => {
   expect(core.refIdentity(UserKey.ref)).toBe("key.user.detail");
 });
 
-test("gen.key registers key families in context", () => {
+test("gen.key registers key families in graph", () => {
   const { gen, ctx } = createGen();
   const User = gen.entity("User", { id: gen.types.uuid() });
 
@@ -30,10 +30,12 @@ test("gen.key registers key families in context", () => {
   const entity = gen.key.entity(User);
   const collection = gen.key.collection(User);
 
-  expect(ctx.key_families).toEqual([custom, entity, collection]);
-  expect(ctx.refs).toContain(custom.ref);
-  expect(ctx.refs).toContain(entity.ref);
-  expect(ctx.refs).toContain(collection.ref);
+  const graphFamilies = reactivity.getKeyFamiliesFromGraph(ctx.graph);
+  expect(graphFamilies).toEqual([custom, entity, collection]);
+  const refs = getRefsFromGraph(ctx.graph);
+  expect(refs).toContain(custom.ref);
+  expect(refs).toContain(entity.ref);
+  expect(refs).toContain(collection.ref);
 });
 
 test("generic-only key family defaults hierarchy to custom", () => {

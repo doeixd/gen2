@@ -3,7 +3,8 @@
  * read-only field constraints, and field ownership validation.
  */
 import { expect, test } from "vite-plus/test";
-import { core, createGen, entity } from "../src/index.ts";
+import { core, createGen, entity, dialects, kernel } from "../src/index.ts";
+import { getRefsFromGraph } from "../src/core/refs.ts";
 
 test("gen.entity creates fields with FieldRefs", () => {
   const { gen } = createGen();
@@ -25,15 +26,15 @@ test("gen.entity preserves explicit stable entity and field IDs", () => {
   const Project = gen.entity(
     "Project",
     {
-      id: { type: gen.types.uuid(), id: core.fieldId("field.project.id") },
+      id: { type: gen.types.uuid(), id: core.fieldId({ entity: "Project", name: "id" }) },
       status: {
         type: gen.types.string(),
-        id: core.fieldId("field.project.status"),
+        id: core.fieldId({ entity: "Project", name: "status" }),
         renamedFrom: ["state"],
         external_name: "project_status",
       },
     },
-    { id: core.entityId("entity.project") },
+    { id: core.entityId({ name: "Project" }) },
   );
 
   expect(Project.id).toBe("entity.project");
@@ -42,8 +43,29 @@ test("gen.entity preserves explicit stable entity and field IDs", () => {
   expect(Project.fields.status.ref.id).toBe(Project.fields.status.id);
   expect(Project.fields.status.renamed_from).toEqual(["state"]);
   expect(Project.fields.status.external_name).toBe("project_status");
-  expect(ctx.refs).toContain(Project.ref);
-  expect(ctx.refs).toContain(Project.fields.status.ref);
+  const refs = getRefsFromGraph(ctx.graph);
+  expect(refs).toContain(Project.ref);
+  expect(refs).toContain(Project.fields.status.ref);
+});
+
+test("entity exposes a composable domain graph fragment", () => {
+  const { gen } = createGen();
+  const User = gen.entity("User", {
+    id: gen.types.uuid(),
+    email: gen.types.email(),
+  });
+
+  const graph = kernel.graph.pipe(User.fragment);
+
+  expect(kernel.nodesOfKindDef(graph, dialects.ENTITY_NODE_KIND).map((node) => node.name)).toEqual([
+    "User",
+  ]);
+  expect(kernel.nodesOfKindDef(graph, dialects.FIELD_NODE_KIND).map((node) => node.name)).toEqual([
+    "id",
+    "email",
+  ]);
+  expect(kernel.edgesOfKindDef(graph, dialects.ENTITY_OWNS_FIELD_EDGE_KIND)).toHaveLength(2);
+  expect(kernel.edgesOfKindDef(graph, dialects.FIELD_HAS_TYPE_EDGE_KIND)).toHaveLength(2);
 });
 
 test("EntityNameUnique flags duplicate entity names", () => {

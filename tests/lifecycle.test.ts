@@ -66,6 +66,23 @@ test("check reports plugin invariant errors", () => {
   expect(result.diagnostics.some((d) => d.code === "core:duplicate-namespace")).toBe(true);
 });
 
+test("custom module checkers run through pass registry bridge", () => {
+  const { ctx } = createGen();
+  lifecycle.registerModuleChecker(ctx, () => [
+    {
+      severity: "error",
+      code: "custom:checker",
+      message: "custom checker ran",
+      refs: [],
+    },
+  ]);
+
+  const result = lifecycle.check(ctx);
+
+  expect(result.status).toBe("has_errors");
+  expect(result.diagnostics.some((d) => d.code === "custom:checker")).toBe(true);
+});
+
 test("generate skips codegen when check has errors", () => {
   const a = definePlugin({ id: "a", namespace: "shared" });
   const b = definePlugin({ id: "b", namespace: "shared" });

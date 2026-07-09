@@ -236,7 +236,7 @@ test("dependency-not-extractable diagnostic for exists", () => {
   expect(diag!.severity).toBe("info");
 });
 
-test("affected-set-unknown warning for unscoped mutation", () => {
+test("unscoped mutation no longer emits duplicate affected-set-unknown warning", () => {
   const { ctx, gen } = createGen();
 
   const Project = gen.entity("Project", {
@@ -273,40 +273,16 @@ test("affected-set-unknown warning for unscoped mutation", () => {
     ]),
   });
 
-  gen.rule.define({
-    name: "canViewProject",
-    vars: [],
-    when: ruleAnd(
-      ruleEq(
-        ruleField(Project, Project.fields.status, stringType()),
-        ruleLiteral("active", stringType()),
-      ),
-      ruleEq(ruleField(Project, Project.fields.name, stringType()), ruleLiteral("x", stringType())),
-    ),
-  });
-
-  gen.func.action({
-    name: "archiveAllProjects",
-    input_type: Project,
-    returns: Project,
-    body: buildActionUpdate(Project, [
-      [
-        Project.fields.status,
-        {
-          kind: "literal",
-          value: "archived",
-          semanticType: stringType(),
-        } as unknown as import("../src/expression/index.ts").Expr,
-      ],
-    ]),
-  });
-
   const result = check(ctx);
   const diags = result.diagnostics.filter(
     (d) => d.code === "rules-reactivity:affected-set-unknown" && d.severity === "warning",
   );
-  expect(diags.length).toBeGreaterThan(0);
-  expect(diags[0]!.message).toContain("archiveAllProjects");
+  expect(diags).toEqual([]);
+
+  const plans = deriveRuleInvalidationPlans(ctx);
+  expect(plans).toHaveLength(1);
+  expect(plans[0]!.mutation.name).toBe("archiveAllProjects");
+  expect(plans[0]!.affectedRules.map((rule) => rule.name)).toContain("canViewProject");
 });
 
 test("ivm-delta-unsupported diagnostic for negated rules", () => {

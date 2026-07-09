@@ -3,7 +3,7 @@ import { createGen } from "../src/index.ts";
 import { checkCronJobs } from "../src/orchestration/index.ts";
 import { checkWorkflows } from "../src/workflow/index.ts";
 import { checkBoundaryPlans } from "../src/boundary/index.ts";
-import { checkDerivedRuleViews } from "../src/rules/index.ts";
+import { checkDerivedRuleViewsOnGraph } from "../src/rules/index.ts";
 
 describe("Phase 4 provider planning", () => {
   test("gen.requirement and gen.provider define typed provider bindings", () => {
@@ -1699,17 +1699,36 @@ describe("Phase 4 constrained rule views", () => {
 
     expect(view.kind).toBe("derived_rule_view");
     expect(view.name).toBe("activeUsers");
-    expect(ctx.derived_rule_views).toContain(view);
+    expect(ctx.graph.nodes.has("node:ruleView:activeUsers")).toBe(true);
 
     const deps = gen.rule.viewDependencies(view);
     expect(deps.entities).toContain(User);
     expect(deps.fields).toContain(User.fields.name);
   });
 
-  test("derived view diagnostic for unbound output variable", () => {
-    const { gen } = createGen();
+  test("derived rule view nodes do not stamp _bridgeRuleView metadata", () => {
+    const { gen, ctx } = createGen();
 
-    const view = gen.rule.defineView({
+    gen.rule.defineView({
+      name: "activeUsers",
+      input_vars: [],
+      output_type: gen.types.object({ id: gen.types.uuid() }),
+      body: gen.rule.eq(
+        gen.rule.literal(true, gen.types.boolean()),
+        gen.rule.literal(true, gen.types.boolean()),
+      ),
+      projection: [],
+    });
+
+    const viewNode = ctx.graph.nodes.get("node:ruleView:activeUsers");
+    expect(viewNode?.metadata?.custom?._bridgeRuleView).toBeUndefined();
+    expect(checkDerivedRuleViewsOnGraph(ctx.graph)).toHaveLength(0);
+  });
+
+  test("derived view diagnostic for unbound output variable", () => {
+    const { gen, ctx } = createGen();
+
+    gen.rule.defineView({
       name: "badView",
       input_vars: [],
       output_type: gen.types.object({ id: gen.types.uuid() }),
@@ -1720,14 +1739,14 @@ describe("Phase 4 constrained rule views", () => {
       projection: [{ name: "missingVar", semanticType: gen.types.string() }],
     });
 
-    const diagnostics = checkDerivedRuleViews([view]);
+    const diagnostics = checkDerivedRuleViewsOnGraph(ctx.graph);
     expect(diagnostics.some((d) => d.code === "rules:view-unbound-output-variable")).toBe(true);
   });
 
   test("derived view diagnostic for unsafe negation", () => {
-    const { gen } = createGen();
+    const { gen, ctx } = createGen();
 
-    const view = gen.rule.defineView({
+    gen.rule.defineView({
       name: "negatedView",
       input_vars: [],
       output_type: gen.types.object({ id: gen.types.uuid() }),
@@ -1742,7 +1761,7 @@ describe("Phase 4 constrained rule views", () => {
       projection: [],
     });
 
-    const diagnostics = checkDerivedRuleViews([view]);
+    const diagnostics = checkDerivedRuleViewsOnGraph(ctx.graph);
     expect(diagnostics.some((d) => d.code === "rules:view-unsafe-negation")).toBe(true);
   });
 });

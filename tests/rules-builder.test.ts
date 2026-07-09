@@ -16,7 +16,10 @@ test("rule builder creates rule with name and when", () => {
 
   expect(rule.kind).toBe("rule");
   expect(rule.name).toBe("canEdit");
-  expect(ctx.rules).toEqual([rule]);
+
+  const ruleNodes = [...ctx.graph.nodes.values()].filter((n) => n.kind.id === "node.kind.rule");
+  expect(ruleNodes).toHaveLength(1);
+  expect(ruleNodes[0]!.name).toBe("canEdit");
 });
 
 test("rule builder provides typed var context", () => {
@@ -81,16 +84,18 @@ test("rule builder integrates with lifecycle checks", () => {
         gen.rule.eq(gen.rule.literal(1, gen.types.int()), gen.rule.literal(1, gen.types.int())),
       ),
   );
-  gen.rule.define((r) =>
-    r
-      .name("dup")
-      .when(() =>
-        gen.rule.eq(gen.rule.literal(2, gen.types.int()), gen.rule.literal(2, gen.types.int())),
-      ),
-  );
+  expect(() =>
+    gen.rule.define((r) =>
+      r
+        .name("dup")
+        .when(() =>
+          gen.rule.eq(gen.rule.literal(2, gen.types.int()), gen.rule.literal(2, gen.types.int())),
+        ),
+    ),
+  ).toThrow('Rule name "dup" is already defined');
 
   const result = lifecycle.check(ctx);
-  expect(result.diagnostics.some((d) => d.code === "rules:duplicate-rule-name")).toBe(true);
+  expect(result.diagnostics.some((d) => d.code === "rules:duplicate-rule-name")).toBe(false);
 });
 
 test("rule builder flags unknown variables through lifecycle", () => {
@@ -161,5 +166,8 @@ test("rule builder preserves backward compatibility with object form", () => {
 
   expect(rule.kind).toBe("rule");
   expect(rule.name).toBe("legacy");
-  expect(ctx.rules).toEqual([rule]);
+
+  const ruleNodes = [...ctx.graph.nodes.values()].filter((n) => n.kind.id === "node.kind.rule");
+  expect(ruleNodes).toHaveLength(1);
+  expect(ruleNodes[0]!.name).toBe("legacy");
 });
