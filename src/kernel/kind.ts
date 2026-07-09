@@ -10,6 +10,7 @@ export const nodeKinds = {
   ENTITY: { id: "node.kind.entity", label: "Entity" },
   FIELD: { id: "node.kind.field", label: "Field" },
   RULE: { id: "node.kind.rule", label: "Rule" },
+  RULE_VIEW: { id: "node.kind.ruleView", label: "Rule view" },
   QUERY: { id: "node.kind.query", label: "Query" },
   ACTION: { id: "node.kind.action", label: "Action" },
   VIEW: { id: "node.kind.view", label: "View" },
@@ -22,7 +23,19 @@ export const nodeKinds = {
   DISPATCH: { id: "node.kind.dispatch", label: "Dispatch" },
   RESOURCE: { id: "node.kind.resource", label: "Resource" },
   KEY: { id: "node.kind.key", label: "Key" },
+  KEY_FAMILY: { id: "node.kind.keyFamily", label: "Key family" },
+  RELATION_ENTITY: { id: "node.kind.relationEntity", label: "Relation entity" },
+  EVENT: { id: "node.kind.event", label: "Event" },
+  REDUCER: { id: "node.kind.reducer", label: "Reducer" },
+  SUBSCRIPTION: { id: "node.kind.subscription", label: "Subscription" },
+  REACTION: { id: "node.kind.reaction", label: "Reaction" },
   STATIC: { id: "node.kind.static", label: "Static" },
+  EXPR_FUNCTION: { id: "node.kind.exprFunction", label: "Expr function" },
+  PREDICATE_FUNCTION: { id: "node.kind.predicateFunction", label: "Predicate function" },
+  PATCH_FUNCTION: { id: "node.kind.patchFunction", label: "Patch function" },
+  PLAN_FUNCTION: { id: "node.kind.planFunction", label: "Plan function" },
+  OPERATION_DEF: { id: "node.kind.operationDef", label: "Operation definition" },
+  VAR_DECL: { id: "node.kind.varDecl", label: "Variable declaration" },
 } as const;
 
 /** Common edge kinds. */
@@ -30,6 +43,7 @@ export const edgeKinds = {
   OWNS: { id: "edge.kind.owns", label: "Owns" },
   CONTAINS: { id: "edge.kind.contains", label: "Contains" },
   REFERENCES: { id: "edge.kind.references", label: "References" },
+  HAS_TYPE: { id: "edge.kind.hasType", label: "Has-type" },
   READS: { id: "edge.kind.reads", label: "Reads" },
   WRITES: { id: "edge.kind.writes", label: "Writes" },
   DERIVES: { id: "edge.kind.derives", label: "Derives" },
@@ -51,6 +65,19 @@ export const edgeKinds = {
   GENERATED_FROM: { id: "edge.kind.generatedFrom", label: "Generated-from" },
   DEPENDS_ON: { id: "edge.kind.dependsOn", label: "Depends-on" },
   DOMAIN_RELATION: { id: "edge.kind.domain.relation", label: "Domain relation" },
+  TARGETS: { id: "edge.kind.targets", label: "Targets" },
+  HAS_BODY: { id: "edge.kind.hasBody", label: "Has-body" },
+  HAS_INPUT_TYPE: { id: "edge.kind.hasInputType", label: "Has-input-type" },
+  HAS_OUTPUT_TYPE: { id: "edge.kind.hasOutputType", label: "Has-output-type" },
+  ACTION_INVALIDATES: { id: "edge.kind.actionInvalidates", label: "Action-invalidates" },
+  ACTION_HAS_OPTIMISTIC_PATCH: {
+    id: "edge.kind.actionHasOptimisticPatch",
+    label: "Action-has-optimistic-patch",
+  },
+  EXPR_USES_OPERATION: { id: "edge.kind.exprUsesOperation", label: "Expr-uses-operation" },
+  EXPR_READS_FIELD: { id: "edge.kind.exprReadsField", label: "Expr-reads-field" },
+  EXPR_READS_CONTEXT: { id: "edge.kind.exprReadsContext", label: "Expr-reads-context" },
+  HAS_VAR: { id: "edge.kind.hasVar", label: "Has-variable" },
 } as const;
 
 /** Common edge endpoint roles. */
@@ -60,6 +87,7 @@ export const endpointRoles = {
   SOURCE: { id: "edge.role.source", label: "Source" },
   TARGET: { id: "edge.role.target", label: "Target" },
   READER: { id: "edge.role.reader", label: "Reader" },
+  READ: { id: "edge.role.read", label: "Read" },
   WRITER: { id: "edge.role.writer", label: "Writer" },
   GUARD: { id: "edge.role.guard", label: "Guard" },
   GUARDED: { id: "edge.role.guarded", label: "Guarded" },

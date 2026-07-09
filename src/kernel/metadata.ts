@@ -14,7 +14,7 @@ export interface SourceSpan {
 }
 
 /** Passive metadata attached to kernel objects. */
-export interface KernelMetadata {
+export interface KernelMetadata<Custom extends object = Record<string, unknown>> {
   readonly title?: string;
   readonly description?: string;
   readonly documentation?: string;
@@ -22,28 +22,31 @@ export interface KernelMetadata {
   readonly deprecated?: boolean | string;
   readonly tags?: readonly string[];
   readonly source?: SourceSpan;
-  readonly custom?: Record<string, unknown>;
+  readonly custom?: Custom;
 }
 
 /** Create metadata with optional fields. */
-export const createMetadata = (input?: Partial<KernelMetadata>): KernelMetadata | undefined =>
-  input ? {
-    title: input.title,
-    description: input.description,
-    documentation: input.documentation,
-    examples: input.examples,
-    deprecated: input.deprecated,
-    tags: input.tags,
-    source: input.source,
-    custom: input.custom,
-  }
-  : undefined;
+export const createMetadata = <Custom extends object = Record<string, unknown>>(
+  input?: Partial<KernelMetadata<Custom>>,
+): KernelMetadata<Custom> | undefined =>
+  input
+    ? {
+        title: input.title,
+        description: input.description,
+        documentation: input.documentation,
+        examples: input.examples,
+        deprecated: input.deprecated,
+        tags: input.tags,
+        source: input.source,
+        custom: input.custom,
+      }
+    : undefined;
 
 /** Merge two metadata objects, with later ones taking precedence. */
-export const mergeMetadata = (
-  base: KernelMetadata | undefined,
-  override: KernelMetadata | undefined,
-): KernelMetadata | undefined => {
+export const mergeMetadata = <Custom extends object = Record<string, unknown>>(
+  base: KernelMetadata<Custom> | undefined,
+  override: KernelMetadata<Custom> | undefined,
+): KernelMetadata<Custom> | undefined => {
   if (!base) return override;
   if (!override) return base;
   return {
@@ -54,6 +57,6 @@ export const mergeMetadata = (
     deprecated: override.deprecated ?? base.deprecated,
     tags: override.tags ?? base.tags,
     source: override.source ?? base.source,
-    custom: { ...base.custom, ...override.custom },
+    custom: { ...base.custom, ...override.custom } as Custom,
   };
 };
