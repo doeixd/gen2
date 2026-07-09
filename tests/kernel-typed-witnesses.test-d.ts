@@ -127,6 +127,7 @@ describe("kernel typed witnesses", () => {
           custom: {
             operation: "update",
             field_name: "status",
+            field_key: "status",
             entity_name: "Project",
             has_condition: false,
           },
@@ -170,6 +171,7 @@ describe("kernel typed witnesses", () => {
             // @ts-expect-error custom metadata is typed by ACTION_WRITES_FIELD_EDGE_KIND
             operation: "upsert",
             field_name: "status",
+            field_key: "status",
             entity_name: "Project",
             has_condition: false,
           },
@@ -229,6 +231,7 @@ describe("kernel typed witnesses", () => {
         custom: {
           operation: "update",
           field_name: "status",
+          field_key: "status",
           entity_name: "Project",
           has_condition: false,
         },
@@ -287,6 +290,7 @@ describe("kernel typed witnesses", () => {
           // @ts-expect-error metadata custom is inferred from the edge-kind witness
           operation: "upsert",
           field_name: "status",
+          field_key: "status",
           entity_name: "Project",
           has_condition: false,
         },

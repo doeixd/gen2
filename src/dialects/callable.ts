@@ -13,7 +13,6 @@
 import { defineDialect, dialectId } from "../kernel/dialect.ts";
 import { defineNodeKind, defineEdgeKind, defineEndpointRole } from "../kernel/ods.ts";
 import { defineTrait } from "../kernel/symbol.ts";
-import { FIELD_NODE_KIND } from "./domain/entity-field-relation.ts";
 
 // === Callable traits ========================================================
 
@@ -162,6 +161,13 @@ export const ACTION_WRITES_EDGE_KIND = defineEdgeKind({
 export type ActionWritesFieldCustom = {
   readonly operation: "insert" | "update" | "delete";
   readonly field_name: string;
+  /**
+   * Stable field identity, mirroring `field.id ?? field.name` (the same
+   * convention used by `fieldKey` in `src/reactivity/rule-derived.ts` for
+   * rule-read fields). Lets write-set/read-set comparisons line up without
+   * depending on the kernel node-ref id format.
+   */
+  readonly field_key: string;
   readonly entity_name: string;
   readonly has_condition: boolean;
   readonly value_expr_id?: string;
@@ -172,7 +178,11 @@ export const ACTION_WRITES_FIELD_EDGE_KIND = defineEdgeKind({
   dialect: "dialect.callable",
   endpoints: [
     defineEndpointRole("action", { targetKinds: [ACTION_NODE_KIND] }),
-    defineEndpointRole("field", { targetKinds: [FIELD_NODE_KIND] }),
+    // Unrestricted, like `RULE_READS_EDGE_KIND`'s "read" role and
+    // `QUERY_READS_EDGE_KIND`'s "read" role: the target is a `FieldRef`
+    // (the field's own typed ref), not a synthesized FIELD_NODE_KIND node
+    // ref, so read-set/write-set field identity lines up across dialects.
+    defineEndpointRole("field", {}),
   ],
   custom: undefined as unknown as ActionWritesFieldCustom,
   metadata: { title: "Action writes field" },

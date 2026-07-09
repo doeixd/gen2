@@ -177,12 +177,11 @@ test("typed graph query facade filters through indexed endpoint lookups", () => 
   const inspector = inspectGraph(graph);
 
   expect(inspector.nodes.ofKind(QuerySourceNodeKind).toArray()).toEqual([source]);
-  expect(
-    inspector.edges
-      .ofKind(QueryLinksEdgeKind)
-      .whereEndpoint("source", typedSourceRef)
-      .targets("target"),
-  ).toEqual([targetRef]);
+  const targets = inspector.edges
+    .ofKind(QueryLinksEdgeKind)
+    .whereEndpoint("source", typedSourceRef)
+    .targets("target");
+  expect(targets.map((ref) => ref.id)).toEqual([targetRef.id]);
 });
 
 test("bridge graph attachment keeps indexes in sync when replacing objects", () => {

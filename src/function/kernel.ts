@@ -56,7 +56,6 @@ import {
   PLAN_NODE_KIND,
   type ActionWritesFieldCustom,
 } from "../dialects/callable.ts";
-import { FIELD_NODE_KIND } from "../dialects/domain/entity-field-relation.ts";
 import {
   EXPR_FUNCTION_NODE_KIND,
   PATCH_NODE_KIND,
@@ -355,10 +354,11 @@ export const actionFunctionToWriteEdges = (fn: ActionFunction): readonly KernelE
           `edge:actionWritesField:${fn.name}->${field.id ?? field.name}`,
           {
             action: src,
-            field: nodeRef.unsafe(
-              FIELD_NODE_KIND,
-              `node:field:${field.id ?? `${op.target.name}.${field.name}`}`,
-            ),
+            // Use the field's own typed `FieldRef` (mirrors how
+            // `RULE_READS_EDGE_KIND`/`QUERY_READS_EDGE_KIND` target field
+            // reads) rather than a synthesized FIELD_NODE_KIND node ref, so
+            // write-set field identity lines up with rule/query read-sets.
+            field: field.ref,
           },
           {
             metadata: {
@@ -366,6 +366,7 @@ export const actionFunctionToWriteEdges = (fn: ActionFunction): readonly KernelE
               custom: {
                 operation,
                 field_name: field.name,
+                field_key: field.id ?? field.name,
                 entity_name: op.target.name,
                 has_condition: "condition" in op && op.condition !== undefined,
               } satisfies ActionWritesFieldCustom,

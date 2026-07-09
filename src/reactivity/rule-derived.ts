@@ -164,35 +164,57 @@ const findQueriesForRuleOnGraph = (graph: KernelGraph, ruleNodeId: string): Grap
   }
 
   // Find queries that GUARDS those policies.
+  // GUARDS_ACTION_EDGE_KIND.endpoints[0] is the "guard" (policy/rule/
+  // predicate) role; endpoints[1] is the "action" (action/query) role.
   for (const edge of graph.edges.values()) {
     if (edge.kind.id !== GUARDS_ACTION_EDGE_KIND.id) continue;
-    const targetEp = edge.endpoints.find(
-      (ep) => ep.role.id === GUARDS_ACTION_EDGE_KIND.endpoints[1]!.id,
+    const guardEp = edge.endpoints.find(
+      (ep) => ep.role.id === GUARDS_ACTION_EDGE_KIND.endpoints[0]!.id,
     );
     if (
-      !targetEp ||
-      targetEp.target.kind !== "node" ||
-      !targetEp.target.id ||
-      !policyNodeIds.has(targetEp.target.id)
+      !guardEp ||
+      guardEp.target.kind !== "node" ||
+      !guardEp.target.id ||
+      !policyNodeIds.has(guardEp.target.id)
     ) {
       continue;
     }
-    const sourceEp = edge.endpoints.find(
-      (ep) => ep.role.id === GUARDS_ACTION_EDGE_KIND.endpoints[0]!.id,
+    const actionEp = edge.endpoints.find(
+      (ep) => ep.role.id === GUARDS_ACTION_EDGE_KIND.endpoints[1]!.id,
     );
-    if (!sourceEp || sourceEp.target.kind !== "node" || !sourceEp.target.id) continue;
-    const queryNode = graph.nodes.get(sourceEp.target.id);
+    if (!actionEp || actionEp.target.kind !== "node" || !actionEp.target.id) continue;
+    const queryNode = graph.nodes.get(actionEp.target.id);
     if (!queryNode) continue;
 
     // Graph-native query summary
     const queryName = queryNode.name ?? queryNode.id;
     const readFields = queryReadFieldsFromGraph(graph, queryNode.id);
     // Read keyFamily from the typed `QueryNodeCustom.query` payload
-    // (PLAN.md §0.5 #8 — no `_bridge*` slot).
+    // (PLAN.md §0.5 #8 — no `_bridge*` slot). `reactivity.key` may be a
+    // bare `KeyFamily` (kind: "key_family") — as produced by
+    // `gen.key.entity`/`gen.key.collection` — or a `ReactiveKey`
+    // (kind: "reactive_key") wrapping a `.family`. Handle both shapes.
     const queryCustom = queryNode.metadata?.custom as
-      | { readonly query?: { reactivity?: { key?: { family?: { name: string; kind?: string } } } } }
+      | {
+          readonly query?: {
+            reactivity?: {
+              key?:
+                | { readonly kind?: string; readonly name: string }
+                | {
+                    readonly kind?: string;
+                    readonly family?: { readonly name: string; readonly kind?: string };
+                  };
+            };
+          };
+        }
       | undefined;
-    const queryFamily = queryCustom?.query?.reactivity?.key?.family;
+    const rawKey = queryCustom?.query?.reactivity?.key;
+    const queryFamily =
+      rawKey && "family" in rawKey && rawKey.family
+        ? rawKey.family
+        : rawKey && "name" in rawKey
+          ? rawKey
+          : undefined;
     const keyFamily = queryFamily
       ? { name: queryFamily.name, kind: queryFamily.kind ?? "key_family" }
       : undefined;
@@ -276,7 +298,13 @@ const actionWriteFieldsFromGraph = (graph: KernelGraph, actionNodeId: string): S
       (ep) => ep.role.id === ACTION_WRITES_FIELD_EDGE_KIND.endpoints[1]!.id,
     );
     if (!targetEp) continue;
-    const fieldId = targetEp.target.id ?? targetEp.target.name;
+    // Prefer the typed `field_key` payload (mirrors `fieldKey`'s
+    // `field.id ?? field.name` convention) over the node-ref id/name, which
+    // are kernel-internal identifiers (e.g. `node:field:Project.status`)
+    // and don't line up with rule-read field identity.
+    const custom = edge.metadata?.custom as { field_key?: string; field_name?: string } | undefined;
+    const fieldId =
+      custom?.field_key ?? custom?.field_name ?? targetEp.target.id ?? targetEp.target.name;
     if (fieldId) written.add(fieldId);
   }
   return written;
