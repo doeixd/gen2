@@ -397,6 +397,85 @@ operator is `(component) => component` recomputing all five axes:
 
 ---
 
+## 3c. Events, behaviors, styles (Dispatch + DesignSystem dialect lessons)
+
+### Events — a deliberate refusal to unify (read before finalizing Dispatch)
+
+Their ratified event design (`src/Event.ts` + `EVENT_RUNTIME_PLAN.md`) keeps
+five mechanisms separate with explicit bridges: `Event` channels = facts
+(typed Effect PubSub), `Atom` = state, `Atom.action` = commands,
+`Reactivity` keys = invalidation, `Element.on` = input. Channel identity is
+an opaque service key (`ServiceMap.Key` from `` `Event/${name}` ``) — the
+_symbol is the identity, the name is metadata_ — so distinct channels
+cannot cross-deliver by construction and there is no global bus, registry,
+or replay. They explicitly rejected a global `Event.Runtime` bus and an
+`Atom.onChange→Event` auto-bridge (feedback loops).
+
+Gen2's Dispatch primitive collapses what they keep apart. That can still be
+right — Dispatch is IR, not runtime — but the lesson is: **Dispatch nodes
+must record which role they lower to (fact / command / invalidation /
+input), lower to separate runtime mechanisms with explicit bridge edges,
+and the verify pass must reject auto-bridges that create cycles.** Their
+`EventChannel` split (contract = inert data; channel = scoped service;
+witness carries payload type via phantom) is the emission shape.
+
+Also: their `EventHole<Event, Req, E>` (event handlers carrying Effect
+requirements through the view type) is **typed but unwired** — no runtime
+ever forks the returned Effect; DOM handlers discard return values. Gen2
+emitting against it would be emitting against a contract with no
+implementation — instance of the "type-verified ≠ runtime-implemented"
+guardrail (§2.4).
+
+### Behaviors — composition algebra + the coordination gap
+
+- `Behavior<Elements, Bindings, Req, E>`: Elements typed by capability;
+  `compose` intersects Elements/Bindings and unions Req/E (last-wins on
+  binding collision) — the algebra for gen2 behavior composition.
+- `attachToAllWithCapability` walks the runtime capability DAG
+  (`extendsCapability`) — the runtime dual of the type-level
+  `AssignableNamesOf` union.
+- The composite `combobox` coordinates five sub-behaviors via **untyped
+  callback injection** (select → close disclosure → deactivate focus trap)
+  because behaviors share no witness for cross-behavior wiring. That
+  coordination graph is exactly what gen2's Dispatch/reaction edges can
+  type — a concrete place gen2 improves on the source material.
+- Cleanup rides entirely on the reactive owner (`Handle.on` registers
+  `onCleanup`; `Collection.observeEach` re-runs on set, disposing per-item
+  finalizers first) — no separate behavior lifecycle API needed.
+
+### Styles — pieces as data, phantom binding deps, typed token paths
+
+- `StyleValue` is a ~24-variant tagged-union AST ("style values are data,
+  not DOM mutations"): slot styles, conditionals, states/pseudo,
+  responsive/media/container queries, CSS vars, animation, grid, layers.
+  Resolution flattens the AST against bindings at attach time and lowers to
+  `Handle.setStyle` calls (inline-style application; no class generation).
+  This matches gen2's "EntityView emits style data; lowering interprets it."
+- `ComposedStyle<SlotNames, Bindings>` carries a **phantom `_bindings`
+  witness** aggregated from `whenBinding` pieces — attaching a style that
+  needs binding `X` to a component not exposing `X` is a compile error with
+  a readable `TypeErrorMessage`. Model for gen2's style-binding verify pass.
+- Theme tokens: `LeafPaths<ThemeTokens>` computes dotted literal paths
+  (`"accent.default" | "text.primary" | ...`) via depth-limited
+  template-literal recursion, with `string` as escape hatch. **Gap to fix
+  in gen2:** their `lookupToken` silently passes unknown tokens through as
+  literal strings — no invalid-token diagnostic. Gen2's DesignSystem verify
+  pass should reject unknown tokens.
+- One brand unifies the metadata vocabulary: `Element.Capability`,
+  `View.EventName`, and `Style.Property` are all `MetadataToken<namespace,
+Name>` — the generalization gen2's DesignSystem dialect should adopt as
+  its token primitive.
+- Variants/recipes (`variants(def)`, `recipe(def)` with `VariantProps`/
+  `RecipeProps` extraction) are highly generable shapes for emitted
+  component styling. Merge precedence is last-wins shallow spread — gen2
+  likely wants an explicit cascade/specificity witness instead.
+- Diagnostic codes shipped there: `view:unsupported-slot-event` (behavior
+  demands an event outside the slot's allow-list) and
+  `style:unsupported-property` (platform capability check) — both direct
+  templates for gen2 UI-dialect verify passes.
+
+---
+
 ## 4. Additions made to `docs/typescript_inference_cheatsheet.txt`
 
 Extracted tricks appended there: const type parameters for record-key
