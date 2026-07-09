@@ -1,0 +1,911 @@
+A. Build a Textual IR Dumper Immediately (for the LLMs)
+Since you are relying on AI agents to help build and refactor this, the very first tool you should build in Phase 0 is graph.toTextualIR().
+If an agent (or you) breaks a test, reading a massive nested JSON dump of TypeScript objects will be miserable. You want an MLIR-like string output:
+code
+Text
+%1 = node(core.entity) "User"
+%2 = node(core.field) "User.id"
+edge(domain.owns) %1 -> %2
+If you make the graph easily readable as text, LLMs will be able to write, debug, and write assertions for your graph passes 10x faster.
+B. Index the Graph aggressively
+A semantic graph compiler lives and dies by traversal speed. Your Graph interface shouldn't just be an array of nodes and edges. Internally, Phase 0 should implement inverted indexes:
+edgesBySource.get(nodeId)
+edgesByTarget.get(nodeId)
+edgesByKind.get(edgeKind)
+nodesByTrait.get(traitId)
+When the IVM pass needs to know "what rules read this field?", it should be an 
+O
+(
+1
+)
+O(1)
+ lookup via edgesByTarget, not an 
+O
+(
+N
+)
+O(N)
+ filter over all edges in the app.
+C. Use "Unknown" gracefully during the cutover
+During the migration, you will hit moments where a pass requires information that hasn't been migrated yet. Use explicit Unknown traits or conservative fallback protocols rather than throwing errors, so you can test the pipeline end-to-end before every single dialect is finished.
+
+
+This architecture is incredibly solid. Because you are now shifting from designing a framework to designing a full-blown compiler, the challenges you will face are compiler challenges: type-system limits, pass orchestration, debugging intermediate representations, and temporal state (migrations).
+Here are 5 tactical suggestions to smooth out the implementation phase and bulletproof the DX (both for humans and AI agents):
+1. Tame the TypeScript "Hover of Death"
+You are relying heavily on phantom types to bubble up requirements, effects, errors, and traits (Traits<Has<A>, Has<B>>). This is mathematically correct, but in a large app, hovering over an Action will result in a 50-line unreadable TypeScript type, and eventually, Type instantiation is excessively deep and possibly infinite.
+Suggestion: Use "Type Collapsing" and facade interfaces at the public API boundary.
+Internally, let the types be complex. But when a public builder returns a node, collapse it.
+code
+Ts
+// Internal deep type
+type _DeepAction = Node<typeof ActionNodeKind, In, Out, Err, Req, Eff, Traits>;
+
+// Type collapser (forces TS to evaluate and simplify intersections)
+type Compute<T> = { [K in keyof T]: T[K] } & unknown;
+
+// Public facade
+export interface Action<In, Out, Req = never> extends Compute<_DeepAction> {}
+This ensures that when a user hovers over deleteUser, their IDE says Action<string, void, Database> instead of dumping the entire MLIR node structure into their tooltip.
+2. Pass Pipeline Topology (Data-Driven Ordering)
+In Phase 11, you will have dozens of passes: deriving edges, canonicalizing, lowering to SQL, etc. If you just put them in a flat array, someone will inevitably run DeriveReactivity before DeriveWriteEdges, and it will silently fail to invalidate caches.
+Suggestion: Passes should declare what graph facts they consume and produce. Let the Kernel topologically sort the pipeline.
+code
+Ts
+const DeriveReactivityPass = definePass({
+  id: passId("pass.derive.reactivity"),
+  phase: "derive",
+  // The pass manager knows this must run AFTER DeriveWriteEdges
+  consumesEdges: [WritesEdgeKind, ReadsEdgeKind], 
+  producesEdges: [InvalidatesKeyEdgeKind],
+  run: (graph) => { ... }
+});
+This makes the compiler self-organizing. If a plugin adds a new pass, it automatically slots into the correct place in the pipeline based on its data dependencies.
+3. Handle Schema Migrations as "Graph Diffs"
+Right now, Gen2 generates the current state of the application. But SQL databases require you to know the previous state to generate ALTER TABLE statements.
+Suggestion: Do not write a custom migration system. Instead, treat migrations as a pass that takes two graphs: Graph(vOld) and Graph(vNew).
+When you compile, dump the Textual IR of the graph into a lockfile (e.g., gen2.schema.ir).
+The postgres.migration pass parses gen2.schema.ir (vOld), compares it to the current in-memory Graph (vNew).
+Because every Node and Edge has a stable Ref, diffing the graphs is trivial (Node missing = DROP TABLE, Field Edge added = ADD COLUMN).
+Emit the .sql migration artifact.
+This turns migrations from a complex state-tracking problem into a pure mathematical diff of two IR states.
+4. Formalize the "Blast Radius" of Opaque Code
+You already identified that OpaqueExpr is necessary for custom JS/raw SQL. But opaque code ruins derivation (e.g., if a raw SQL query updates a table, how does Reactivity know what to invalidate?).
+Suggestion: Formalize a ConservativeFallbackProtocol. When a pass hits an opaque node, it should query the protocol to determine the "blast radius."
+code
+Ts
+const rawDbCall = expr.opaque({
+  body: () => db.execute("UPDATE projects SET status = 'active'"),
+  // The user MUST declare the blast radius if the compiler can't read the body
+  conservativeWrites: [Project.ref], 
+});
+If conservativeWrites targets an Entity rather than a specific Field, the Reactivity pass knows to invalidate every query that reads any field on Project. It degrades performance slightly, but guarantees correctness.
+5. Build an Agent REPL (vp query)
+You are building this with LLMs (Agents). Agents are terrible at reading across 50 separate files to figure out why a button is disabled. But they are excellent at writing graph queries.
+Suggestion: Add a CLI tool that lets an Agent query the semantic graph directly.
+code
+Bash
+$ vp query "edges from deleteUser"
+[
+  { "kind": "edge.writes", "target": "User.archivedAt", "provenance": "explicit" },
+  { "kind": "edge.invalidates", "target": "UserListQuery", "provenance": "derived" }
+]
+code
+Bash
+$ vp explain "Button(Delete).disabled"
+1. Button(Delete) disabledWhen Rule(isAdmin)
+2. Rule(isAdmin) reads Field(User.role)
+3. Provider(Session) supplies Field(User.role)
+If you give your agents the ability to run vp query and vp explain in their terminal sandbox, they will be able to debug complex reactivity, auth, and UI generation loops completely autonomously.
+
+You are completely right to elevate these. These aren't just "old roadmap leftovers"; they are **hard-won compiler design lessons** about where the semantic boundaries in an application truly lie.
+
+Your translation of these three phases into the new MLIR-style, graph-first kernel is spot on. The way you mapped "Rule is a pure Predicate" to the AST, "Auto-providers" to a Derive Pass, and "Graph Shaking" to a Pruning Pass shows that the new kernel architecture is perfectly suited to absorb this intent.
+
+Here is what I make of these documents, and a few **additional subtle, high-leverage ideas** we should extract from them to make the revised kernel even stronger.
+
+---
+
+### 1. From Phase 4.5: Type Refinements & Bottom-Up Dependency Edges
+Your takeaway that `Rule` is just a `Node` wrapping a pure `Expr<boolean>` is exactly right. But Phase 4.5 also introduces `Refinement<A, B>` (e.g., `isNotNull` narrowing `T | null` to `T`).
+
+**What to take into the new kernel:**
+In a graph compiler, type narrowing isn't just a TypeScript trick; it changes the semantic graph.
+*   If an `ActionNode` is guarded by a `RuleNode` that contains a `Refinement` (e.g., `isNotNull(user.email)`), the compiler needs a way to flow that narrowed type into the Action's body.
+*   **The Kernel translation:** We should introduce a **`TypeRefiningProtocol`** on `Expr` nodes. If a Pass (like `legalize` or `derive`) sees that an execution path is guarded by an expression implementing this protocol, it can safely alter the `GType` of the referenced field for all downstream operations in that scope.
+*   **Bottom-Up Dependencies:** Instead of `Expr` just returning a `.dependencies` object, the AST builder should literally emit `ExprReadsField` and `ExprUsesOperation` edges *as the user types the expression*. The AST is the source of truth for the edges.
+
+### 2. From Phase 5.5: The "Semantic Role" Rule & Boundary Identity
+Phase 5.5's warning not to unify `State` and `Provider`, or `ProviderScope` and `TrackingScope`, gives us a golden rule for the new Dialect system.
+
+**What to take into the new kernel:**
+*   **The Semantic Role Rule:** *Never unify two `NodeKinds` if they participate in fundamentally different `EdgeKinds`.*
+    *   A `StoredValueNode` (State) is the target of a `StoredIn` edge (where data lives).
+    *   A `ProviderNode` is the source of a `Provides` edge (how data is delivered).
+    *   They are distinct because their topology is distinct.
+*   **The `BoundaryNode` as the Universal Anchor:** The idea to unify routes, components, and tenants into `BoundaryIdentity` is profound. In the new kernel, `BoundaryNode` shouldn't just be for network transport (Phase 7); it should be the **universal topology anchor**. Every `Scope`, `Placement`, and `Execution` edge should point to a `BoundaryNode`. It answers the question: *"Where does this graph execution start or stop?"*
+*   **Auto-Providers as a Pass:** Your idea to make "Auto-providers" a `derive` pass is the perfect validation of the pass pipeline. Users write `gen.context({ default_source: ... })`. The `derive.providers` pass runs, spots the metadata, and synthetically generates the `ProviderNode` and `ProvidesEdge`. This is how you achieve **magical DX without magic internal architecture**.
+
+### 3. From Phase 7: Graph Shaking requires "Entrypoint" Traits
+Phase 7's goal of unifying the "edges of the system" (Boundaries, Storage, Design Systems) translates cleanly into Dialects. But the most important compiler mechanic hidden in Phase 7 is **Dead Code Elimination (Graph Shaking)**.
+
+**What to take into the new kernel:**
+To prune a graph, you must know where the roots are.
+*   **The Kernel translation:** We need an **`EntrypointTrait`** (e.g., `TraitNodeEntrypoint`).
+*   A `BoundaryNode` exposed to the public internet gets the Entrypoint Trait.
+*   A `ViewNode` at the root of a UI gets the Entrypoint Trait.
+*   The `pass.canonicalize.prune` step simply starts at all Nodes with the `EntrypointTrait` and walks the graph via `Reads`, `Writes`, `Requires`, `Guards`, and `Provides` edges. Anything unvisited is dropped from the graph before the Emitter passes run. This guarantees you never generate an API route or SQL table that the app cannot logically reach.
+
+### 4. Synthesizing the "Opaque Code" Fallback (Phase 4.5 & 7)
+Phase 4.5 mentions handling opaque expressions, and Phase 7 mentions forcing the emission of code.
+
+**What to take into the new kernel:**
+When the compiler encounters custom JS/SQL (`ExprOpaqueJs`), it loses its ability to automatically derive edges (like `ReadsField`). We must formalize **Conservative Edge Inference**.
+*   If a user writes an opaque action, the builder must allow them to *manually* declare edges (e.g., `conservativeWrites: [Project]`).
+*   The compiler inserts a `WritesEdge` with `provenance: "conservative"`.
+*   Passes (like Reactivity or IVM) must be programmed to handle `conservative` edges safely—usually by falling back to broad invalidation (invalidating all `Project` queries) rather than precise patching.
+
+---
+
+### How this updates your Phase 0–11 Roadmap
+
+Your 0-11 phase order from the previous message is excellent. Based on these legacy plans, here is the slight tightening of exactly *what* happens in those specific phases:
+
+*   **Phase 1 (Operation + Expr):** Implement the bottom-up Edge emission. As the AST is built, emit `ExprReadsField` edges immediately. Add the `TypeRefiningProtocol` for `isNotNull`.
+*   **Phase 2 (Rules):** Implement `RuleNode` as literally just a named wrapper around `Expr<boolean>`. Implement the `core.traits.sql_safe` trait.
+*   **Phase 3 (Scope & Boundaries):** Establish `BoundaryNode` as the universal anchor. Every execution context, component, and route maps to one.
+*   **Phase 4 (Context & State):** Implement the `derive.providers` pass to synthesize `ProviderNode`s from `StateResource` and `ContextDef` defaults. Keep State and Provider nodes distinct.
+*   **Phase 11 (Shaking & Artifacts):** Implement the `EntrypointTrait`. Build the reachability algorithm to prune the graph before `Lowering` and `Emit` passes execute.
+
+### The Final Verdict
+
+Bringing Phases 4.5, 5.5, and 7 into the fold resolves the final tensions in the library's design. It confirms that the MLIR-style graph architecture isn't just a neat theory—it is the **exact mechanism required** to solve the concrete DX and type-safety problems you documented in the older roadmaps.
+
+You have completely mapped the territory. There are no remaining blind spots.
+
+This is a monumental corpus of architectural design. You have effectively designed a complete, end-to-end **Semantic Application Compiler**. 
+
+By shifting to the new MLIR-inspired kernel (Nodes, Edges, Traits, Protocols, Passes), the massive conceptual weight of all these documents—Authz2, Merge Strategies, Spec-Driven UI, Cron/Workflows, DI Providers, and Reactivity—no longer has to be hardcoded into a monolithic `GenContext` object.
+
+Here is the **Master Synthesis Plan** for building the new version of the library. It translates every feature from your legacy specs into the vocabulary of the new kernel, structured into a strict implementation roadmap.
+
+---
+
+# 1. The Paradigm Shift: From Framework to Compiler
+
+Every document you provided solves a specific domain problem, but they all converge on the same architectural truth: **Stop writing runtime execution code; write static graph metadata.**
+
+In the new library:
+1. **No Magic Strings:** Everything has a `StableId`. You reference `Project.fields.status`, never `"project_status"`.
+2. **Phantom Typed IR:** The AST and Graph are phantom-typed (`Expr<boolean>`, `SemanticType<string>`, `Node<In, Out>`). TypeScript ensures composition is safe at authoring time.
+3. **Everything is a Node/Edge:** A Cron Job is a Node. A UI Component is a Node. "Action updates Field" is a `WritesEdge`. "Policy guards Route" is a `GuardsEdge`.
+4. **Traits & Protocols:** Traits assert facts (`LawIdempotent`, `LocationClientSafe`). Protocols define behavior for Passes (`CallableProtocol`, `PatchProtocol`).
+5. **Passes Replace Checkers:** The compiler runs in stages: `Verify -> Derive -> Canonicalize -> Legalize -> Lower -> Emit`.
+
+---
+
+# 2. The Standard Library (The Dialects)
+
+Instead of dumping everything into core, we organize your specs into **Dialects**. 
+
+### 1. `dialect.domain` (from `entity`, `magic-strings.md`)
+*   **Nodes:** `Entity`, `Field`.
+*   **Edges:** `OwnsField`, `DomainRelation`.
+*   **Concept:** The physical data shape. Carries stable IDs so field renames (for migrations) are safe.
+
+### 2. `dialect.logic` (from `rules.md.txt`, `TYPE_IMPROVEMENT_PLAN.md`)
+*   **Nodes:** `OperationDef`, `Rule` (which is just a named `Expr<boolean>`).
+*   **Concept:** The universal AST. Universal dependency extraction is generated bottom-up as `ReadsField` edges while the AST is built.
+
+### 3. `dialect.callable` (from `funcs.txt`, `reactions.txt`)
+*   **Nodes:** `Action`, `Query`, `Dispatch`.
+*   **Edges:** `WritesField`, `EmitsEvent`, `TriggersDispatch`.
+*   **Concept:** `ActionFunction` is the canonical unit of effectful work. `Dispatch` unites Events and Reactions into a single "Trigger -> Handler -> Delivery" pipeline.
+
+### 4. `dialect.orchestration` (from `cron_workflows_integration_proposal.md`)
+*   **Nodes:** `Schedule`, `CronJob`, `Workflow`, `WorkflowPlan`.
+*   **Concept:** Durable execution. A `CronJob` connects a `ScheduleNode` to a `CallableNode` (an Action or Workflow). Workflows compose `Action`s via generic sequence/parallel plans. 
+
+### 5. `dialect.state` (from `provider.md`, `phase4`, `phase5.5`)
+*   **Nodes:** `Requirement`, `Provider`, `StorageLocation`, `StateResource`, `Boundary`.
+*   **Edges:** `Provides`, `Requires`, `PlacedIn`, `ScopedTo`.
+*   **Concept:** Replaces traditional DI. A route `Requires` an `AuthSession`. A `Provider` supplies it from a `StorageLocation` (Cookie). The compiler wires them together.
+
+### 6. `dialect.merge` (from `merge.md`)
+*   **Traits:** `MergeReplace`, `MergeSum`, `MergeLWW`, `MergeSetUnion`.
+*   **Concept:** Merge logic is not a function; it is algebraic metadata (`LawIdempotent`, `LawCommutative`) attached to `SemanticType`s and `Field`s. Required for Offline Sync, Optimistic UI, and IVM.
+
+### 7. `dialect.authz` (from `AUTHZ2_PLAN.md`)
+*   **Nodes:** `Policy`, `Claim`.
+*   **Edges:** `AccessSurfaceBinding` (`GuardsEdge`).
+*   **Concept:** Policies are attached to *Surfaces* (`entity.read`, `field.write`). A pass derives the `Placement` (`sql_where`, `client_hint`) and `DenyBehavior` (`omit`, `forbidden`).
+
+### 8. `dialect.ui` (from `gen-ui.md`)
+*   **Nodes:** `UiView`, `UiElement`, `UiStateModel`.
+*   **Edges:** `UiStateBinding` (reads/writes `StateResource`).
+*   **Concept:** A typed UI tree that connects securely to Actions and State. It is target-agnostic and lowers to JSON-Render, React/JSX, or PDF.
+
+### 9. `dialect.artifacts` (from `versioning-plan.md`, `phase_revisions.txt`)
+*   **Passes:** `prune.reachable`, `diff.graphs`.
+*   **Concept:** Snapshots are serialized Graphs. Migrations are generated by a pass that diffs `Graph(old)` and `Graph(new)` using Stable IDs.
+
+---
+
+# 3. Phased Execution Roadmap
+
+To build this without drowning in complexity, follow this strict, ordered plan based on your `revised_phases.md` logic.
+
+### Phase 0: The Hard Kernel & Typings
+1. Implement the phantom-typed `GType`, `Ref`, and `Id` primitives.
+2. Implement `SymbolDef` to banish magic strings.
+3. Build the core `Graph` registry, `Node`, `Edge`, `Trait`, and `Protocol` interfaces.
+4. Implement the `PassPipeline` engine.
+*Stop here until `vp check` proves the core types are deeply inferred and fast.*
+
+### Phase 1: Logic & Domain (The Foundation)
+1. Build `dialect.domain` (`Entity`, `Field`).
+2. Build `dialect.logic` (`OperationDef`, `Expr`, `Rule`).
+3. Implement bottom-up dependency tracking (as an Expr is built, it emits `ReadsField` edges to the graph).
+4. Apply the `sql_safe` trait via the type-refining protocol.
+
+### Phase 2: Operations & Data Evolution (Merge & Versioning)
+1. Build `dialect.merge`. Attach `MergeStrategy` metadata to `GType` and `Field`.
+2. Add `Law` traits (`associative`, `commutative`).
+3. Implement `deriveEntityMergePlan` as a Pass.
+4. Build `vp snapshot` to serialize the Domain and Merge graph. Create the `diff.graphs` pass to generate migration lineages.
+
+### Phase 3: Behavior, Dispatch, & Orchestration
+1. Build `dialect.callable` (`Query`, `Action`).
+2. Implement `dialect.dispatch` to unify Events and Reactions.
+3. Build `dialect.orchestration` (`CronJob`, `Workflow`). Wire them to trigger `Action` nodes.
+4. Implement the `derive.effects` and `derive.requirements` bubbling passes so workflows expose their children's side effects.
+
+### Phase 4: Topology, DI, & State
+1. Build `dialect.state` (`Boundary`, `StorageLocation`, `ContextDef`, `Provider`).
+2. Implement the `derive.providers` pass (Auto-Providers from Phase 5.5).
+3. Implement the `RequirementSatisfactionPlan` pass to ensure no action is missing a dependency.
+4. Add lifecycle diagnostics for `placement:secret-client-readable`.
+
+### Phase 5: Security & Authorization (Authz2)
+1. Build `dialect.authz` using `AccessSurface` edges.
+2. Implement the `classifyPlacement` pass (can this rule run as RLS, or must it be a server post-filter?).
+3. Implement the `deriveMutationAccessPlan` pass to audit `Action` write sets against `field.write` policies.
+
+### Phase 6: Spec-Driven UI
+1. Build `dialect.ui`.
+2. Create `UiElementNode` and typed `UiStatePath` edges that connect directly to Phase 4 `StateResource` nodes.
+3. Ensure `gen.ui.action` connects to Phase 3 `Action` nodes.
+4. Implement the Pass that converts Authz (Phase 5) `client_hint` policies into UI `disabledWhen` or `hiddenWhen` props.
+
+### Phase 7: Target Lowering & Shaking
+1. Build the `prune.reachableArtifacts` pass (Dead Code Elimination from Phase 7).
+2. Write Target Legalizers (e.g., `legalize.postgres`, `legalize.json_render`).
+3. Write Target Emitters (Effect layers, React hooks, Postgres SQL, JSON-Render specs).
+
+---
+
+# 4. Critical Architectural Directives to carry forward
+
+Based on reviewing all the Agent Implementation Guides, here are the non-negotiable rules for building the new version:
+
+1. **The "Opaque Blast Radius" Rule:** If a user uses `ExprOpaqueJs`, the compiler loses edge derivation. The API *must* require them to declare `conservativeWrites: [...]` so the Reactivity and IVM passes don't break.
+2. **The "Merge vs. Auth" Rule:** Authz dictates *who* can write. Merge dictates *how* data combines. They are separate passes. A field might allow a write via Authz, but reject a direct replacement via Merge (e.g., Account Balances must use `sum_delta`).
+3. **The "Client Hint" Rule:** If a UI component uses a Rule for visibility, the `classifyPlacement` pass labels it a `client_hint`. It is *never* treated as authoritative security. The `LowerToTarget` pass must ensure the corresponding server `Action` retains the actual enforcement.
+4. **The "Type Collapsing" Rule:** Because you are using Phantom types to bubble up Requirements, Effects, and Traits, hover tooltips in VS Code will become unreadable. You must use `Compute<T>` facade types at the public API boundary to collapse intersection types into readable shapes.
+5. **No `as any` in tests:** The moment you cast something in a test to satisfy the compiler, you have broken the MLIR graph promise. If it doesn't infer, the API shape is wrong.
+
+This plan moves the library from being a framework into being a **mathematically sound, multi-target semantic compiler.** You are ready to start coding Phase 0.
+
+To achieve 100% type safety without relying on global module augmentation (which is brittle) or `as any` casts, the mathematically correct approach in modern TypeScript is the **Fluent Builder Pattern** (using `.use()` or `.withDialect()`). 
+
+This pattern allows TypeScript to compute an **Intersection Type** incrementally. As you chain dialects, the compiler accumulates the namespaces, giving you perfect autocomplete.
+
+Here is the blueprint for how you instantiate the `gen` vocabulary, build a typed application registry, and run the target generators.
+
+---
+
+### 1. Defining a Dialect
+In the new kernel, a Dialect is a package that exports its IR definitions (Nodes, Edges, Traits) *and* a factory for its ergonomic builder functions.
+
+```typescript
+// src/dialects/ui/index.ts
+import { defineDialect } from "@gen2/core";
+
+export const UiDialect = defineDialect({
+  // The namespace this dialect will mount to
+  name: "ui", 
+  
+  // The semantic IR definitions for the Pass Pipeline
+  nodeKinds: [UiViewNodeKind, UiElementNodeKind],
+  edgeKinds: [UiStateBindingEdge],
+  
+  // The ergonomic builder factory
+  builders: (ctx: GraphContext) => ({
+    view: (name: string, config: ViewConfig) => {
+      return ctx.createNode(UiViewNodeKind, { name, ...config });
+    },
+    element: (component: ComponentRef, props: any) => {
+      // ...
+    }
+  })
+});
+```
+
+---
+
+### 2. Instantiating `gen` (The Vocabulary)
+You create your project's specific instance of `gen` by piping your desired dialects together. This is usually done once in a `src/gen.ts` file.
+
+```typescript
+// src/gen.ts
+import { createGen } from "@gen2/core";
+import { DomainDialect, LogicDialect, CallableDialect } from "@gen2/stdlib";
+import { UiDialect } from "@gen2/ui";
+import { MyCompanyDialect } from "./internal-dialect";
+
+// The `.use()` method uses TS generics to intersect builder types.
+export const gen = createGen()
+  .use(DomainDialect)
+  .use(LogicDialect)
+  .use(CallableDialect)
+  .use(UiDialect)
+  .use(MyCompanyDialect);
+
+// Because of the fluent pattern, TypeScript perfectly infers:
+// typeof gen = GenCore & { 
+//   domain: DomainBuilders, 
+//   logic: LogicBuilders, 
+//   ui: UiBuilders, 
+//   myCompany: MyCompanyBuilders 
+// }
+```
+
+Now, anywhere in your app, you import `gen`. You get pristine autocomplete, and if you try to use `gen.cron.define` without `.use(OrchestrationDialect)`, TypeScript will throw a compilation error.
+
+---
+
+### 3. The Application Builder (The Typed Registry)
+In your old architecture, `GenContext` was a bucket of mutable arrays (`ctx.entities.push(...)`). In the new architecture (satisfying *Milestone TYPE9: Optional Typed Registry*), we create an App builder that accumulates the actual instances at the type level.
+
+```typescript
+// src/app.ts
+import { gen } from "./gen";
+
+export const User = gen.domain.entity("User", {
+  id: gen.field(gen.types.uuid()),
+  name: gen.field(gen.types.string())
+});
+
+export const UserView = gen.ui.view("UserView", { ... });
+
+// Accumulate your app graph
+export const app = gen.createApp()
+  .add(User)
+  .add(UserView);
+
+// The type system remembers what you added!
+// typeof app.registry.User === EntityNode<"User", ...>
+```
+
+---
+
+### 4. Running the Generators (The Targets)
+Targets (Generators) are just **Pass Pipelines** that execute over the finalized Graph. You invoke them by calling `.compile()` on your `app` and passing in the targets you want to emit.
+
+Targets define their required Dialects and Capabilities. If you pass a target that requires the `UiDialect`, but you didn't `.use(UiDialect)` in step 2, the compiler fails safely.
+
+```typescript
+// scripts/build.ts
+import { app } from "../src/app";
+import { PostgresTarget } from "@gen2/postgres";
+import { JsonRenderTarget } from "@gen2/json-render";
+import { ReactQueryTarget } from "@gen2/react";
+import { OpenApiTarget } from "@gen2/openapi";
+
+// Execute the compiler pipeline
+const artifacts = app.compile({
+  targets: [
+    PostgresTarget({ outDir: "./supabase/migrations" }),
+    JsonRenderTarget({ outDir: "./public/ui-specs" }),
+    ReactQueryTarget({ outDir: "./src/generated/hooks" }),
+    OpenApiTarget({ outDir: "./docs" })
+  ]
+});
+
+console.log(`Successfully generated ${artifacts.length} artifacts.`);
+```
+
+---
+
+### How the TypeScript Magic Works under the hood
+
+To make `.use()` work without destroying the language server's performance, the implementation in `@gen2/core` looks like this:
+
+```typescript
+// src/core/gen.ts
+
+export class GenBuilder<TNamespaces extends Record<string, any> = {}> {
+  private graphContext = new GraphContext();
+  private namespaces: TNamespaces = {} as TNamespaces;
+
+  // The magic is here: We take the current TNamespaces, and intersect it
+  // with a new Record holding the Dialect's builders.
+  use<
+    Name extends string, 
+    Builders
+  >(
+    dialect: DialectDef<Name, Builders>
+  ): GenBuilder<
+    // Compute is a utility type that flattens the intersection so tooltips are readable
+    Compute<TNamespaces & { [K in Name]: Builders }>
+  > {
+    
+    // Register the node/edge kinds into the internal graph registry
+    this.graphContext.registerDialect(dialect);
+    
+    // Instantiate the ergonomic builders and bind them to the namespace
+    const newBuilders = dialect.builders(this.graphContext);
+    this.namespaces[dialect.name as string] = newBuilders;
+
+    // Return a new builder instance casted to the intersected type
+    return new GenBuilder<any>() as any; 
+  }
+
+  // Escape hatch that unwraps the builder into the final `gen` object
+  buildVocab(): Compute<TNamespaces & CoreGenHelpers> {
+    return {
+      ...this.namespaces,
+      createApp: () => new AppRegistry(this.graphContext),
+    } as any;
+  }
+}
+
+export const createGen = () => new GenBuilder();
+```
+
+### Why this is the ultimate pattern
+1. **Tree-Shakable & Modular:** If you don't `.use(JsonRenderDialect)`, the JSON-Render types, nodes, and builders never enter your TypeScript AST.
+2. **Agent-Friendly:** Because `gen` is statically typed by intersections, an AI Agent querying the Language Server gets perfect definitions of exactly what builders are available in *your specific project*.
+3. **No `declare module` hacks:** You don't have to rely on global interface merging (which often breaks or pollutes the global scope) to add plugin methods to `gen`.
+
+
+Yes. I think Dirived has a good emerging solution, but the key is to **separate modules, context, scope, and resources instead of forcing them into one abstraction**.
+
+A clean model would be:
+
+```txt id="mt6ftn"
+Module
+  How graph definitions are packaged, named, imported, exported, and owned.
+
+Context
+  What ambient capabilities are required or provided at runtime.
+
+Scope
+  What names, refs, variables, operations, placements, and capabilities are visible during construction or lowering.
+
+Resource
+  A durable thing the app depends on, manages, reads from, writes to, deploys, or exposes.
+```
+
+The revised phase plan already points this way: it says modules become dialects, context/provider concepts become graph IR, requirements and providers are nodes/edges, and final semantic state should live in the graph rather than old top-level registries.  The revised core doc also moves `Provider`, `Requirement`, `StorageContainer`, `ReactiveResource`, etc. out of the kernel and into graph-backed stdlib concepts built from `Node`, `Edge`, `Trait`, `Type`, `Expr`, and `Pass`. 
+
+## Modules
+
+I would not make “module” mean only one thing.
+
+There are at least three useful module concepts:
+
+```txt id="w42fol"
+1. Code module
+   A TypeScript/file/package boundary.
+
+2. Graph module
+   A namespace/ownership boundary for semantic objects.
+
+3. Dialect module
+   A package of semantic vocabulary: node kinds, edge kinds, traits, protocols, passes, lowerings.
+```
+
+For Dirived, the most important one is the **graph module**.
+
+A graph module should group semantic definitions:
+
+```txt id="g7xraz"
+billing module
+  Customer
+  Subscription
+  Invoice
+  canManageBilling
+  createInvoice
+  listInvoices
+  BillingSettingsView
+```
+
+Represent that as either:
+
+```txt id="hzewxo"
+Module metadata on symbols/refs
+```
+
+or, when you need richer behavior:
+
+```txt id="8objz7"
+Node(kind: Module)
+Edge(kind: Contains): BillingModule -> Customer
+Edge(kind: Contains): BillingModule -> createInvoice
+Edge(kind: Exports): BillingModule -> listInvoices
+Edge(kind: Imports): BillingModule -> AuthModule
+```
+
+My recommendation:
+
+```txt id="qj2lu7"
+Use module/namespace fields for simple identity.
+Use Module nodes only when modules need ownership, visibility, dependency analysis, docs, devtools, plugin boundaries, or emitted artifact grouping.
+```
+
+So the kernel does not need “Module” as a hard primitive. But the stdlib almost certainly should have a module/package dialect.
+
+## Context
+
+Context should be a first-class stdlib/dialect concept.
+
+This is how actions, queries, rules, providers, boundaries, and generated runtime code describe what they need from the environment.
+
+Examples:
+
+```txt id="e4zne5"
+AuthSession
+CurrentUser
+CurrentTenant
+Clock
+Database
+EmailService
+Logger
+FeatureFlags
+RequestInfo
+DeploymentEnv
+```
+
+Graph model:
+
+```txt id="s6z6bo"
+Node(kind: Service)
+Node(kind: Context)
+Node(kind: Requirement)
+Node(kind: Provider)
+
+Edge(kind: Requires): archiveUser -> AuthSession
+Edge(kind: Requires): sendEmail -> EmailService
+Edge(kind: Provides): AuthSessionProvider -> AuthSession
+Edge(kind: Provides): DatabaseProvider -> Database
+Edge(kind: PlacedIn): AuthSessionProvider -> ServerRequest
+```
+
+This gives the compiler questions it can answer:
+
+```txt id="9drr7e"
+Does this action have all required providers?
+Can this provider run in this placement?
+Can this client boundary access this context?
+Does provider lifetime satisfy consumer lifetime?
+Does the target know how to lower this service?
+```
+
+This is also where Effect interop fits nicely:
+
+```txt id="zzi38r"
+Dirived Service node
+  -> Effect Context.Service
+
+Dirived Provider node
+  -> Effect Layer
+
+Dirived Requires edge
+  -> Effect requirements
+```
+
+So yes: context should be graph-backed, typed, and provider/requirement-oriented.
+
+## Scope
+
+Scope is different.
+
+Scope is mostly a **compiler/builder concept**, not always a durable semantic object.
+
+You need scope for things like:
+
+```txt id="0a3ql3"
+Which variables are visible in this rule?
+Which entity fields are in scope?
+Which operations are allowed here?
+Are we building a query, action, rule, UI view, target lowering, or runtime boundary?
+Are we in client, server, database, worker, or deployment scope?
+Which refs may be captured?
+Which values are local expression values vs stable graph refs?
+```
+
+Example:
+
+```ts id="5zmppx"
+gen.rule("canArchiveUser", {
+  vars: { actor: User, user: User },
+  when: ({ actor, user }) =>
+    actor.role.eq("admin")
+      .or(actor.organizationId.eq(user.organizationId)),
+});
+```
+
+Inside `when`, the scope knows:
+
+```txt id="o6v564"
+actor is a local value of type User
+user is a local value of type User
+actor.role points to FieldRef<User.role>
+user.organizationId points to FieldRef<User.organizationId>
+only pure expression operations are allowed
+effects are not allowed
+field reads should be extracted
+```
+
+I would model scope as:
+
+```txt id="90osg3"
+ScopeFrame
+  lexical variables
+  available refs
+  phase
+  placement
+  target capabilities
+  allowed protocols
+  parent scope
+```
+
+Most scope frames can be ephemeral compiler data. But when useful for diagnostics or devtools, you can materialize them:
+
+```txt id="1e6s7r"
+Diagnostic:
+  cannot capture server-only AuthSession in client UI scope
+```
+
+That diagnostic should point to the relevant scope chain.
+
+So:
+
+```txt id="7jdzmd"
+Scope is not always a node.
+Scope becomes graph-visible when it affects diagnostics, provenance, lowering, or agent edits.
+```
+
+## Resources
+
+“Resource” is overloaded, so I would define it carefully.
+
+There are several resource families:
+
+```txt id="l6v0es"
+Runtime resources
+  Database, EmailService, Logger, Clock, AuthSession.
+
+Storage resources
+  Table, Bucket, KV namespace, Queue, Stream, Outbox, Index.
+
+Reactive resources
+  Query-backed data, local cache, live subscription, materialized view.
+
+Deployment resources
+  Worker, Lambda, database instance, secret, cron, bucket, queue.
+
+UI resources
+  Design system, component registry, theme, asset catalog.
+```
+
+The common abstraction is:
+
+```txt id="c3y7lg"
+Resource = graph node representing a capability, state container, external system, or deployable thing.
+```
+
+Then edges define how it participates:
+
+```txt id="nzq9f1"
+Action requires Resource
+Provider provides Resource
+Entity storedIn Resource
+Field mapsTo Resource
+Dispatch uses Resource
+Boundary exposes Resource
+Target lowersTo Resource
+Artifact generatedFrom Resource
+```
+
+Examples:
+
+```txt id="yytlt1"
+sendArchiveEmail requires EmailService
+EmailProvider provides EmailService
+EmailService requires SENDGRID_API_KEY Secret
+
+archiveUser emits UserArchived
+UserArchived dispatch uses OutboxQueue
+OutboxQueue lowersTo CloudflareQueue
+
+User entity storedIn PostgresDatabase
+User.email mapsTo users.email column
+```
+
+This is exactly why first-class edges matter. A resource is not interesting by itself. It becomes meaningful through relationships.
+
+## How they fit together
+
+A concrete example:
+
+```txt id="y68cn3"
+Module:
+  AdminUsersModule
+
+Context:
+  AuthSession, Database, EmailService
+
+Scope:
+  canArchiveUser rule scope has actor and user variables
+  archiveUser action scope has input, actor, db, now
+
+Resources:
+  PostgresDatabase
+  UserArchivedOutbox
+  EmailProvider
+  SESSION_SECRET
+```
+
+Graph facts:
+
+```txt id="dfqklh"
+AdminUsersModule contains User
+AdminUsersModule contains archiveUser
+
+archiveUser requires AuthSession
+archiveUser requires Database
+archiveUser guardedBy canArchiveUser
+archiveUser writes User.archivedAt
+archiveUser emits UserArchived
+
+sendArchiveEmail requires EmailService
+EmailProvider provides EmailService
+
+User storedIn PostgresDatabase
+UserArchived deliveredBy UserArchivedOutbox
+```
+
+From this, Dirived can derive:
+
+```txt id="qavxgj"
+server action requirements
+database schema
+RLS/server guard
+queue/outbox infra
+email secret binding
+UI disabled state
+audit log
+optimistic update
+deployment resources
+diagnostics for missing providers
+```
+
+## My recommended taxonomy
+
+I would define them like this:
+
+```txt id="tycqe0"
+Dialect
+  A semantic vocabulary package.
+
+Module
+  A graph namespace/ownership/import/export boundary.
+
+Context
+  A typed runtime environment surface.
+
+Requirement
+  A need for a context/service/capability.
+
+Provider
+  Something that satisfies a requirement.
+
+Scope
+  A lexical/compiler/placement environment for building or lowering graph facts.
+
+Resource
+  A durable runtime, storage, reactive, UI, or deployment capability represented as a node.
+
+Capability
+  A trait-like claim about what a resource, target, type, operation, or provider can do.
+```
+
+The crisp design rule:
+
+```txt id="m4yukg"
+Modules organize graph facts.
+Context describes ambient runtime needs.
+Scope controls what can be referenced or built.
+Resources are semantic/deployable capabilities.
+Edges connect all of them.
+```
+
+So yes — we have the concepts. I would just make sure they land in the right layer:
+
+```txt id="2rqmd7"
+Kernel:
+  Node, Edge, Type, Expr, Trait, Protocol, Graph, Pass, Id/Ref
+
+Stdlib/dialects:
+  Module, Context, Requirement, Provider, Scope, Resource
+
+Targets:
+  Effect services/layers, Postgres resources, Alchemy deployment, React providers, etc.
+```
+
+That gives Dirived enough structure without bloating the kernel.
+
+
+What I would add to the roadmap from these suggestions
+
+I would update Phase 0 to include:
+
+Phase 0A — Kernel objects
+  Id / Ref
+  SymbolDef
+  Type
+  Expr
+  Transform
+  Trait
+  Protocol
+  Node
+  Edge
+  Graph
+  Pass
+  Diagnostic
+
+Phase 0B — Compiler ergonomics
+  graph.toTextualIR()
+  graph.fromTextualIR()
+  graph indexes
+  pass consumes/produces declarations
+  canonical sorting
+  graph query API
+  basic vp query
+  diagnostic rendering
+
+Without Phase 0B, the kernel may technically work but be painful to build.
+
+Then add early:
+
+Phase 1B — Graph snapshots and diffs
+  textual IR lockfile
+  graph diff
+  semantic rename detection
+  migration pass skeleton
+
+Do this before Postgres gets complicated.
+
+My ranking of the suggestions
+Must do immediately
+Textual IR
+Graph indexes
+Pass consumes/produces topology
+Opaque blast radius
+Type collapsing/facades
+vp query / explain
+Graph snapshots/diffs
+Very likely right
+EntrypointTrait for graph shaking
+Unknown/conservative fallback
+TypeRefiningProtocol
+BoundaryNode as topology anchor
+Fluent dialect builder
+No global module augmentation
+Good but needs care
+Bottom-up edge emission during expression construction
+Boundary as “universal” anchor
+Fully inferred typed app registry
+No casts anywhere, including core plumbing

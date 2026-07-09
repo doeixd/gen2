@@ -1,0 +1,1746 @@
+Absolutely. Here’s a strong first-pass landing page copy for **Dirived**.
+
+---
+
+# Dirived
+
+## Generate apps from meaning, not files.
+
+Dirived is an AI app builder powered by a typed semantic IR.
+
+Instead of asking AI to scatter code across components, routes, schemas, policies, hooks, and deployment configs, Dirived builds a semantic graph of your application first — then derives the code, database, UI, sync, tests, docs, and infrastructure from that graph.
+
+Describe what your app should do.
+Dirived understands what it means.
+Then it compiles the rest.
+
+---
+
+## The problem with prompt-to-code
+
+Most AI app builders generate files.
+
+That works for the first prompt.
+
+Then the app changes.
+
+You add permissions.
+A mutation affects a list.
+A field becomes sensitive.
+A rule needs to apply in the UI, API, and database.
+A queue needs idempotency.
+A deployment needs a database, secret, worker, and storage binding.
+
+Prompt-to-code tools patch the files and hope the app still holds together.
+
+Dirived takes a different approach.
+
+---
+
+## Prompt → IR → App
+
+Dirived turns your intent into a typed semantic graph.
+
+That graph knows:
+
+```txt
+what data exists
+what operations can happen
+what rules must hold
+what queries read
+what actions write
+what UI depends on
+what effects occur
+what resources are needed
+what infrastructure must be deployed
+```
+
+Then Dirived derives the implementation.
+
+```txt
+database schema
+API routes
+server actions
+auth policies
+RLS
+React components
+forms
+cache invalidation
+optimistic updates
+offline queues
+tests
+docs
+deployment config
+```
+
+Your app is not just generated.
+
+It is understood.
+
+---
+
+## Built for apps that keep changing
+
+The hardest part of AI-generated software is not the first version.
+
+It is the tenth edit.
+
+Dirived keeps a durable semantic model of your app, so follow-up requests become graph changes — not blind file patches.
+
+Ask:
+
+> “Managers can archive users, but only inside their organization.”
+
+Dirived updates the rule, traces every affected action, query, UI state, policy, test, and deployment artifact, then regenerates what changed.
+
+No scattered business logic.
+No duplicated permissions.
+No manual cache invalidation glue.
+No mystery generated code.
+
+---
+
+## Why Dirived is different
+
+### Semantic IR at the core
+
+Dirived does not treat your app as a pile of files. It represents entities, fields, rules, actions, queries, views, providers, effects, boundaries, and deployment resources as typed graph objects.
+
+That means the system can inspect, verify, diff, modify, and regenerate your app with structure.
+
+### Rules are reusable business logic
+
+Define a rule once.
+
+Use it for:
+
+```txt
+server guards
+database policies
+UI disabled states
+query filters
+form validation
+tests
+documentation
+```
+
+The same semantic rule can lower into multiple targets.
+
+### Sync and optimistic updates are derived
+
+Because Dirived knows what every query reads and what every action writes, it can derive precise invalidation and optimistic update plans.
+
+When it cannot prove a safe patch, it falls back conservatively and explains why.
+
+### Deployment is part of the graph
+
+Dirived does not stop at code generation.
+
+If your app needs a database, queue, secret, storage bucket, worker, cron job, or email provider, those become semantic deployment requirements that can be lowered into infrastructure.
+
+No hidden assumptions.
+No missing bindings.
+No “works locally, fails in prod.”
+
+---
+
+## From idea to deployed app
+
+### 1. Describe your app
+
+Tell Dirived what you want to build.
+
+```txt
+Build an admin dashboard where admins can archive users,
+archived users disappear from active lists,
+and archived users receive an email.
+```
+
+### 2. Dirived builds the app graph
+
+Dirived creates the entities, rules, actions, queries, UI views, events, effects, and deployment requirements.
+
+### 3. The compiler verifies it
+
+Dirived checks for unsafe boundaries, missing providers, unsupported lowerings, unhandled errors, invalid rules, and deployment gaps.
+
+### 4. Targets emit the app
+
+Dirived generates the frontend, backend, database schema, policies, tests, docs, and deployment program.
+
+### 5. Keep editing semantically
+
+Every follow-up prompt patches the graph, then regenerates the affected artifacts.
+
+---
+
+## For builders who want more than a prototype
+
+Dirived is designed for serious generated apps:
+
+```txt
+SaaS dashboards
+internal tools
+CRMs
+marketplaces
+booking systems
+admin panels
+workflow apps
+multi-tenant products
+```
+
+Apps with real data.
+Real rules.
+Real auth.
+Real deployment.
+Real change over time.
+
+---
+
+## Built on a compiler architecture
+
+Under the hood, Dirived uses a typed semantic graph compiler.
+
+```txt
+Types define value domains.
+Expressions define inspectable logic.
+Nodes define semantic objects.
+Edges define relationships.
+Traits define checked claims.
+Passes verify, derive, lower, and emit.
+Targets generate concrete artifacts.
+```
+
+This architecture lets Dirived generate across frameworks, runtimes, databases, and deployment platforms without making any one of them the source of truth.
+
+Your app’s meaning comes first.
+
+The code is derived.
+
+---
+
+## Not another codegen wrapper
+
+Dirived is not a prompt-to-template tool.
+
+It is not just an AI chat box over a repo.
+
+It is not a framework trying to own your runtime.
+
+Dirived is a semantic app compiler: a system that turns intent into a durable, inspectable, verifiable app model — then generates the implementation from that model.
+
+---
+
+## The future of AI-generated software is semantic
+
+AI should not have to rediscover your app by rereading files after every prompt.
+
+It should know what your app means.
+
+Dirived gives AI that memory.
+
+A graph it can inspect.
+A compiler it can trust.
+A deployment plan it can execute.
+A codebase it can regenerate safely.
+
+---
+
+# Generate apps from meaning.
+
+Build with AI.
+Edit with confidence.
+Deploy with structure.
+
+**Dirived**
+AI app generation from typed semantic IR.
+
+---
+
+## CTA options
+
+**Primary CTA**
+
+Start building with Dirived
+
+**Secondary CTA**
+
+View the compiler architecture
+
+**Developer CTA**
+
+Explore the semantic IR
+
+**Waitlist CTA**
+
+Join the private alpha
+
+**Investor/technical CTA**
+
+Read the technical thesis
+
+---
+
+## Short hero alternatives
+
+### Option A
+
+**AI apps, derived from meaning.**
+
+Dirived turns your product idea into a typed semantic graph, then generates the app, database, UI, sync, tests, and deployment from that graph.
+
+### Option B
+
+**Prompt-to-code is not enough.**
+
+Dirived is an AI app builder that understands your application before generating it.
+
+### Option C
+
+**The semantic compiler for AI-generated apps.**
+
+Describe your app once. Dirived builds a typed IR, verifies the model, and derives the code, data, UI, policies, tests, and deployment.
+
+### Option D
+
+**Generated apps that can survive the next prompt.**
+
+Dirived keeps a semantic graph of your app, so every AI edit updates the model — not just the files.
+
+
+## UI for every platform
+
+### One app model. Many interfaces.
+
+Dirived separates what your app **is** from where it **renders**.
+
+Views, forms, lists, actions, slots, states, and permissions live in the semantic graph. React, React Native, Solid, terminal UI, admin dashboards, and custom renderers are just targets.
+
+Define the product once. Generate the interface wherever it needs to run.
+
+```txt id="l2dy57"
+View displays Customer.name
+View edits Customer.status
+Button runs archiveCustomer
+Button enabledWhen canArchiveCustomer
+```
+
+From that, Dirived can derive platform-specific UI without duplicating the underlying business meaning.
+
+**Generate for web. Adapt for mobile. Render for internal tools. Extend for anything.**
+
+---
+
+## Portable business logic with rules
+
+### Business logic should not be trapped in framework code.
+
+In most apps, the same rule gets rewritten everywhere:
+
+```txt id="sy2ujd"
+hide this button
+block this API request
+filter this query
+enforce this database policy
+show this validation error
+generate this test
+```
+
+Dirived turns rules into typed, inspectable expressions.
+
+A rule like:
+
+```txt id="4twc8k"
+Managers can archive users in their own organization.
+```
+
+becomes portable semantic logic that can lower into server guards, database policies, UI states, tests, docs, and generated SDK behavior.
+
+Change the rule once. Dirived traces the consequences everywhere.
+
+**No duplicated auth callbacks. No drifting UI logic. No rewrite when the stack changes.**
+
+---
+
+## Flexible stacks
+
+### Bring your stack. Change it later.
+
+Dirived does not make React, Postgres, Supabase, Effect, Cloudflare, or any deployment platform the source of truth.
+
+Your app’s semantics live above the stack.
+
+That means Dirived can target different runtimes, databases, UI frameworks, sync layers, and deployment providers from the same app graph.
+
+```txt id="deu95x"
+Today:
+  React + Postgres + TanStack Query + Cloudflare
+
+Tomorrow:
+  Solid + SQLite + Effect + custom workers
+
+Later:
+  React Native + hosted sync + edge deployment
+```
+
+The implementation can change because the meaning stays stable.
+
+**Frameworks are targets. Your app graph is the source.**
+
+---
+
+## Highly extensible
+
+### Built to grow beyond the defaults.
+
+Dirived is not a closed app builder with a fixed set of primitives.
+
+The core is a semantic graph compiler. New capabilities can be added as dialects: new node types, edge types, traits, rules, passes, targets, diagnostics, and emitters.
+
+Add support for a new database.
+Define a custom workflow engine.
+Introduce a design system.
+Create a deployment target.
+Teach the compiler a new operation law.
+Generate artifacts your team already uses.
+
+Extensibility is not an escape hatch. It is the architecture.
+
+**If your domain has meaning, Dirived can model it. If it can model it, Dirived can derive from it.**
+
+---
+
+## One semantic graph
+
+### The app behind the app.
+
+Dirived keeps a typed graph of your product: data, rules, actions, queries, effects, UI, providers, boundaries, and deployment requirements.
+
+That graph lets AI and humans inspect what the app means instead of reverse-engineering scattered code.
+
+Ask questions like:
+
+```txt id="05esnu"
+Which actions can delete customer data?
+Which UI states depend on this rule?
+Which queries does this mutation affect?
+Which generated files came from this entity?
+Which deployment resources does this workflow require?
+```
+
+Dirived can answer because the relationships are explicit.
+
+**Generated code becomes explainable because it has a semantic source.**
+
+---
+
+## Safer AI edits
+
+### Every change is a graph patch before it becomes code.
+
+Prompt-to-code tools edit files directly.
+
+Dirived edits the semantic model first.
+
+When you ask for a change, Dirived updates entities, rules, actions, queries, views, effects, and deployment requirements in the graph. Then the compiler verifies the change and regenerates the affected artifacts.
+
+That means AI edits can be checked before they become runtime bugs.
+
+```txt id="5r47nq"
+Add a destructive action
+  -> require a guard
+
+Move logic to the client
+  -> check sensitive fields
+
+Add at-least-once delivery
+  -> require idempotency
+
+Use optimistic updates
+  -> require patch or rollback plan
+```
+
+**The AI does not just write code. It edits a system that can push back.**
+
+---
+
+## Derived sync and optimistic updates
+
+### State updates without hand-written glue.
+
+Dirived knows what each query reads and what each action writes.
+
+That lets the compiler derive cache invalidation, optimistic patches, rollback plans, and offline behavior from the app graph.
+
+When the compiler can prove the exact update, it patches locally.
+When it cannot, it invalidates conservatively and explains why.
+
+```txt id="z2v59h"
+archiveUser writes User.archivedAt
+listActiveUsers reads User.archivedAt
+listActiveUsers filters archivedAt is null
+
+=> remove archived user from active list
+=> rollback by restoring archivedAt
+```
+
+**No manual cache-key archaeology. No duplicated optimistic update code.**
+
+---
+
+## Deployable by design
+
+### Infrastructure is part of the app model.
+
+Dirived does not treat deployment as an afterthought.
+
+If your app needs a database, queue, worker, bucket, secret, scheduled job, email provider, or runtime binding, that requirement is represented in the graph.
+
+The deployment target can then derive the infrastructure needed to run the app.
+
+```txt id="84dvbz"
+Action sends email
+  -> requires email provider secret
+
+Dispatch uses at-least-once delivery
+  -> requires idempotency and durable queue
+
+File upload stores assets
+  -> requires bucket and access policy
+```
+
+**No hidden resources. No missing environment variables. No generated app that cannot run.**
+
+Building on the edge-centered graph and operation/law model in the revised core doc, here are landing-page-ready section options. 
+
+---
+
+## Auto CRUD
+
+### CRUD is just the beginning.
+
+Most app builders generate CRUD from tables.
+
+Dirived generates CRUD from meaning.
+
+Because Dirived understands your entities, fields, relationships, permissions, operations, validations, storage mappings, and UI targets, it can derive create, read, update, and delete flows that are actually connected to the rest of your app.
+
+```txt id="v1k9d0"
+Entity owns fields
+Fields have types
+Types support operations
+Rules guard actions
+Actions write fields
+Views submit actions
+Queries read fields
+```
+
+From that graph, Dirived can generate forms, lists, editors, detail pages, server actions, database constraints, policies, validation, tests, and optimistic update plans.
+
+CRUD is not a scaffold you outgrow.
+
+It is a view over your app’s semantic model.
+
+**Generate the boring parts. Keep the meaning. Customize the rest.**
+
+---
+
+## Reactivity without guesswork
+
+### Dirived knows what changes.
+
+In most apps, reactivity is manually wired.
+
+You write cache keys.
+You invalidate queries.
+You patch local state.
+You hope every list, count, badge, and detail page stays correct.
+
+Dirived has the missing context.
+
+It knows which queries read which fields, which actions write which fields, which rules affect membership, which views depend on which queries, and which operations were applied.
+
+```txt id="44vdor"
+archiveUser writes User.archivedAt
+listActiveUsers reads User.archivedAt
+listActiveUsers filters archivedAt is null
+UserListView depends on listActiveUsers
+```
+
+So Dirived can derive the update:
+
+```txt id="2c2j8f"
+remove archived user from active list
+update affected counts
+invalidate dependent resources when needed
+generate rollback if the operation is reversible
+```
+
+No cache-key archaeology.
+No hand-written invalidation maze.
+No stale UI by accident.
+
+**Reactivity becomes a compiler output.**
+
+---
+
+## Optimistic updates from operation semantics
+
+### Instant UI, backed by proof.
+
+Optimistic updates are easy to fake and hard to get right.
+
+Dirived does not guess. It derives optimistic behavior from operation semantics.
+
+If an action applies an operation that is patchable, reversible, idempotent, or commutative, Dirived can use those laws to plan the client update, rollback, retry, and reconciliation strategy.
+
+```txt id="x3vfzf"
+Operation: set User.archivedAt
+Traits: patchable, reversible
+Action: archiveUser
+Query affected: listActiveUsers
+```
+
+Dirived can generate:
+
+```txt id="26pkg7"
+local patch
+rollback patch
+affected query updates
+server reconciliation
+fallback invalidation
+tests for the optimistic path
+```
+
+When the compiler cannot prove the update is safe, it does not pretend.
+
+It falls back conservatively and explains why.
+
+**Fast when proven. Safe when uncertain.**
+
+---
+
+## Manual reactivity, but typed
+
+### Escape hatches without losing the graph.
+
+Sometimes the compiler should not infer everything.
+
+External systems, custom caches, opaque logic, domain-specific subscriptions, and hand-tuned performance paths still need manual control.
+
+Dirived keeps manual reactivity — but makes it typed.
+
+Instead of scattered strings and one-off invalidation calls, manual reactivity becomes explicit graph facts:
+
+```txt id="lmjujy"
+Action invalidates Key
+Action patches Resource
+Query derives Key
+Mutation affects View
+External event updates Entity
+```
+
+That means manual declarations can still be checked, traced, documented, tested, and combined with derived reactivity.
+
+You can override the compiler without leaving the model.
+
+**Manual when needed. Semantic always.**
+
+---
+
+## Operation logs from the app graph
+
+### Every change can become an event.
+
+When Dirived knows every operation that can happen to every type, it can derive more than UI updates.
+
+It can derive an operation log.
+
+```txt id="qm3k2s"
+who performed the action
+what operation was applied
+which entity changed
+which fields changed
+which rules allowed it
+which queries were affected
+which downstream effects were triggered
+```
+
+That operation log can power audit trails, sync protocols, offline replay, event sourcing, debugging, analytics, and AI explanations.
+
+Because the log is derived from semantic operations, it is not just a database diff.
+
+It is a record of what the app meant to do.
+
+**Store changes as meaning, not just mutations.**
+
+---
+
+## CRDT-like behavior where the laws allow it
+
+### Conflict handling starts with knowing the operation.
+
+Not every update should be treated the same.
+
+Appending to a list is different from setting a field.
+Incrementing a counter is different from replacing a document.
+Adding a tag is different from deleting an account.
+
+Dirived models operations with laws:
+
+```txt id="yw7s9c"
+commutative
+associative
+idempotent
+reversible
+monotonic
+has identity
+has inverse
+retry-safe
+offline-replay-safe
+```
+
+When operations have the right properties, Dirived can derive CRDT-like merge behavior, offline replay strategies, conflict resolution, and safe retries.
+
+When they do not, Dirived can require server authority, user confirmation, or a custom merge policy.
+
+**Some conflicts can merge automatically. Others should not. Dirived knows the difference.**
+
+---
+
+## Incremental view maintenance
+
+### Recompute less. Update exactly what changed.
+
+Most apps refetch because they do not know what else to do.
+
+Dirived knows the shape of the data, the queries that read it, the operations that changed it, and the laws those operations obey.
+
+That makes incremental view maintenance possible.
+
+```txt id="c9pdds"
+Query counts active users
+Action archives one user
+Operation changes archivedAt from null to datetime
+Predicate archivedAt is null becomes false
+```
+
+Dirived can derive the delta:
+
+```txt id="rvkqfo"
+activeUserCount -= 1
+remove user from activeUserList
+preserve unrelated rows
+avoid full recomputation
+```
+
+For dashboards, analytics, live lists, counters, materialized views, and real-time interfaces, that means less refetching and more precise updates.
+
+**When the compiler knows the delta, the app does not need to reload the world.**
+
+---
+
+## Sync generated from semantics
+
+### The sync layer should understand the app.
+
+Generic sync systems move data.
+
+Dirived can move meaning.
+
+Because the graph knows entities, relationships, operations, rules, queries, and placement, it can derive sync plans that match the application instead of treating everything like anonymous rows.
+
+```txt id="e1o3ag"
+which data belongs on the client
+which writes can happen offline
+which operations can replay safely
+which conflicts can merge
+which queries need live updates
+which fields are sensitive
+which resources require server authority
+```
+
+From that, Dirived can generate or target sync runtimes with precise subscriptions, operation queues, optimistic patches, rollback plans, and conflict policies.
+
+**Sync is not bolted on after the app is generated. It is derived from the same graph.**
+
+---
+
+## The compiler knows what changes when
+
+### Relationships make reactivity obvious.
+
+Dirived’s graph does not just know objects.
+
+It knows relationships.
+
+```txt id="t8tcnb"
+Query reads Field
+Action writes Field
+Rule guards Action
+View depends on Query
+Operation produces Patch
+Patch has Inverse
+Key derives from Query
+```
+
+Those relationships let the compiler trace cause and effect across the app.
+
+When something changes, Dirived can answer:
+
+```txt id="i4j6jn"
+What did this action modify?
+Which queries are affected?
+Can this update be patched?
+Can it be rolled back?
+Can it replay offline?
+Can it merge with other updates?
+Should it invalidate instead?
+Which UI should update?
+Which tests should be generated?
+```
+
+That is the difference between generated code and a generated system.
+
+**Dirived does not just emit files. It understands consequences.**
+
+
+## Typed errors from backend to UI
+
+### Errors should not disappear into strings.
+
+Dirived treats errors as part of the app model.
+
+Validation failures, invariant violations, authorization denials, deployment issues, sync conflicts, and backend exceptions can all be represented as typed diagnostics with structured metadata.
+
+```txt id="typkq9"
+code: USER_EMAIL_NOT_UNIQUE
+subject: User.email
+severity: error
+userMessage: "That email address is already in use."
+backendMessage: "Unique invariant failed for User.email."
+httpStatus: 409
+retryable: false
+```
+
+The backend can return errors the UI actually understands.
+
+Forms can map errors to fields.
+Buttons can explain disabled states.
+APIs can document failure cases.
+Logs can group issues by semantic code.
+Tests can assert exact diagnostics.
+
+**No mystery 500s. No untyped error strings. No lost context.**
+
+---
+
+## Observability with semantic context
+
+### Logs should know what the app was trying to do.
+
+Most observability tools see requests, traces, spans, logs, and exceptions.
+
+Dirived can add semantic meaning.
+
+Because actions, rules, queries, effects, providers, boundaries, invariants, and deployment resources are graph objects, runtime events can point back to the app model.
+
+```txt id="bmgz75"
+archiveUser failed
+  guardedBy canArchiveUser
+  wrote User.archivedAt
+  emitted UserArchived
+  required EmailProvider
+  violated ActiveUserHasEmail
+```
+
+That means dashboards and alerts can answer higher-level questions:
+
+```txt id="eg66k6"
+Which business rule is failing most often?
+Which invariant blocks checkout?
+Which UI flow produces this backend error?
+Which deployment resource caused this action to fail?
+Which generated artifact introduced this behavior?
+```
+
+**Observability becomes semantic, not just operational.**
+
+---
+
+## Audit trails from operations
+
+### Record what changed, why, and under which rule.
+
+Dirived knows the operation behind every mutation.
+
+That makes audit trails richer than database diffs.
+
+Instead of only recording:
+
+```txt id="q0a9h1"
+users.archived_at changed from null to 2026-05-04
+```
+
+Dirived can record:
+
+```txt id="6v3eoc"
+Action: archiveUser
+Actor: admin@example.com
+Operation: SetField(User.archivedAt)
+Guard: canArchiveUser
+Rule result: passed
+Reason: Admin archived inactive user
+Effect: UserArchived event emitted
+Affected queries: listActiveUsers, userDetail
+```
+
+Auditing becomes explainable.
+
+You can trace who did what, which rule allowed it, which invariant was checked, which effects ran, and which generated artifacts were responsible.
+
+**Not just a changelog. A semantic record of business behavior.**
+
+---
+
+## Invariants as contracts
+
+### Business rules that can push back.
+
+Dirived does not treat business logic as scattered callbacks.
+
+Rules, predicates, refinements, and invariants become typed semantic contracts.
+
+```txt id="o7q1vz"
+User.email must be unique.
+Order.total must equal the sum of line items.
+Managers can only archive users in their organization.
+At-least-once delivery requires idempotency.
+Client UI must not expose server-only fields.
+```
+
+Each invariant can carry:
+
+```txt id="ss7tmr"
+typed predicate
+error code
+user message
+developer message
+severity
+field path
+target lowerings
+runtime diagnostic
+test generation
+observability tags
+```
+
+That lets Dirived enforce the same truth across UI, API, database, queues, sync, tests, docs, and deployment.
+
+**Define the contract once. Let the compiler apply it everywhere.**
+
+---
+
+## Correctness by construction
+
+### More confidence before the app runs.
+
+Dirived cannot prove everything.
+
+But it can prove, verify, derive, and test much more than a normal generated codebase.
+
+Because your app is represented as typed semantic IR, the compiler can check relationships before code is emitted:
+
+```txt id="gogobd"
+Does this action have a guard?
+Can this rule lower to SQL?
+Can this client view read this field safely?
+Does this optimistic update have a rollback plan?
+Does this queue have idempotency?
+Does this form handle every validation error?
+Does this deployment provide every required secret?
+```
+
+The result feels closer to a formally verified system — not because every theorem is proven, but because business logic is explicit, typed, checked, traced, and reused.
+
+**Fewer hidden assumptions. Fewer duplicated rules. Fewer production surprises.**
+
+---
+
+## Diagnostics that explain the system
+
+### Every compiler warning is a map.
+
+Dirived diagnostics point to semantic facts, not just files.
+
+A diagnostic can trace the relationship chain that caused it:
+
+```txt id="esvny4"
+Button.enabledWhen canArchiveUser
+canArchiveUser reads User.organizationId
+User.organizationId is server-only
+Button renders on client
+
+=> cannot safely evaluate this rule on the client
+```
+
+That diagnostic can produce:
+
+```txt id="l38s9y"
+a developer explanation
+a safe user-facing message
+a suggested fix
+a generated test case
+a docs note
+a target-specific fallback
+```
+
+So when the compiler says “no,” it also tells you why — and often how to fix it.
+
+**Errors become repairable because the graph knows their cause.**
+
+---
+
+## End-to-end error contracts
+
+### The UI and backend agree before runtime.
+
+Dirived can derive API error schemas from actions, invariants, rules, and effects.
+
+That means your frontend knows the exact errors an action can return.
+
+```txt id="79gw7p"
+archiveUser may return:
+  NOT_AUTHORIZED
+  USER_ALREADY_ARCHIVED
+  USER_NOT_FOUND
+  EMAIL_DELIVERY_QUEUED
+  INVARIANT_VIOLATION
+```
+
+The UI can render appropriate states.
+The API can document exact responses.
+Tests can cover every branch.
+Analytics can group failures by code.
+Support can understand what happened.
+AI agents can suggest targeted repairs.
+
+**Errors stop being side effects. They become part of the contract.**
+
+---
+
+## Refinements everywhere
+
+### Types can carry business meaning.
+
+A string is not always just a string.
+
+```txt id="yc5sq6"
+Email
+NonEmptyString
+PositiveMoney
+OrganizationSlug
+PublicUserId
+ServerOnlySecret
+SerializablePayload
+```
+
+Dirived lets types carry refinements, traits, transformations, and diagnostics.
+
+Those refinements can lower into:
+
+```txt id="0gzig7"
+form validation
+server validation
+database constraints
+OpenAPI schemas
+runtime parsers
+tests
+docs
+UI hints
+```
+
+So the meaning of a value stays attached as it moves through the app.
+
+**When types know more, the compiler can protect more.**
+
+---
+
+## Confidence without ceremony
+
+### Strong guarantees, generated from ordinary app meaning.
+
+Dirived does not ask teams to become theorem provers.
+
+You describe entities, rules, actions, queries, views, effects, and invariants.
+
+Dirived turns them into a graph the compiler can inspect.
+
+Then it derives checks, diagnostics, tests, policies, schemas, and runtime guards from that same source of truth.
+
+```txt id="1u29gm"
+Typed rules
++ explicit operations
++ checked invariants
++ structured diagnostics
++ generated tests
++ target legalization
+= higher confidence business logic
+```
+
+It is not magic.
+It is not blind codegen.
+It is a system where more of your app is visible to the compiler.
+
+**The more meaning you model, the more correctness Dirived can derive.**
+
+## Primitives that compose
+
+### Small pieces. Large systems.
+
+Dirived is built from a small set of semantic primitives:
+
+```txt
+Type
+Expr
+Transform
+Node
+Edge
+Trait
+Protocol
+Pass
+```
+
+Everything else is built by composition.
+
+Entities, fields, rules, actions, queries, forms, workflows, queues, policies, storage, deployment, and UI are not hardcoded islands. They are graph objects connected by typed relationships.
+
+That means every new feature becomes part of the same system.
+
+```txt
+Action writes Field
+Rule guards Action
+View submits Action
+Query reads Field
+Target lowers Rule
+Artifact generatedFrom Edge
+```
+
+The model stays simple, even as the app grows.
+
+**A tiny kernel. A very large surface area.**
+
+---
+
+## Extensible by design
+
+### Teach the compiler new meaning.
+
+Dirived is not a closed app builder with a fixed vocabulary.
+
+Add a new dialect. Define new node kinds, edge kinds, traits, protocols, passes, diagnostics, and targets. The compiler can then verify, derive, lower, and emit from your custom semantics.
+
+```txt
+Add a billing dialect.
+Add a workflow dialect.
+Add a design-system dialect.
+Add a deployment target.
+Add a custom database lowering.
+Add a company-specific policy rule.
+```
+
+Extensibility is not an afterthought or a plugin escape hatch.
+
+It is how Dirived is built.
+
+**If your domain has structure, Dirived can model it. If Dirived can model it, it can derive from it.**
+
+---
+
+## Full type safety
+
+### The graph is typed all the way down.
+
+Dirived does not rely on loose strings, hidden conventions, or untyped config.
+
+Types, refs, expressions, operations, traits, edges, rules, actions, providers, and targets carry type information through the graph.
+
+That means invalid composition can be caught early:
+
+```txt
+A rule cannot guard the wrong kind of node.
+A field cannot be written with the wrong value type.
+A client view cannot safely read a server-only field.
+An action cannot call a provider it does not require.
+A target cannot lower a rule it does not support.
+```
+
+TypeScript catches local mistakes.
+Compiler passes catch global mistakes.
+Diagnostics explain what cannot be proven statically.
+
+**You get the speed of generated apps with the confidence of a typed compiler.**
+
+---
+
+## Inference where it matters
+
+### Write less. Know more.
+
+Dirived is designed so meaning flows through the system.
+
+Define an entity, and fields know their types.
+Write a rule, and the compiler knows which fields it reads.
+Create an action, and Dirived knows what it writes, what it requires, what it affects, and what errors it can return.
+
+```txt
+operation requirements
+  -> expression requirements
+  -> rule requirements
+  -> action requirements
+  -> boundary requirements
+  -> deployment requirements
+```
+
+You do not manually wire every detail.
+
+The graph infers what it can, asks for what it cannot, and falls back safely when logic is opaque.
+
+**Less boilerplate. More structure. Better defaults.**
+
+---
+
+## Flexible stacks
+
+### Your app is not your framework.
+
+Dirived keeps application meaning above the implementation stack.
+
+React, Solid, Postgres, SQLite, Effect, TanStack Query, Cloudflare, Alchemy, OpenAPI, JSON Schema, and custom runtimes can all be targets of the same semantic graph.
+
+```txt
+Today:
+  React + Postgres + TanStack Query
+
+Tomorrow:
+  Solid + SQLite + Effect
+
+Later:
+  React Native + edge workers + generated sync
+```
+
+You are not locked into the first generated stack.
+
+Frameworks are outputs.
+The graph is the source.
+
+**Change targets without rewriting the app’s meaning.**
+
+---
+
+## Strong refs, not magic strings
+
+### Rename safely. Generate confidently.
+
+Dirived uses stable typed refs for semantic identity.
+
+A field is not `"email"`.
+An action is not `"archiveUser"`.
+A rule is not a callback hidden in a file.
+
+They are graph objects with durable references.
+
+That means generated artifacts can point back to their source. Refactors can preserve identity. Migrations can detect renames. AI edits can patch the right object instead of searching through text.
+
+```txt
+User.email
+  -> database column
+  -> form field
+  -> OpenAPI schema
+  -> validation error
+  -> generated test
+  -> UI label
+```
+
+One semantic object. Many derived artifacts.
+
+**No fragile strings. No hidden identity. No guesswork.**
+
+---
+
+## Built for AI agents
+
+### AI should edit the model, not just the files.
+
+Most AI builders ask a model to patch code directly.
+
+Dirived gives AI something better: a typed graph of the application.
+
+The agent can inspect entities, rules, actions, queries, UI, providers, effects, diagnostics, and deployment requirements before editing. Then it can make a graph patch and let the compiler verify the result.
+
+```txt
+User request:
+  “Managers can archive users in their organization.”
+
+Graph patch:
+  update canArchiveUser rule
+  add organization field reads
+  update UI disabled state
+  update server guard
+  update RLS predicate
+  update tests
+```
+
+The AI does not have to rediscover the app from scattered files.
+
+It can reason over the app’s meaning.
+
+**Better context. Safer edits. Regenerable code.**
+
+---
+
+## Flexible when you need it
+
+### Structured by default. Escape hatches when necessary.
+
+Dirived works best when logic is represented as typed semantic IR.
+
+But real apps need custom code.
+
+Opaque functions, raw SQL, custom runtime adapters, hand-tuned caching, and target-specific logic are allowed — they are just explicit.
+
+When Dirived cannot inspect something, it asks for the blast radius:
+
+```txt
+This opaque action may write Project.status.
+This raw query may read Invoice.
+This custom transform is server-only.
+```
+
+The compiler can then fall back conservatively, emit diagnostics, and keep the app correct.
+
+**Use the graph for what can be known. Declare the edges for what cannot.**
+
+---
+
+## A compiler, not a template engine
+
+### Generated code with a source of truth.
+
+Templates emit files.
+
+Dirived derives artifacts from a semantic graph.
+
+That graph is verified, transformed, lowered, and traced through compiler passes. Every generated artifact can point back to the types, expressions, nodes, edges, rules, and operations that produced it.
+
+```txt
+verify
+derive
+canonicalize
+legalize
+lower
+emit
+```
+
+This is why Dirived can generate more than code:
+
+```txt
+schemas
+policies
+forms
+tests
+docs
+sync plans
+operation logs
+deployment resources
+diagnostics
+```
+
+**Not prompt-to-template. Prompt-to-IR-to-app.**
+
+---
+
+## One model, many outputs
+
+### The same facts power the whole app.
+
+A single rule can become:
+
+```txt
+server guard
+database policy
+UI disabled state
+query predicate
+test case
+documentation
+```
+
+A single action can become:
+
+```txt
+server function
+mutation hook
+optimistic patch
+audit event
+operation log
+deployment requirement
+generated test
+```
+
+A single field can become:
+
+```txt
+database column
+form input
+JSON schema property
+OpenAPI field
+validation diagnostic
+migration artifact
+UI label
+```
+
+Dirived does not duplicate these facts across systems.
+
+It derives them from one semantic source.
+
+**Define meaning once. Compile everything else.**
+
+The only semantic primitives are Node, Edge, and Trait. Everything else is a dialect-level pattern over those primitives. The compiler substrate provides refs, symbols, graph storage, passes, diagnostics, artifacts, locations, and provenance.”
+
+## Made for the agentic era
+
+### AI agents should not build apps by guessing through files.
+
+Most AI coding tools spend tokens rereading your repo, searching for scattered logic, patching implementation details, and rediscovering the same context over and over.
+
+Dirived gives agents a better interface: a typed semantic graph of the app.
+
+Instead of asking an agent to infer meaning from thousands of lines of code, Dirived lets it inspect the actual app model:
+
+```txt id="4anmfd"
+Entities
+Fields
+Rules
+Actions
+Queries
+Views
+Effects
+Providers
+Resources
+Deployments
+Diagnostics
+```
+
+The agent edits meaning first.
+The compiler derives the files.
+
+**Less context lost. Fewer blind patches. More correct changes per token.**
+
+---
+
+## The most token-efficient way to build software with AI
+
+### Stop paying models to rediscover your architecture.
+
+A codebase is a noisy interface for an AI agent.
+
+The same business rule may be spread across:
+
+```txt id="38o8uc"
+React components
+API routes
+database schemas
+server actions
+validators
+hooks
+cache keys
+tests
+deployment config
+```
+
+Dirived compresses that into a semantic IR the agent can query, modify, and verify.
+
+Ask:
+
+> “Let managers archive users, but only inside their organization.”
+
+The agent does not need to inspect every file. It patches the rule, then lets Dirived trace the affected actions, queries, UI states, policies, tests, and artifacts.
+
+That means fewer tokens spent reading boilerplate, fewer tokens spent repairing mistakes, and more tokens spent on product intent.
+
+**Semantic context is cheaper than source-code archaeology.**
+
+---
+
+## Higher confidence from a compiler loop
+
+### AI writes. The graph pushes back.
+
+Dirived gives AI agents a correctness loop.
+
+Every change can be checked before it becomes generated code:
+
+```txt id="t8ijmh"
+Does this action have a guard?
+Can this rule run on the client?
+Can this policy lower to SQL?
+Does this queue have idempotency?
+Can this optimistic update roll back?
+Does this deployment provide the required secret?
+```
+
+When the graph is invalid, Dirived emits structured diagnostics with semantic traces and suggested fixes.
+
+The agent gets a precise repair target instead of a vague test failure.
+
+```txt id="k3f405"
+Button.disabled depends on canArchiveUser
+canArchiveUser reads User.organizationId
+User.organizationId is server-only
+=> cannot evaluate this rule on the client
+```
+
+**AI can move faster when the system can say exactly what is wrong.**
+
+---
+
+## Lower costs, better context
+
+### Use tokens on intent, not boilerplate.
+
+Dirived reduces the amount of code an agent needs to inspect, generate, and repair.
+
+The app graph is a compressed representation of what matters:
+
+```txt id="10bjp8"
+what data exists
+what rules apply
+what operations happen
+what UI depends on
+what resources are required
+what targets emit
+```
+
+Generated files become outputs, not the agent’s primary workspace.
+
+That changes the economics of AI development:
+
+```txt id="qgvklh"
+less repo scanning
+less duplicated context
+less repeated codegen
+less manual invalidation
+less debugging from vague runtime errors
+more reliable graph patches
+more reusable compiler derivations
+```
+
+**The cheapest code for an AI agent to maintain is code it does not have to reason about directly.**
+
+---
+
+## Humans describe. Agents model. Dirived compiles.
+
+### Nobody wants to hand-write IR. Agents do not care.
+
+Humans should not have to write low-level semantic IR by hand.
+
+You describe the product:
+
+```txt id="b1j5vv"
+Build a multi-tenant CRM where managers can assign leads,
+sales reps can update only their own leads,
+and admins can export reports.
+```
+
+The agent can translate that intent into Dirived’s graph:
+
+```txt id="6s7tuk"
+Lead entity
+Organization relation
+canAssignLead rule
+updateLead action
+leadList query
+exportReports workflow
+role-based policies
+UI views
+deployment resources
+```
+
+Then Dirived verifies, derives, lowers, and emits the implementation.
+
+The IR is not for humans to lovingly hand-author.
+
+It is the structured workspace where AI agents can operate with precision.
+
+**Natural language for humans. Semantic IR for agents. Generated code for machines.**
+
+---
+
+## Beyond DSLs
+
+### Not a DSL. A general-purpose app IR.
+
+A DSL gives you one language for one domain.
+
+Dirived gives you a semantic graph kernel for creating many domain languages.
+
+Build your own vocabulary:
+
+```txt id="996dvi"
+gen.billing.subscription(...)
+gen.workflow.approval(...)
+gen.crm.pipeline(...)
+gen.healthcare.patientRecord(...)
+gen.marketplace.listing(...)
+gen.company.policy(...)
+```
+
+Each DSL becomes a dialect over the same IR: nodes, edges, traits, protocols, passes, diagnostics, and targets.
+
+That means your custom language does not live in isolation. It can still participate in auth, UI, storage, sync, tests, deployment, observability, and code generation.
+
+**Do not choose between flexibility and structure. Create the DSL your domain deserves.**
+
+---
+
+## Drizzle and Alchemy, taken to the next layer
+
+### Great tools define infrastructure and data. Dirived defines meaning.
+
+Drizzle gives TypeScript-native database structure.
+Alchemy gives TypeScript-native infrastructure.
+Dirived sits one layer above.
+
+It knows why the table exists.
+It knows which action writes to it.
+It knows which rule guards that action.
+It knows which view depends on the query.
+It knows which deployment resources are required.
+
+Then it can lower into tools like Drizzle, SQL, Alchemy, React, Effect, OpenAPI, and tests.
+
+```txt id="0e3om4"
+Entity -> table/schema
+Action -> server function
+Rule -> RLS/server guard/UI state
+Effect -> queue/worker/secret
+Boundary -> route/deployment binding
+```
+
+Dirived does not replace specialized tools.
+
+It gives them a semantic source of truth.
+
+**Infrastructure as code becomes infrastructure derived from meaning.**
+
+---
+
+## The agentic development loop
+
+### Prompt. Patch. Verify. Derive. Deploy.
+
+Dirived is designed for agents that work in loops.
+
+```txt id="si3ac0"
+1. User describes a change.
+2. Agent patches the semantic graph.
+3. Dirived verifies the graph.
+4. Diagnostics guide repair.
+5. Passes derive affected relationships.
+6. Targets emit code, schemas, UI, tests, and infra.
+7. The app deploys.
+```
+
+Every step is inspectable.
+
+Every artifact points back to graph facts.
+
+Every error can carry a semantic trace.
+
+That gives agents a smaller search space, better feedback, and a more reliable way to make large changes.
+
+**Not chat over a repo. A compiler loop for autonomous software development.**
+
+---
+
+## Built-in guarantees, extensible guarantees
+
+### The more meaning you model, the more the compiler can protect.
+
+Dirived cannot magically prove arbitrary code correct.
+
+But when business logic is modeled as typed rules, operations, invariants, effects, and relationships, the compiler can enforce guarantees that ordinary codegen cannot.
+
+```txt id="v3xewo"
+Rules stay pure.
+Client code cannot read server-only fields.
+At-least-once delivery requires idempotency.
+Optimistic updates need patches or rollback.
+Targets reject unsupported lowerings.
+Generated artifacts preserve provenance.
+```
+
+And because Dirived is extensible, your team can add its own guarantees:
+
+```txt id="l15xq6"
+Every destructive action requires audit logging.
+Every tenant query must include tenant scope.
+Every payment action must be idempotent.
+Every admin view must enforce server-side policy.
+```
+
+**Your architecture becomes something the agent can check, not just remember.**
+
+---
+
+## Less generated mess
+
+### Generated code should have a source of truth.
+
+The problem with AI-generated software is not that it writes code.
+
+It is that the code often has no stable model behind it.
+
+Dirived changes that.
+
+Files are emitted from semantic graph facts. If something looks wrong, you can trace it:
+
+```txt id="z6rrwc"
+Generated button
+  <- View submits archiveUser
+  <- archiveUser guardedBy canArchiveUser
+  <- canArchiveUser reads actor.role
+```
+
+That makes generated apps easier to debug, refactor, regenerate, and trust.
+
+**When the code has a semantic source, the agent can maintain it without starting over.**
+
+---
+
+## A better interface for intelligence
+
+### Give the model structure and it can do better work.
+
+Large language models are powerful, but raw codebases are inefficient context.
+
+Dirived gives agents a structured substrate:
+
+```txt id="juntwl"
+typed refs instead of string search
+graph queries instead of repo spelunking
+diagnostics instead of vague failures
+semantic diffs instead of noisy file diffs
+compiler passes instead of repeated boilerplate
+```
+
+The result is not just lower cost.
+
+It is higher leverage.
+
+The same agent can make bigger changes, with clearer feedback, using less context.
+
+**Dirived turns AI from a code patcher into an app compiler operator.**
+
+
+

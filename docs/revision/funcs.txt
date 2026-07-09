@@ -1,0 +1,814 @@
+Yes — **functions should become first-class callable nodes**, and expressions/rules should be the logic bodies that functions can wrap. I would not call all funcs “callable expressions,” because that blurs purity/effects. I’d use this split:
+
+```txt
+Expr
+  Pure/inspectable logic tree.
+
+ExprFunction
+  Callable pure expression.
+
+Rule
+  Named boolean ExprFunction with business meaning.
+
+QueryFunction
+  Callable read node, usually backed by QueryExpr / Expr / Rule filters.
+
+ActionFunction
+  Callable write/effect node, backed by ActionExpr / operation uses / plan region.
+
+Mutation
+  Reactive wrapper around an ActionFunction: invalidation, optimistic plan, refresh behavior.
+
+PatchFunction
+  Callable patch/rollback/reconcile function, usually derived from operation laws.
+
+PlanFunction
+  Callable execution plan, composed from other callables.
+```
+
+The current library already has this taxonomy almost exactly: `StaticFunction`, `ExprFunction`, `PredicateFunction`, `QueryFunction`, `ActionFunction`, `PatchFunction`, and `PlanFunction`; it also already treats queries as canonical reads, actions as canonical writes/effects, and patches as optimistic functions.  The revised kernel should preserve that conceptual model, but represent each function as a **node in the graph**.
+
+# 1. Funcs in the revised kernel
+
+A function should be a node with the `CallableProtocol`.
+
+```txt
+FunctionDefNode
+  kind: FunctionNodeKind
+  traits:
+    NodeCallable
+    NodeNamed
+    NodeTyped
+    maybe NodeReadable
+    maybe NodeWritable
+    maybe NodeEffectful
+    maybe NodeReactive
+    maybe NodeKeyed
+
+  protocols:
+    CallableProtocol
+    maybe ReadableProtocol
+    maybe WritableProtocol
+    maybe PatchProtocol
+    maybe PlanProtocol
+```
+
+So:
+
+```txt
+ExprFunction    = FunctionDefNode + ExprBodyEdge + Pure traits
+Rule            = FunctionDefNode + Boolean output + Rule traits
+QueryFunction   = FunctionDefNode + Readable traits + Query body + optional key
+ActionFunction  = FunctionDefNode + Writable/effectful traits + operation uses
+PatchFunction   = FunctionDefNode + Patch traits + inverse/reconcile edges
+PlanFunction    = FunctionDefNode + Plan traits + region/plan body
+```
+
+This keeps codegen simple. Emitters can ask:
+
+```ts
+graph.nodesWithTrait(NodeCallable)
+graph.supportsProtocol(node, CallableProtocol)
+graph.edgesFrom(node, FunctionBodyEdgeKind)
+graph.edgesFrom(node, GuardedByEdgeKind)
+graph.edgesFrom(node, InvalidatesKeyEdgeKind)
+```
+
+Instead of knowing every legacy array:
+
+```txt
+ctx.query_functions
+ctx.action_functions
+ctx.patch_functions
+ctx.plan_functions
+```
+
+Those can remain as public frontend concepts, but internally they should be graph nodes.
+
+# 2. Callable expressions vs callable nodes
+
+I would use this distinction:
+
+```txt
+Callable expression
+  Pure, expression-backed, no writes, no effects.
+  Good for rules, derived values, projections, validation, computed fields.
+
+Callable node
+  Runtime-callable boundary.
+  May read, write, require providers, cross boundaries, produce effects.
+  Good for queries, actions, mutations, workflows, routes.
+```
+
+So an `ExprFunction` is a callable expression:
+
+```ts
+const fullName = gen.func.expr({
+  input: User,
+  returns: gen.type.string(),
+  body: ({ user }) => user.firstName.concat(" ").concat(user.lastName),
+});
+```
+
+A `Rule` is a boolean callable expression:
+
+```ts
+const canEditProject = gen.rule({
+  vars: { actor: User, project: Project },
+  when: ({ actor, project }) =>
+    actor.tenantId.eq(project.tenantId).and(
+      actor.role.eq(Role.Admin).or(project.ownerId.eq(actor.id))
+    ),
+});
+```
+
+A `QueryFunction` is not “just” a callable expression. It is a callable read node:
+
+```txt
+QueryFunction
+  input -> output
+  body reads storage/query source
+  may be guarded by rules
+  may have stable reactive key
+  codegen target: loader, endpoint, hook, resource, SQL query
+```
+
+An `ActionFunction` is a callable write/effect node:
+
+```txt
+ActionFunction
+  input -> output
+  applies operations
+  writes fields/entities/stores
+  may emit events
+  may invalidate keys
+  may have optimistic/rollback plan
+  codegen target: mutation endpoint, server action, RPC route, queue job
+```
+
+That split is important because rules must remain pure; actions must be allowed to write/effect.
+
+# 3. How queries/actions/mutations should work
+
+I’d define the callable dialect around these node kinds:
+
+```txt
+FunctionNodeKind
+ExprFunctionNodeKind
+RuleNodeKind
+QueryNodeKind
+ActionNodeKind
+PatchNodeKind
+PlanFunctionNodeKind
+MutationNodeKind
+```
+
+But all of them are still nodes.
+
+## Query
+
+A query node should have:
+
+```txt
+input type
+output type
+body expression/query plan
+read edges
+guard edges
+stable key expression
+requirements
+target runtimes
+```
+
+Graph facts:
+
+```txt
+Query hasBody QueryExpr
+Query reads Entity/Field/Relation
+Query guardedBy Rule
+Query hasKey KeyExpression
+Query returns Type
+Query requires Provider/Context
+Query lowersTo SQL / HTTP / loader / resource hook
+```
+
+This is critical for codegen because one query can generate:
+
+```txt
+server route
+SQL select
+route loader
+client hook/resource
+cache key
+test fixture
+docs entry
+devtools node
+```
+
+## Action
+
+An action node should have:
+
+```txt
+input type
+output type
+body action plan
+operation uses
+write edges
+guard edges
+effects
+requirements
+consistency mode
+manual or derived invalidation
+optional optimistic plan
+```
+
+Graph facts:
+
+```txt
+Action appliesOperation SetField
+Action writes User.archivedAt
+Action guardedBy Rule
+Action invalidates KeyPattern
+Action produces Patch
+Action requires Transaction
+Action lowersTo server mutation / route / queue job
+```
+
+The current `ActionFunction` already contains body operations, auth, invalidates, reactivity, optimistic patch, consistency, written stores, effects, requirements, target runtimes, and call plan.  The new model should keep that information, but move it into graph nodes/edges/traits/protocols.
+
+## Mutation
+
+A mutation should not be a separate core primitive. It is a **reactive view over an action**.
+
+Current `ReactiveMutation` wraps an `ActionFunction` with invalidation and optimistic plan.  That is still the right idea.
+
+Revised model:
+
+```txt
+MutationNode
+  wraps ActionNode
+  has invalidation plan
+  has optimistic plan
+  participates in reactive runtime
+```
+
+Edges:
+
+```txt
+Mutation wrapsAction Action
+Mutation invalidates KeyPattern
+Mutation appliesOptimistic PatchFunction
+Mutation rollsBackWith PatchFunction
+Mutation refreshes Resource
+```
+
+So for codegen:
+
+```txt
+ActionFunction
+  generates server behavior
+
+ReactiveMutation
+  generates client mutation wrapper, invalidation, optimistic behavior
+```
+
+Keep that separation. It is very useful.
+
+# 4. Scope is not one thing
+
+“Scope” should be explicit, but there are several kinds.
+
+I’d model scope as a core/dialect concept with typed scope nodes and scope edges.
+
+```txt
+Lexical scope
+  variables available inside Expr/Rule/Function body.
+
+Execution scope
+  runtime call scope: request, session, tenant, actor, transaction.
+
+Provider/context scope
+  which Context/Service/Requirement values are available.
+
+Reactive tracking scope
+  render/resource/loader/action/form scopes that read keys/resources.
+
+Placement scope
+  client/server/edge/db/storage boundary.
+
+Target scope
+  what target/dialect is being lowered into.
+```
+
+The current reactivity module already has `TrackingScope`, with kinds like `render`, `memo`, `loader`, `resource`, `effect`, `action`, `form`, and `route`; it records reads and ownership.  That idea should survive, but it should become graph-native:
+
+```txt
+Node(TrackingScope)
+Edge(ScopeReadsKey)
+Edge(ScopeReadsQuery)
+Edge(ScopeOwnsResource)
+Edge(ScopeFinalizesResource)
+```
+
+For expressions/rules:
+
+```txt
+Node(LexicalScope)
+Edge(ScopeDeclaresVar)
+Edge(ExprUsesVar)
+Edge(RuleHasScope)
+```
+
+For providers/context:
+
+```txt
+Node(ExecutionScope)
+Edge(ScopeProvidesContext)
+Edge(NodeRequiresContext)
+Edge(NodeRunsInScope)
+```
+
+For placement:
+
+```txt
+Node(PlacementScope)
+Edge(NodePlacedIn Client/Server/DB)
+Edge(ValueCrossesBoundary)
+```
+
+This matters because rules and functions often need the same variable names but different bindings. For example:
+
+```txt
+actor
+resource
+input
+before
+after
+session
+tenant
+```
+
+Those should not be raw strings floating around. They should be typed scope bindings.
+
+# 5. Manual reactivity is still needed
+
+Yes. Very much.
+
+The new kernel can derive *more*, but it should not eliminate manual stable keys or manual relationships.
+
+The current reactivity system is explicitly built around portable stable keys: `KeyFamily`, `ReactiveKey`, `ReactiveKeyPattern`, key expressions, key pattern expressions, key invalidation semantics, reactive resources, mutations, and tracking scopes.  That should remain a pillar.
+
+Why manual reactivity is still needed:
+
+```txt
+1. External systems are opaque.
+   Webhooks, third-party APIs, queues, search indexes, analytics stores.
+
+2. Some dependencies are semantic, not syntactic.
+   “This dashboard depends on billing health,” even if no direct field read exists.
+
+3. Codegen targets need stable public identities.
+   TanStack Query keys, Effect Atom keys, route loader keys, devtools keys.
+
+4. Conservative derivation is not always acceptable.
+   You may want exact invalidation instead of broad invalidation.
+
+5. Domain-specific cache hierarchies are user intent.
+   entity key, collection key, field key, relation key, view key.
+```
+
+So the revised stance should be:
+
+```txt
+Manual keys remain the stable public reactivity contract.
+The compiler derives edges and invalidations when it can.
+Manual reactivity augments, overrides, or constrains derivation.
+```
+
+Not:
+
+```txt
+Manual keys go away.
+```
+
+# 6. What changes about manual reactivity
+
+Manual reactivity should become typed graph facts, not a separate ad hoc graph.
+
+Today the reactive graph has nodes and edges like `reads_key`, `writes_entity`, `invalidates_key`, `wraps_query`, `wraps_action`, `route_loads`, `form_submits`, `scope_reads_key`, and so on.  Those should become kernel `EdgeKindDef`s.
+
+For example:
+
+```txt
+KeyFamily
+  Node(KeyFamilyNodeKind)
+
+ReactiveResource
+  Node(ResourceNodeKind)
+
+QueryFunction
+  Node(QueryNodeKind)
+
+ActionFunction
+  Node(ActionNodeKind)
+
+reads_key
+  Edge(ReadsKeyEdgeKind)
+
+invalidates_key
+  Edge(InvalidatesKeyEdgeKind)
+
+wraps_query
+  Edge(WrapsQueryEdgeKind)
+
+scope_reads_key
+  Edge(ScopeReadsKeyEdgeKind)
+```
+
+Then manual invalidation:
+
+```ts
+gen.reactivity.mutation({
+  action: updateUser,
+  invalidates: [UserCollectionKey.any()],
+});
+```
+
+emits:
+
+```txt
+Edge(InvalidatesKey): updateUser -> UserCollectionKey.any
+provenance: explicit
+precision: broad/matched/exact
+```
+
+Derived invalidation:
+
+```txt
+Action writes User.name
+Query reads User.name
+Query has key UserCollectionKey
+=> Edge(InvalidatesKey): action -> UserCollectionKey
+provenance: inferred
+precision: exact/matched/conservative
+```
+
+Both coexist in the same graph.
+
+# 7. Manual relationships are still needed too
+
+The compiler can derive read/write edges from inspectable expressions/actions. But manual edges remain necessary for:
+
+```txt
+opaque code
+external systems
+target-specific behavior
+business dependencies
+hand-tuned cache relationships
+legacy APIs
+integration boundaries
+```
+
+The key is to distinguish provenance:
+
+```txt
+explicit
+  user declared it
+
+derived
+  compiler proved it
+
+conservative
+  compiler inferred a safe approximation
+
+target
+  target emitted/required it
+
+opaque
+  user declared a dependency because body is not inspectable
+```
+
+So a manual relationship is not second-class. It is an explicit semantic fact.
+
+Example:
+
+```ts
+gen.edge(DependsOnKeyEdgeKind, {
+  from: BillingDashboard,
+  to: StripeCustomerKey,
+  provenance: explicit(),
+});
+```
+
+This is better than hiding it in metadata.
+
+# 8. How derivation and manual reactivity should interact
+
+I’d use a layered invalidation strategy:
+
+```txt
+Layer 1: explicit invalidation
+  User-declared key patterns always honored.
+
+Layer 2: exact derived invalidation
+  From action operation uses + query read edges + key mapping.
+
+Layer 3: matched derived invalidation
+  Can match entity/field/relation but not exact payload.
+
+Layer 4: broad derived invalidation
+  Invalidate collection/entity family.
+
+Layer 5: no derivation
+  Require manual key or emit diagnostic.
+```
+
+Each invalidation edge should carry:
+
+```txt
+confidence:
+  explicit | derived | conservative
+
+precision:
+  exact | matched | broad | unknown
+
+reason:
+  writes field read by query
+  opaque action declared manual invalidation
+  operation affects predicate
+  target cannot support exact patch
+```
+
+The current reactivity model already has `DerivationConfidence` and `DerivationPrecision` with values like `declared`, `derived`, `conservative`, and `exact`, `matched`, `broad`, `unknown`.  Keep that idea.
+
+# 9. Funcs + codegen
+
+For codegen, functions are probably the most important layer.
+
+A target emitter should mostly consume callable nodes and their graph facts:
+
+```txt
+CallableProtocol
+  input type
+  output type
+  error type
+  requirements
+  effects
+  call plan
+  body ref
+
+ReadableProtocol
+  read edges
+  query body
+  key expression
+
+WritableProtocol
+  operation uses
+  write edges
+  invalidation edges
+  optimistic plan
+
+GuardedProtocol
+  guard rules
+
+PlacementProtocol
+  where it runs
+  what crosses boundary
+```
+
+Then codegen targets:
+
+## Server target
+
+```txt
+QueryNode -> GET/RPC handler/route loader
+ActionNode -> POST/RPC mutation/server action
+RuleNode -> server guard
+ProviderNode -> dependency injection
+Type -> validation/schema
+```
+
+## DB target
+
+```txt
+QueryNode -> SQL select
+RuleNode -> SQL predicate/RLS
+Action operation uses -> insert/update/delete
+Type -> column representation
+Edge(domain relation) -> FK/join
+```
+
+## Client target
+
+```txt
+QueryNode + Key -> query hook/resource
+MutationNode + Action -> mutation hook
+InvalidatesKey edges -> cache invalidation
+PatchProtocol -> optimistic update
+RuleNode client-safe -> UI disabled/hidden state
+```
+
+## Docs/tests target
+
+```txt
+FunctionNode -> API docs
+RuleNode -> policy matrix/tests
+OperationNode laws -> property tests
+Key edges -> reactivity docs/devtools
+```
+
+This is why functions should be graph-native nodes, not just TypeScript object records.
+
+# 10. Proposed function dialect model
+
+```txt
+function dialect:
+  FunctionNodeKind
+  ExprFunctionNodeKind
+  PredicateFunctionNodeKind
+  QueryNodeKind
+  ActionNodeKind
+  PatchNodeKind
+  PlanFunctionNodeKind
+
+traits:
+  NodeCallable
+  FunctionPure
+  FunctionReadable
+  FunctionWritable
+  FunctionEffectful
+  FunctionPatchable
+  FunctionPlanBacked
+  FunctionTargetInterpretable
+
+protocols:
+  CallableProtocol
+  ReadableProtocol
+  WritableProtocol
+  PatchProtocol
+  PlanProtocol
+  CodegenProtocol
+
+edges:
+  FunctionHasBody
+  FunctionHasInputType
+  FunctionHasOutputType
+  FunctionRequires
+  FunctionHasEffect
+  FunctionGuardedByRule
+  QueryHasKey
+  ActionAppliesOperation
+  ActionWritesField
+  ActionInvalidatesKey
+  ActionHasOptimisticPatch
+  PatchRollsBackAction
+  FunctionLowersToTarget
+```
+
+This replaces the current `FunctionCatalog` as the source of truth. The catalog can be a view:
+
+```ts
+graph.view(FunctionCatalogView)
+```
+
+# 11. Scope model for funcs
+
+Every function should have a scope.
+
+```txt
+FunctionScope
+  input
+  actor/session/request
+  before/after state
+  provider requirements
+  target placement
+```
+
+For actions, special bindings are important:
+
+```txt
+input
+actor
+session
+tenant
+before
+after
+result
+now/clock
+transaction
+```
+
+For mutations/reactivity:
+
+```txt
+mutation input
+mutation result
+old cache value
+new cache value
+affected key payload
+```
+
+For rules:
+
+```txt
+actor
+resource
+action
+field
+before
+after
+```
+
+These bindings should be typed values in a lexical/execution scope, not string variables. Current `RuleVarExpr` uses string `name` with a semantic type.  The revised model should keep ergonomic names but internally create typed scope bindings:
+
+```txt
+ScopeBindingRef<"actor", User>
+ScopeBindingRef<"project", Project>
+```
+
+Then expressions refer to binding refs, not bare names.
+
+# 12. What stays manual vs derived
+
+## Keep manual
+
+```txt
+Key families
+  Stable public identity for caches/resources/devtools.
+
+Key expressions
+  How function input maps to cache key payload.
+
+Manual invalidation
+  Required for opaque/external/custom dependencies.
+
+Manual tracking scopes
+  Useful for UI/render/resource integration and external frameworks.
+
+Manual dependency edges
+  Required at boundaries and opaque code.
+
+Manual relationship declarations
+  Domain relations, external relations, search index dependencies, queue dependencies.
+```
+
+## Derive when possible
+
+```txt
+Query reads fields/entities/relations
+Action writes fields/entities/stores
+Rule reads fields/contexts/relations
+Action invalidates queries/resources
+Mutation optimistic patch safety
+Derived view maintenance strategy
+Client-safe UI hints
+Server/DB placement
+RLS predicates
+```
+
+The goal is not to remove manual control. The goal is to make manual declarations use the same typed graph as compiler-derived facts.
+
+# 13. Final architecture around funcs/reactivity/scope
+
+```txt
+Type
+  value meaning
+
+OperationDefNode
+  reusable operation semantics and laws
+
+Expr
+  pure operation-use tree
+
+RuleNode
+  named boolean expression with business meaning
+
+FunctionNode
+  callable semantic boundary
+
+QueryNode
+  readable callable function with key/read edges
+
+ActionNode
+  writable/effectful callable function with operation/write edges
+
+MutationNode
+  reactive wrapper around action with invalidation/optimistic edges
+
+KeyFamilyNode
+  stable reactive identity
+
+TrackingScopeNode
+  scope that reads keys/resources/queries
+
+ScopeBinding
+  typed lexical/runtime variable binding
+
+Edge
+  reads, writes, appliesOperation, guardedBy, hasKey, invalidates, wraps, submits, loads, dependsOn
+```
+
+The final stance:
+
+> Functions are the codegen-facing callable layer. Expressions are the pure logic layer. Rules are named boolean expressions that drive auth, UI, reactivity, and IVM. Queries/actions are callable function nodes. Mutations/resources are reactive wrappers over callable nodes. Manual stable keys and manual graph edges remain essential, but they become first-class typed graph facts rather than a separate reactivity subsystem.

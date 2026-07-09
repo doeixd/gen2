@@ -1,5 +1,7 @@
 # Core Primitives And Composition Model
 
+> **HISTORICAL.** This describes the pre-kernel "stdlib" primitive model (post-Phase-6). The project has since moved to the graph-kernel architecture: see [`docs/revised2/PLAN.md`](./revised2/PLAN.md) (current plan), [`docs/revised2/CURRENT.md`](./revised2/CURRENT.md) (live status), and [`docs/revision/revised-core.md`](./revision/revised-core.md) (full design). The concepts here survive as dialects/stdlib over the kernel, but do not implement new work from this document.
+
 Gen2 is a typed semantic IR SDK for full-stack applications. Its core idea is that application meaning is described once as static, inspectable TypeScript values, then checked, derived, generated, visualized, and evolved from that graph.
 
 This document describes the post-Phase-6 architecture. In this model, traits are checked semantic packages, canonical IR objects adapt into typed nodes without metadata loss, plan chains are input/output compatible by construction, composition preserves requirement/effect information for lifecycle and target derivation, and lifecycle checkers, target emitters, and UI derivations are unified behind plugin-extensible protocols.

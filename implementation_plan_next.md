@@ -1,5 +1,7 @@
 # Agent Implementation Guide: Type System Hardening and API Ergonomics
 
+> **HISTORICAL.** This and the `phase3_`–`phase7_` guides are superseded as sequencing plans by the kernel rebase. Current plan: [`docs/revised2/PLAN.md`](./docs/revised2/PLAN.md); live status: [`docs/revised2/CURRENT.md`](./docs/revised2/CURRENT.md). These guides remain useful only as records of behavior that must be preserved.
+
 This guide outlines the next phase of work for the `gen2` domain compiler, following the successful completion of the Reactivity/Atom Hardening roadmap.
 
 The goal of this phase is to solidify the foundational type system, address known technical debt, and improve the ergonomics of the API before moving on to larger feature additions (like cross-boundary transports or advanced hydration).

@@ -1,0 +1,1615 @@
+Here’s the condensed rewrite, reorganized around **type-safe entity factories as the foundation**. Based on your draft notes. 
+
+# TypeScript Library Inference Cheat Sheet
+
+## Core Principle
+
+> Create typed values first. Then let every API infer from those values.
+
+Good TypeScript library APIs should let users write:
+
+```ts
+const users = createEntity("users", userSchema);
+
+const user = await api.get(users, userId);
+```
+
+not:
+
+```ts
+api.get<"users", User, UserId>("users", userId);
+```
+
+The goal is:
+
+```ts
+typed factory value
+  → project captures it
+  → API carries the project generic
+  → methods infer from arguments
+  → returns are derived automatically
+```
+
+---
+
+# 1. Type-Safe Entity Factories
+
+Factories are the foundation.
+
+Use factories instead of asking users to cast objects manually.
+
+Avoid:
+
+```ts
+const users = {
+  name: "users",
+} as Entity<"users", User, UserId>;
+```
+
+Prefer:
+
+```ts
+const users = createEntity("users", {
+  id: userIdSchema,
+  row: userSchema,
+});
+```
+
+Why:
+
+* preserves literal types
+* avoids user-written `as`
+* centralizes unsafe internals inside the library
+* creates reusable type witnesses
+* enables downstream inference
+
+Pattern name:
+
+> **Type-Safe Entity Factory**
+
+Shape:
+
+```ts
+declare const entityBrand: unique symbol;
+
+type Entity<TName extends string, TRow, TId> = {
+  name: TName;
+  readonly [entityBrand]: {
+    row: TRow;
+    id: TId;
+  };
+};
+
+type RowOf<TEntity> =
+  TEntity extends Entity<any, infer TRow, any> ? TRow : never;
+
+type IdOf<TEntity> =
+  TEntity extends Entity<any, any, infer TId> ? TId : never;
+```
+
+Factory:
+
+```ts
+type Schema<T> = {
+  parse(input: unknown): T;
+};
+
+type InferSchema<TSchema> =
+  TSchema extends Schema<infer T> ? T : never;
+
+function createEntity<
+  const TName extends string,
+  const TIdSchema extends Schema<any>,
+  const TRowSchema extends Schema<any>
+>(
+  name: TName,
+  config: {
+    id: TIdSchema;
+    row: TRowSchema;
+  }
+): Entity<
+  TName,
+  InferSchema<TRowSchema>,
+  InferSchema<TIdSchema>
+> {
+  return {
+    name,
+  } as Entity<
+    TName,
+    InferSchema<TRowSchema>,
+    InferSchema<TIdSchema>
+  >;
+}
+```
+
+The internal cast is acceptable. The user should not write it.
+
+---
+
+# 2. Entity as Type Witness
+
+The entity object is both:
+
+1. a runtime value, and
+2. a compile-time witness for row type, ID type, name, relationships, permissions, etc.
+
+```ts
+async function getById<TEntity extends Entity<any, any, any>>(
+  entity: TEntity,
+  id: IdOf<TEntity>
+): Promise<RowOf<TEntity>> {
+  throw new Error("not implemented");
+}
+```
+
+Usage:
+
+```ts
+const user = await getById(users, userId);
+//    ^? User
+
+const post = await getById(posts, postId);
+//    ^? Post
+
+await getById(users, postId);
+//                  ^ type error
+```
+
+Pattern name:
+
+> **Factory-Built Entity Witness**
+
+Design rule:
+
+> Pass typed objects, not magic strings.
+
+Prefer:
+
+```ts
+getById(users, userId);
+```
+
+over:
+
+```ts
+getById("users", userId);
+```
+
+The string only says `"users"`.
+The entity carries `Entity<"users", User, UserId>`.
+
+---
+
+# 3. Phantom-Branded Primitives
+
+Use phantom brands for values that are identical at runtime but different in meaning.
+
+```ts
+declare const brand: unique symbol;
+
+type Brand<TValue, TBrand extends string> =
+  TValue & { readonly [brand]: TBrand };
+
+type UserId = Brand<string, "UserId">;
+type PostId = Brand<string, "PostId">;
+```
+
+Usage:
+
+```ts
+function getUser(id: UserId) {}
+
+getUser(userId); // ok
+getUser(postId); // error
+```
+
+Factories should hide the brand cast:
+
+```ts
+function createIdFactory<const TName extends string>(name: TName) {
+  return {
+    parse(id: string): Brand<string, TName> {
+      return id as Brand<string, TName>;
+    },
+  };
+}
+```
+
+Pattern names:
+
+> **Phantom-Branded Primitive**
+> **Factory-Hidden Phantom Brand**
+
+Rule:
+
+> Assertions belong inside the library, not at the call site.
+
+---
+
+# 4. Project-Carried Generics
+
+Capture the whole project once. Keep that generic alive everywhere.
+
+```ts
+type Project<TEntityMap extends Record<string, Entity<any, any, any>>> = {
+  entities: TEntityMap;
+};
+
+function createProject<
+  const TEntities extends Record<string, Entity<any, any, any>>
+>(entities: TEntities): Project<TEntities> {
+  return { entities };
+}
+```
+
+Usage:
+
+```ts
+const project = createProject({
+  users,
+  posts,
+});
+```
+
+Now the project contains exact entity types.
+
+Pattern name:
+
+> **Project-Carried Generics**
+
+Core rule:
+
+```ts
+function createApi<const TProject extends Project<any>>(
+  project: TProject
+): Api<TProject> {
+  // ...
+}
+```
+
+Do not erase to:
+
+```ts
+Project<any>
+Entity<any, any, any>
+unknown
+Record<string, Entity<any, any, any>>
+```
+
+unless you are only using that type as a constraint.
+
+The project generic should never disappear.
+
+---
+
+# 5. Infer Local Args from the Project
+
+A good project-scoped API has two generic layers:
+
+```ts
+type EntityOf<TProject extends Project<any>> =
+  TProject["entities"][keyof TProject["entities"]];
+
+type Api<TProject extends Project<any>> = {
+  get<TEntity extends EntityOf<TProject>>(
+    entity: TEntity,
+    id: IdOf<TEntity>
+  ): Promise<RowOf<TEntity>>;
+};
+```
+
+`TProject` is captured once.
+`TEntity` is inferred per method call.
+
+Usage:
+
+```ts
+const api = createApi(project);
+
+const user = await api.get(project.entities.users, userId);
+//    ^? User
+```
+
+Pattern name:
+
+> **Project-Carried Local Inference**
+
+Rule:
+
+> Carry the whole project generic, then infer the narrow thing from each argument.
+
+---
+
+# 6. Typed Reference Objects
+
+Use object references instead of string paths.
+
+Avoid:
+
+```ts
+relate("posts", "authorId", "users", "id");
+track("user.created", payload);
+getPermission("user", "billing", "read");
+```
+
+Prefer:
+
+```ts
+relate(posts.authorId, users.id);
+track(events.userCreated, payload);
+getPermission(user, resources.billing, actions.read);
+```
+
+Example:
+
+```ts
+type Event<TName extends string, TPayload> = {
+  name: TName;
+  readonly __payload?: TPayload;
+};
+
+function track<TEvent extends Event<string, any>>(
+  event: TEvent,
+  payload: TEvent extends Event<any, infer TPayload> ? TPayload : never
+) {}
+```
+
+Pattern names:
+
+> **Typed Reference Object**
+> **Stringless API Surface**
+
+Rule:
+
+> Prefer typed values that witness their domain over strings that merely name it.
+
+---
+
+# 7. Inferred Context Callback
+
+Use when one argument should create a typed callback context.
+
+```ts
+defineThing(project, (ctx) => ({
+  users: ctx.entity.users,
+  posts: ctx.entity.posts,
+}));
+```
+
+Shape:
+
+```ts
+function defineThing<const TProject>(
+  project: TProject,
+  build: (ctx: ContextFrom<TProject>) => ResultFrom<TProject>
+) {
+  return build(makeContext(project));
+}
+```
+
+Pattern name:
+
+> **Inferred Context Callback**
+
+Use for:
+
+* schemas
+* relations
+* routers
+* policies
+* permissions
+* workflows
+* DSLs
+
+Rule:
+
+> First argument captures the type. Callback receives the derived world.
+
+---
+
+# 8. Typed Builder Instance
+
+Use when many methods need the same captured project type.
+
+```ts
+const builder = createBuilder(project);
+
+builder.defineRelations(...);
+builder.definePolicies(...);
+builder.defineSeedData(...);
+```
+
+Shape:
+
+```ts
+function createBuilder<const TProject>(project: TProject) {
+  return {
+    define<TResult>(
+      build: (ctx: ContextFrom<TProject>) => TResult
+    ): TResult {
+      return build(makeContext(project));
+    },
+  };
+}
+```
+
+Pattern name:
+
+> **Typed Builder Instance**
+
+Use when:
+
+* the configured API is reused
+* autocomplete matters
+* many operations share the same project
+
+---
+
+# 9. Curried Type Binder
+
+Use when users bind the project once, then define many things.
+
+```ts
+const defineForProject = defineThing(project);
+
+const userRules = defineForProject((ctx) => ...);
+const postRules = defineForProject((ctx) => ...);
+```
+
+Shape:
+
+```ts
+function defineThing<const TProject>(project: TProject) {
+  return function define<TResult>(
+    build: (ctx: ContextFrom<TProject>) => TResult
+  ): TResult {
+    return build(makeContext(project));
+  };
+}
+```
+
+Pattern name:
+
+> **Curried Type Binder**
+
+Use for modular definitions.
+
+---
+
+# 10. Project-Aware `.pipe()`
+
+Use `.pipe()` when each step should preserve and evolve the type.
+
+```ts
+const result = api
+  .pipe(project.entities.users)
+  .through(loadMany)
+  .through(applyPermissions)
+  .through(serialize)
+  .value();
+```
+
+Shape:
+
+```ts
+type ProjectPipe<TProject, TValue> = {
+  through<TNext>(
+    fn: (value: TValue, project: TProject) => TNext
+  ): ProjectPipe<TProject, TNext>;
+
+  value(): TValue;
+};
+
+function pipe<const TProject, TValue>(
+  project: TProject,
+  value: TValue
+): ProjectPipe<TProject, TValue> {
+  return {
+    through(fn) {
+      return pipe(project, fn(value, project));
+    },
+    value() {
+      return value;
+    },
+  };
+}
+```
+
+Pattern name:
+
+> **Project-Aware Type Pipe**
+
+Rule:
+
+> `.pipe()` should carry both the whole project type and the current value type.
+
+---
+
+# 11. Identity Config Function
+
+Use when users provide config and you want to preserve literal detail.
+
+```ts
+const config = defineConfig({
+  routes: {
+    home: "/",
+    user: "/users/:id",
+  },
+});
+```
+
+Shape:
+
+```ts
+function defineConfig<const TConfig extends ConfigShape>(
+  config: TConfig
+): TConfig {
+  return config;
+}
+```
+
+Prefer this over:
+
+```ts
+const config: ConfigShape = {
+  routes: {
+    user: "/users/:id",
+  },
+};
+```
+
+The annotation often widens away useful information.
+
+Pattern name:
+
+> **Identity Config Function**
+
+---
+
+# 12. `satisfies`-Checked Literal
+
+Use when you want validation without widening.
+
+```ts
+const routes = {
+  home: "/",
+  user: "/users/:id",
+} satisfies Record<string, `/${string}`>;
+```
+
+Pattern name:
+
+> **Satisfies-Checked Literal**
+
+Use when no runtime helper is needed.
+
+---
+
+# 13. Const Generic Capture
+
+Use `const` generics for object literals, arrays, tuples, registries, schemas, and maps.
+
+```ts
+function defineRoutes<const TRoutes extends Record<string, string>>(
+  routes: TRoutes
+) {
+  return routes;
+}
+```
+
+Pattern name:
+
+> **Const Generic Capture**
+
+Rule:
+
+> Most public factory/config/helper functions should use `const T` when they accept literal-like inputs.
+
+---
+
+# 14. `NoInfer` Inference Anchor
+
+Use when one parameter should define the type and another should only be checked against it.
+
+```ts
+function pickColor<const C extends string>(
+  colors: readonly C[],
+  defaultColor?: NoInfer<C>
+) {}
+
+pickColor(["red", "green", "blue"], "red");  // ok
+pickColor(["red", "green", "blue"], "cyan"); // error
+```
+
+Pattern names:
+
+> **Inference Anchor**
+> **One-Way Inference Gate**
+
+Rule:
+
+> Use `NoInfer` to stop secondary arguments from widening the primary source of truth.
+
+---
+
+# 15. Registry-Derived API
+
+Use when a map should generate typed methods.
+
+```ts
+const bus = createEventBus({
+  userCreated: (payload: { id: UserId }) => {},
+  postDeleted: (payload: { postId: PostId }) => {},
+});
+
+bus.emit("userCreated", { id: userId });
+```
+
+Shape:
+
+```ts
+function createEventBus<
+  const TEvents extends Record<string, (arg: any) => void>
+>(events: TEvents) {
+  return {
+    emit<K extends keyof TEvents>(
+      event: K,
+      payload: Parameters<TEvents[K]>[0]
+    ) {
+      // ...
+    },
+  };
+}
+```
+
+Pattern name:
+
+> **Registry-Derived API**
+
+Use for events, routes, commands, plugins, permissions, and resources.
+
+---
+
+# 16. Type-State Builder
+
+Use when chained calls accumulate type information.
+
+```ts
+const api = createApi()
+  .entity(users)
+  .entity(posts)
+  .relation(users, posts);
+```
+
+Shape:
+
+```ts
+class Builder<TState> {
+  add<const K extends string, const TValue>(
+    key: K,
+    value: TValue
+  ): Builder<TState & Record<K, TValue>> {
+    return null as any;
+  }
+}
+```
+
+Pattern name:
+
+> **Type-State Builder**
+
+Rule:
+
+> Use fluent builders only when the chain accumulates meaningful type state.
+
+---
+
+# 17. Tuple-Preserved Wrapper
+
+Use when wrapping functions without losing argument types.
+
+```ts
+function wrap<const TArgs extends unknown[], TResult>(
+  fn: (...args: TArgs) => TResult
+) {
+  return (...args: TArgs): TResult => fn(...args);
+}
+```
+
+Pattern name:
+
+> **Tuple-Preserved Wrapper**
+
+Use for middleware, decorators, logging wrappers, command runners, `pipe`, and `compose`.
+
+---
+
+# 18. Overload Inference Facade
+
+Use overloads to expose clean inference while keeping implementation loose.
+
+```ts
+function get<K extends keyof Store>(key: K): Store[K];
+function get(key: string): unknown {
+  return store[key];
+}
+```
+
+Pattern name:
+
+> **Overload Inference Facade**
+
+Use when the public API has a few clean call shapes but the runtime implementation is dynamic.
+
+---
+
+# Selection Guide
+
+| Need                                | Use                                 |
+| ----------------------------------- | ----------------------------------- |
+| Create typed objects safely         | **Type-Safe Entity Factory**        |
+| Pass object as type evidence        | **Factory-Built Entity Witness**    |
+| Distinguish same-runtime primitives | **Phantom-Branded Primitive**       |
+| Carry whole app/library state       | **Project-Carried Generics**        |
+| Infer method result from argument   | **Project-Carried Local Inference** |
+| Avoid magic strings                 | **Typed Reference Object**          |
+| One input creates callback context  | **Inferred Context Callback**       |
+| Reuse captured type across methods  | **Typed Builder Instance**          |
+| Bind once, define many              | **Curried Type Binder**             |
+| Compose typed transformations       | **Project-Aware Type Pipe**         |
+| Preserve config literals            | **Identity Config Function**        |
+| Validate without widening           | **Satisfies-Checked Literal**       |
+| Preserve literal inputs in helpers  | **Const Generic Capture**           |
+| Prevent inference widening          | **NoInfer / Inference Anchor**      |
+| Generate API from map               | **Registry-Derived API**            |
+| Accumulate type through chains      | **Type-State Builder**              |
+| Preserve function parameters        | **Tuple-Preserved Wrapper**         |
+| Hide implementation complexity      | **Overload Inference Facade**       |
+
+---
+
+# Agent Rules
+
+When designing a TypeScript library:
+
+1. Start with **factory-built typed witnesses**.
+
+```ts
+const users = createEntity("users", userSchema);
+```
+
+2. Avoid user-written casts.
+
+```ts
+// bad
+const users = {} as Entity<"users", User, UserId>;
+
+// good
+const users = createEntity("users", userSchema);
+```
+
+3. Pass typed objects instead of magic strings.
+
+```ts
+api.get(users, userId);
+```
+
+4. Capture the whole project with a generic.
+
+```ts
+function createApi<const TProject extends Project<any>>(
+  project: TProject
+): Api<TProject>;
+```
+
+5. Keep `TProject` alive through every derived API.
+
+```ts
+QueryBuilder<TProject, TEntity>
+ProjectPipe<TProject, TValue>
+ContextFrom<TProject>
+```
+
+6. Infer local types from arguments.
+
+```ts
+get<TEntity extends EntityOf<TProject>>(
+  entity: TEntity
+): RowOf<TEntity>
+```
+
+7. Use `const` generics for literal-heavy inputs.
+
+8. Use `NoInfer` when secondary args should not widen the primary type.
+
+9. Use callbacks, builders, currying, or `.pipe()` when they improve inference.
+
+10. Keep runtime values simple and type surfaces rich.
+
+Final mantra:
+
+> Factories create typed witnesses. APIs carry the project generic. Methods infer from witnesses. Return types fall out automatically.
+
+
+# Addendum: Generic Requirements Bubble Up
+
+Use this when adding wrappers, helpers, plugins, builders, or `.pipe()` steps to the library.
+
+## Core idea
+
+> If a lower-level function needs a generic relationship to stay type-safe, every parent/wrapper must either preserve that generic, bind it earlier, or intentionally erase it.
+
+In other words:
+
+```ts
+fn(Type<X>) !== fn(Type<Y>)
+```
+
+Even if both values look identical at runtime, their generic parameters may carry different meaning.
+
+Example:
+
+```ts
+Entity<"users", User, UserId>
+```
+
+is not interchangeable with:
+
+```ts
+Entity<"posts", Post, PostId>
+```
+
+because the entity generic determines valid IDs, rows, relations, permissions, query results, and downstream inference.
+
+---
+
+# 1. Generic parameters encode relationships
+
+A typed entity is not just a value. It is a witness.
+
+```ts
+type Entity<TName extends string, TRow, TId> = {
+  name: TName;
+  readonly __row?: TRow;
+  readonly __id?: TId;
+};
+
+type RowOf<T> =
+  T extends Entity<any, infer Row, any> ? Row : never;
+
+type IdOf<T> =
+  T extends Entity<any, any, infer Id> ? Id : never;
+```
+
+Now this function is type-safe because `TEntity` connects the arguments and return type:
+
+```ts
+async function getById<TEntity extends Entity<any, any, any>>(
+  entity: TEntity,
+  id: IdOf<TEntity>
+): Promise<RowOf<TEntity>> {
+  throw new Error("not implemented");
+}
+```
+
+Usage:
+
+```ts
+const user = await getById(users, userId);
+//    ^? User
+
+const post = await getById(posts, postId);
+//    ^? Post
+
+await getById(users, postId);
+//                  ^ type error
+```
+
+The important part is not just that `entity` is typed. It is that the same generic, `TEntity`, appears in multiple places:
+
+```ts
+entity: TEntity
+id: IdOf<TEntity>
+return: RowOf<TEntity>
+```
+
+That shared generic is the safety contract.
+
+---
+
+# 2. Wrappers must preserve the relationship
+
+Bad wrapper:
+
+```ts
+async function load(
+  entity: Entity<any, any, any>,
+  id: unknown
+) {
+  return getById(entity, id as any);
+}
+```
+
+This erases the relationship between `entity`, `id`, and return type.
+
+Good wrapper:
+
+```ts
+async function load<TEntity extends Entity<any, any, any>>(
+  entity: TEntity,
+  id: IdOf<TEntity>
+): Promise<RowOf<TEntity>> {
+  return getById(entity, id);
+}
+```
+
+Rule:
+
+> If the inner function is generic, the wrapper usually needs to be generic too.
+
+Generic requirements bubble up until they reach a place where TypeScript can infer them from a user-provided value.
+
+---
+
+# 3. Bubble up to the nearest inference boundary
+
+Users should not have to write the generic manually.
+
+Good:
+
+```ts
+load(users, userId);
+```
+
+Not:
+
+```ts
+load<typeof users>(users, userId);
+```
+
+The generic exists in the function signature, but it is inferred from the typed witness object.
+
+```ts
+function load<TEntity extends Entity<any, any, any>>(
+  entity: TEntity,
+  id: IdOf<TEntity>
+): Promise<RowOf<TEntity>>;
+```
+
+The entity argument is the inference boundary.
+
+---
+
+# 4. Project generics bubble up too
+
+Once the library has a project/app/schema type, that generic must usually be carried by the whole API.
+
+```ts
+type Project<TEntityMap extends Record<string, Entity<any, any, any>>> = {
+  entities: TEntityMap;
+};
+
+type EntityOf<TProject extends Project<any>> =
+  TProject["entities"][keyof TProject["entities"]];
+```
+
+The API captures the project once:
+
+```ts
+function createApi<const TProject extends Project<any>>(
+  project: TProject
+): Api<TProject> {
+  throw new Error("not implemented");
+}
+```
+
+Then methods infer local arguments from that captured project:
+
+```ts
+type Api<TProject extends Project<any>> = {
+  get<TEntity extends EntityOf<TProject>>(
+    entity: TEntity,
+    id: IdOf<TEntity>
+  ): Promise<RowOf<TEntity>>;
+};
+```
+
+Usage:
+
+```ts
+const api = createApi(project);
+
+const user = await api.get(project.entities.users, userId);
+//    ^? User
+```
+
+The requirement chain is:
+
+```ts
+get needs TEntity
+Api needs TProject
+createApi captures TProject
+```
+
+This is correct. The requirement bubbled up to the project factory.
+
+---
+
+# 5. Three valid responses to a bubbled requirement
+
+## A. Preserve it
+
+Use when the parent should remain type-safe.
+
+```ts
+function parent<TArg extends Constraint>(
+  arg: TArg
+): ResultFrom<TArg> {
+  return child(arg);
+}
+```
+
+Name:
+
+> **Generic Preservation**
+
+---
+
+## B. Bind it earlier
+
+Use when many operations share the same generic.
+
+```ts
+const api = createApi(project);
+
+api.get(users, userId);
+api.list(posts);
+api.relate(users, posts);
+```
+
+Here `TProject` is bound once at `createApi(project)`.
+
+Name:
+
+> **Generic Binding Boundary**
+
+Factories, builders, callbacks, currying, and `.pipe()` are all good binding boundaries.
+
+---
+
+## C. Erase it intentionally
+
+Use only when the function truly does not need the relationship.
+
+```ts
+function logEntity(entity: Entity<any, any, any>) {
+  console.log(entity.name);
+}
+```
+
+This is fine because `logEntity` does not need `RowOf<TEntity>`, `IdOf<TEntity>`, or a relation between inputs and outputs.
+
+Name:
+
+> **Intentional Type Erasure**
+
+Rule:
+
+> Erase only at runtime-only boundaries.
+
+---
+
+# 6. How to detect a generic that must bubble up
+
+A generic should bubble up when it appears in more than one meaningful position.
+
+Example:
+
+```ts
+function fn<TEntity>(
+  entity: TEntity,
+  id: IdOf<TEntity>
+): RowOf<TEntity>
+```
+
+`TEntity` links:
+
+```ts
+entity input
+id input
+return type
+```
+
+So wrappers must preserve `TEntity`.
+
+Another example:
+
+```ts
+function relate<
+  TFrom extends Entity<any, any, any>,
+  TTo extends Entity<any, any, any>
+>(
+  from: TFrom,
+  to: TTo,
+  config: RelationConfig<TFrom, TTo>
+): Relation<TFrom, TTo>
+```
+
+Here both `TFrom` and `TTo` matter. A wrapper must usually preserve both.
+
+Good:
+
+```ts
+function defineRelation<
+  TFrom extends Entity<any, any, any>,
+  TTo extends Entity<any, any, any>
+>(
+  from: TFrom,
+  to: TTo,
+  config: RelationConfig<TFrom, TTo>
+): Relation<TFrom, TTo> {
+  return relate(from, to, config);
+}
+```
+
+Bad:
+
+```ts
+function defineRelation(
+  from: Entity<any, any, any>,
+  to: Entity<any, any, any>,
+  config: RelationConfig<any, any>
+): Relation<any, any> {
+  return relate(from, to, config);
+}
+```
+
+The bad version compiles, but it loses the useful relationship.
+
+---
+
+# 7. `Type<X>` and `Type<Y>` are different contracts
+
+Do not treat generic wrappers as interchangeable just because their runtime shape is the same.
+
+```ts
+type Ref<TProject, TKind extends string, TValue> = {
+  kind: TKind;
+  readonly __project?: TProject;
+  readonly __value?: TValue;
+};
+```
+
+These are different types:
+
+```ts
+Ref<ProjectA, "entity", User>
+Ref<ProjectB, "entity", User>
+Ref<ProjectA, "entity", Post>
+```
+
+A project-scoped API should enforce that refs come from the same project:
+
+```ts
+function createApi<const TProject extends Project<any>>(
+  project: TProject
+) {
+  return {
+    read<TRef extends Ref<TProject, any, any>>(
+      ref: TRef
+    ): ValueOfRef<TRef> {
+      throw new Error("not implemented");
+    },
+  };
+}
+```
+
+This prevents accidentally mixing values from different projects, schemas, tenants, or registries.
+
+Rule:
+
+> Generic parameters are part of the identity of a typed witness.
+
+---
+
+# 8. `.pipe()` requirements bubble through the chain
+
+A pipe has at least one generic requirement: the current value type.
+
+```ts
+type Pipe<TValue> = {
+  through<TNext>(
+    fn: (value: TValue) => TNext
+  ): Pipe<TNext>;
+
+  value(): TValue;
+};
+```
+
+Each step consumes the previous value type and produces the next one.
+
+Project-aware pipe carries two requirements:
+
+```ts
+type ProjectPipe<TProject, TValue> = {
+  through<TNext>(
+    fn: (value: TValue, project: TProject) => TNext
+  ): ProjectPipe<TProject, TNext>;
+
+  value(): TValue;
+};
+```
+
+The rules are:
+
+```ts
+TProject stays stable
+TValue evolves
+```
+
+So every `.through()` must preserve `TProject` and replace `TValue`.
+
+```ts
+const result = pipe(project, users)
+  .through((entity, project) => api.get(entity, userId))
+  .through((user) => user.name)
+  .value();
+```
+
+Pattern name:
+
+> **Bubbled Pipe State**
+
+---
+
+# 9. Use `NoInfer` to control inference direction
+
+Sometimes you want one argument to define the generic, and another argument to be checked against it without widening it.
+
+```ts
+function pickColor<const C extends string>(
+  colors: readonly C[],
+  defaultColor?: NoInfer<C>
+) {}
+```
+
+This makes inference flow one way:
+
+```ts
+colors → C → defaultColor
+```
+
+Without `NoInfer`, TypeScript may infer from both arguments and accidentally widen `C`.
+
+Pattern name:
+
+> **One-Way Generic Flow**
+
+Use this whenever a secondary argument should satisfy the source type, not redefine it.
+
+---
+
+# 10. Practical agent checklist
+
+When writing or reviewing a TypeScript API, ask:
+
+## Does this function preserve a relationship?
+
+Example:
+
+```ts
+entity → id → return row
+```
+
+If yes, add a generic:
+
+```ts
+function fn<TEntity extends Entity<any, any, any>>(
+  entity: TEntity,
+  id: IdOf<TEntity>
+): RowOf<TEntity>
+```
+
+## Does this function belong to a project/schema/app?
+
+If yes, carry the project generic:
+
+```ts
+type Api<TProject extends Project<any>> = {
+  method<TEntity extends EntityOf<TProject>>(
+    entity: TEntity
+  ): ResultFrom<TProject, TEntity>;
+};
+```
+
+## Is this function just logging or inspecting runtime values?
+
+If yes, erasure may be okay:
+
+```ts
+function log(entity: Entity<any, any, any>) {}
+```
+
+## Is a later argument accidentally widening the source type?
+
+Use `NoInfer`.
+
+```ts
+function fn<const TSource>(
+  source: TSource,
+  value: NoInfer<TSource>
+) {}
+```
+
+## Is the user being forced to write generics?
+
+Move the generic to a value inference boundary:
+
+```ts
+createEntity(...)
+createProject(...)
+createApi(project)
+api.method(entity, ...)
+defineThing(project, ctx => ...)
+```
+
+---
+
+# Final rule
+
+> Generics bubble up until they reach a factory, callback, builder, curry boundary, `.pipe()` boundary, or typed witness value that can infer them.
+
+The best API shape is usually:
+
+```ts
+factory creates typed witness
+  → project captures witness map
+  → API carries project generic
+  → method infers local generic from args
+  → result derives from project + local generic
+```
+
+That preserves safety without forcing users to write explicit generics.
+
+
+Yes — that should be stated explicitly in the cheat sheet:
+
+> Internal casts can make the public API more type-safe when they centralize unavoidable unsafe operations behind safe factories.
+
+The goal is not “never cast.” The goal is:
+
+```ts
+library internals may cast
+userland should not need to cast
+```
+
+Add this section after **Type-Safe Entity Factories**. It fits the factory/witness pattern from the latest cheat sheet. 
+
+# Addendum: Internal Casts as a Safety Boundary
+
+## Core idea
+
+Some TypeScript library APIs need casts internally to create branded values, phantom types, or typed witnesses.
+
+That is okay.
+
+The important rule is:
+
+> Put casts inside small, audited factory functions so users do not have to cast at the call site.
+
+Avoid making users write:
+
+```ts
+const users = {
+  name: "users",
+} as Entity<"users", User, UserId>;
+```
+
+Prefer:
+
+```ts
+const users = createEntity("users", {
+  id: userIdSchema,
+  row: userSchema,
+});
+```
+
+The factory may use a cast internally:
+
+```ts
+function createEntity<
+  const TName extends string,
+  const TIdSchema extends Schema<any>,
+  const TRowSchema extends Schema<any>
+>(
+  name: TName,
+  config: {
+    id: TIdSchema;
+    row: TRowSchema;
+  }
+): Entity<
+  TName,
+  InferSchema<TRowSchema>,
+  InferSchema<TIdSchema>
+> {
+  return {
+    name,
+  } as Entity<
+    TName,
+    InferSchema<TRowSchema>,
+    InferSchema<TIdSchema>
+  >;
+}
+```
+
+This is safer because the cast is controlled by the library author, not repeated throughout user code.
+
+---
+
+## Pattern name
+
+> **Internal Unsafe Boundary**
+
+or:
+
+> **Factory-Contained Cast**
+
+I’d use **Factory-Contained Cast** in the cheat sheet.
+
+---
+
+## Why this improves safety
+
+A user-written cast can lie:
+
+```ts
+const users = {
+  name: "posts",
+} as Entity<"users", User, UserId>;
+```
+
+TypeScript allows it because `as` says “trust me.”
+
+A factory narrows what can be lied about:
+
+```ts
+const users = createEntity("users", {
+  id: userIdSchema,
+  row: userSchema,
+});
+```
+
+Now the entity type is derived from actual arguments:
+
+```ts
+Entity<"users", User, UserId>
+```
+
+The user is not manually asserting the type. They are providing values, and the library infers the type.
+
+---
+
+## Internal casts are especially useful for phantom types
+
+```ts
+declare const brand: unique symbol;
+
+type Brand<TValue, TBrand extends string> =
+  TValue & { readonly [brand]: TBrand };
+```
+
+Userland should not need this:
+
+```ts
+const userId = "u1" as Brand<string, "UserId">;
+```
+
+Prefer a factory/parser:
+
+```ts
+function createIdFactory<const TName extends string>(name: TName) {
+  return {
+    parse(value: string): Brand<string, TName> {
+      // Optional runtime validation here.
+      return value as Brand<string, TName>;
+    },
+  };
+}
+```
+
+Usage:
+
+```ts
+const UserId = createIdFactory("UserId");
+const PostId = createIdFactory("PostId");
+
+const userId = UserId.parse("u1");
+const postId = PostId.parse("p1");
+
+getUser(userId); // ok
+getUser(postId); // type error
+```
+
+The cast still exists, but it is centralized and reusable.
+
+---
+
+## Rule for the agent
+
+When designing the library:
+
+1. **Do not expose APIs that require user casts.**
+2. **Expose factories, parsers, builders, or schema helpers instead.**
+3. **Keep casts in tiny internal functions.**
+4. **Derive types from arguments wherever possible.**
+5. **Validate at runtime when the type claims depend on runtime truth.**
+
+Use this shape:
+
+```ts
+const entity = createEntity(name, schema);
+const id = EntityId.parse(rawId);
+const api = createApi(project);
+```
+
+Not this:
+
+```ts
+const entity = rawObject as Entity<...>;
+const id = rawId as UserId;
+const api = rawApi as Api<...>;
+```
+
+Final mantra:
+
+> Casts are safer when they are internal, centralized, and paired with inference or validation. Users should pass values; the library should manufacture the types.
+
+## Patterns adopted from effect-atom-jsx (see docs/revised2/effect-atom-jsx-lessons.md)
+
+1. **Const type parameters for record-key literal capture.**
+   `define<const T extends Record<string, Options>>(defs: T)` preserves the
+   record's keys and readonly metadata arrays as literals — slot names, key
+   names, tuple orders survive without `as const` at call sites.
+
+2. **Template-literal branded tokens.**
+   `Witness<`${Name}:${Sub}`>` and `MetadataToken<"view.event", Name>` carry
+   structured literal identity through derivation chains at zero runtime cost.
+
+3. **Unique-symbol TypeId brands + phantom variance field.**
+   Distinct `unique symbol` TypeIds keep structurally similar shapes apart
+   (readonly vs writable); an optional phantom member like
+   `[VarianceId]?: { A: A; E: E; R: R }` carries type axes with no runtime member.
+
+4. **Variadic conditional tuple for optional-when-never arguments.**
+   `...rt: [R] extends [never] ? [rt?: X<R>] : [rt: X<R>]` — an argument is
+   required exactly when a type axis is non-empty. Use for
+   Provider-satisfies-Requirement APIs.
+
+5. **Bounded-then-erased generics (R-erasure).**
+   `atom<A, E, RReq extends R = R>(e: Effect<A, E, RReq>): ResultAtom<A, E>` —
+   the bound proves the provider covers the requirement; the return type drops
+   the axis. The type-level shape of Requirement elimination.
+
+6. **Union-accumulating fluent builders.**
+   `onX<R2>(f: ... => R2): Builder<A, E, R | R2>` returning the same object
+   widened — the final `render(): R | undefined` type is inferred from exactly
+   the arms provided.
+
+7. **Extract/Exclude projections on discriminated unions.**
+   `SuccessOf<T> = Extract<T, {_tag:"Success"}> extends {value: infer A} ? A : never`;
+   `Exclude<E, {defect: string}>` strips one shape from an error union.
+
+8. **Overload ordering via excess-property checks.**
+   Declare the plain overload first so an object literal carrying an extra
+   discriminating field (e.g. `{ schema }`) fails it and falls through to the
+   specialized overload.
+
+9. **infer-based extractor families over multiple shapes.**
+   `NameOf<T> = T extends Witness<infer N> ? N : T extends Family<infer N> ? N : never`
+   — one extractor accepting every carrier of the literal.
+
+10. **Designated widening points.** Even expert-level inference hits TS2589 on
+    unbounded-depth surfaces (deep JSX trees, full-registry queries). Choose a
+    named point where inference deliberately stops (widen to `unknown` or a
+    supertype), document it, and pin it with a type test — rather than letting
+    the compiler pick where precision is lost.

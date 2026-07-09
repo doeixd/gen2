@@ -1,0 +1,356 @@
+Yes. After the kernel rebase, most of these folders should **not remain as independent architectural peers**.
+
+Right now the repo has many subsystem folders, and `GenContext` stores many separate registries for entities, relations, functions, policies, routes, views, providers, workflows, reactions, resources, queues, and so on. That is the thing we want to eliminate: not the concepts, but the parallel sources of truth. The useful concepts should survive as **dialects, frontends, target emitters, or compatibility shims** over one graph.  
+
+## Target source layout
+
+I’d aim for something closer to this:
+
+```txt
+src/
+  kernel/
+    id/
+    ref/
+    symbol/
+    location/
+    metadata/
+    trait/
+    protocol/
+    type/
+    expr/
+    node/
+    edge/
+    graph/
+    dialect/
+    pass/
+    diagnostic/
+    artifact/
+
+  dialects/
+    core/
+      placement/
+      context/
+      requirement/
+      provider/
+      ownership/
+      claim/
+      capability/
+      provenance/
+
+    domain/
+    operation/
+    expression/
+    rule/
+    callable/
+    boundary/
+    storage/
+    reactivity/
+    dispatch/
+    event/
+    queue/
+    resource/
+    workflow/
+    ui/
+    admin/
+
+  targets/
+    postgres/
+    sqlite/
+    http/
+    rpc/
+    router/
+    react/
+    solid/
+    react-native/
+    json-render/
+    effect/
+    openapi/
+    docs/
+    tests/
+    devtools/
+
+  adapters/
+    effect/
+    zod/
+    valibot/
+    tanstack-query/
+    effect-atom/
+    json-schema/
+
+  gen/
+    public builder facade
+
+  lifecycle/
+    pass pipeline runner
+
+  index.ts
+  gen.ts
+```
+
+The main split:
+
+```txt
+kernel
+  tiny universal substrate
+
+dialects
+  semantic vocabularies built on the kernel
+
+targets
+  lower/emit artifacts
+
+adapters
+  interop with external libraries
+
+gen
+  ergonomic public API
+
+lifecycle
+  pass orchestration only
+```
+
+## What happens to each current folder
+
+| Current folder      | Fate after rebase                                                                     | Notes                                                                                                                                                                                                    |
+| ------------------- | ------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `src/kernel`        | **Keep / replace with new kernel**                                                    | This becomes the hard core: `Id`, `Ref`, `SymbolDef`, `Location`, `Trait`, `Protocol`, `Type`, `Expr`, `Node`, `Edge`, `Graph`, `Pass`, `Artifact`, `Diagnostic`.                                        |
+| `src/core`          | **Mostly absorbed into `kernel` + `dialects/core`**                                   | Refs, diagnostics, artifacts, traits, context shell move to kernel/core dialects. Old `core` should not remain a grab bag.                                                                               |
+| `src/types`         | **Merge into `dialects/operation`, `kernel/type`, maybe `dialects/domain`**           | `SemanticType` becomes kernel `Type<Decoded, Encoded, DecodeR, EncodeR, Traits>`. Type operations/laws become operation nodes + traits.                                                                  |
+| `src/expression`    | **Merge into `dialects/expression`**                                                  | Universal operation-backed `Expr`. No separate `RuleExpr`. Phase 4.5’s direction still applies: rules are pure predicates over the universal expression AST.                                             |
+| `src/rules`         | **Merge into `dialects/rule`**                                                        | `RuleNode = pure Predicate Expr<boolean> + business meaning + edges`. Rules remain one of the most important dialects.                                                                                   |
+| `src/function`      | **Merge into `dialects/callable`**                                                    | `ExprFunction`, `QueryFunction`, `ActionFunction`, `PatchFunction`, `PlanFunction` become callable node kinds. Current function taxonomy is worth preserving, but as graph nodes.                        |
+| `src/query`         | **Merge into `dialects/callable` + `dialects/reactivity`**                            | Query is a readable callable with key/read edges. Not a separate architectural root.                                                                                                                     |
+| `src/crud`          | **Becomes a frontend/generator over domain + callable + operation + ui**              | CRUD should derive operation nodes, query/action nodes, form/view nodes, rules, and reactivity edges. It should not own core state.                                                                      |
+| `src/entity`        | **Merge into `dialects/domain`**                                                      | Entity and Field become node kinds. Field ownership, identity, relations become edges.                                                                                                                   |
+| `src/relation`      | **Merge into `dialects/domain` as edge kinds**                                        | Domain relations become typed `EdgeKind`s with cardinality/integrity traits.                                                                                                                             |
+| `src/storage`       | **Split: `dialects/storage` + `dialects/core/placement` + `targets/postgres/sqlite`** | Storage location is placement dialect. Physical containers become `StorageContainerNode`. SQL emitters move to targets.                                                                                  |
+| `src/db`            | **Move to `targets/postgres` / `targets/sqlite` / `dialects/storage`**                | DB-specific logic should not be a core peer.                                                                                                                                                             |
+| `src/api`           | **Merge into `dialects/boundary` + `targets/http/rpc/openapi`**                       | API routes/getters/mutators become boundary views over callable nodes.                                                                                                                                   |
+| `src/router`        | **Merge into `dialects/boundary` + router targets**                                   | App routes become boundary/scope nodes plus target emitters.                                                                                                                                             |
+| `src/boundary`      | **Keep concept, move to `dialects/boundary`**                                         | Phase 7’s boundary unification survives strongly: routes, getters, mutators, app routes, and call plans become boundary graph patterns.                                                                  |
+| `src/context`       | **Merge into `dialects/core/context`**                                                | Context is a typed ambient value node. It connects to providers, scopes, placement, boundaries.                                                                                                          |
+| `src/requirements`  | **Merge into `dialects/core/requirement` + `provider`**                               | Requirement/Provider becomes the universal dependency graph, Effect-shaped but Gen2-owned. Phase 5.5 and Phase 7 both point here.                                                                        |
+| `src/services`      | **Merge into requirement/provider dialect**                                           | Service is a kind of requirement/provider target, not a separate root. Effect adapter can lower to `Context.Service` / `Layer`.                                                                          |
+| `src/state`         | **Merge into `dialects/resource` + `dialects/core/placement`**                        | Current `StateResource` is valuable: type, storage, key family, reactivity, sensitivity, lifetime, hydration. It becomes graph-native.                                                                   |
+| `src/reactivity`    | **Merge into `dialects/reactivity`**                                                  | Keep stable keys, key families, resources, mutations, tracking scopes. But represent them as nodes/edges in the canonical graph. Current manual reactivity graph concepts are still important.           |
+| `src/offline`       | **Merge into `dialects/queue` / `dialects/dispatch`**                                 | Offline command envelopes and queue plans become queue/message/dispatch nodes. Current idempotency, ordering, conflict, retry, replay, persistence, encryption, drain trigger semantics should survive.  |
+| `src/events`        | **Merge into `dialects/event` + `dialects/dispatch` + operation laws**                | Event, emission, subscription, reducer, outbox all become graph patterns. Reducers use operation/law traits instead of raw booleans.                                                                     |
+| `src/reaction`      | **Merge into `dialects/dispatch`**                                                    | Reaction is a dispatch where a rule trigger runs an action. Preserve the invariant: rules stay pure; dispatch/reaction owns effects.                                                                     |
+| `src/orchestration` | **Merge into `dialects/workflow` + `dialects/dispatch`**                              | Orchestration is workflow/dispatch/queue composition, not a root.                                                                                                                                        |
+| `src/workflow`      | **Merge into `dialects/workflow`**                                                    | Workflow becomes region/plan/step nodes with control-flow edges.                                                                                                                                         |
+| `src/plan`          | **Merge into `dialects/workflow` + callable plans**                                   | Plan is probably a protocol/body representation for callable/workflow nodes.                                                                                                                             |
+| `src/merge`         | **Merge into `dialects/operation`**                                                   | Merge strategies become combiner/reducer operation nodes with laws: associative, commutative, idempotent, identity, inverse, etc.                                                                        |
+| `src/obligations`   | **Merge into `dialects/core/claim` or `dialects/rule` / `authz`**                     | Obligations are semantic requirements/claims/policies that must be discharged. Represent as nodes/edges with verifier passes.                                                                            |
+| `src/authz`         | **Merge into `dialects/auth` built on rules + claims**                                | Auth conditions become rule/claim expressions. Policies are nodes guarded by rules.                                                                                                                      |
+| `src/hydration`     | **Merge into `dialects/resource`, `boundary`, and target passes**                     | Hydration is placement/boundary/resource lowering, not its own root.                                                                                                                                     |
+| `src/ui`            | **Merge into `dialects/ui`**                                                          | Keep the conceptual model. Current UI already has platform-agnostic views, slots, components, forms, styles, behaviors, themes, platforms, and renderers. Rebase them as nodes/edges/traits.             |
+| `src/forms`         | **Merge into `dialects/ui` + callable/action**                                        | Form is a view pattern bound to action functions, fields, widgets, rules, and error mappings.                                                                                                            |
+| `src/list`          | **Merge into `dialects/ui` + collection/query/reactivity**                            | Lists are UI/resource/query collection views. Not a separate root.                                                                                                                                       |
+| `src/editor`        | **Merge into `dialects/ui`**                                                          | Editor is a UI view pattern, likely generated from entity/action/rule metadata.                                                                                                                          |
+| `src/admin`         | **Move to `dialects/admin` or `targets/admin` as high-level preset**                  | Admin should be generated from domain/callable/ui/storage rules. It should not be core.                                                                                                                  |
+| `src/adapters`      | **Keep, but make external interop only**                                              | Effect, schema libs, TanStack Query, JSON Schema, etc. No canonical semantics here.                                                                                                                      |
+| `src/targets`       | **Keep and expand**                                                                   | Targets consume legalized target dialect IR and emit artifacts.                                                                                                                                          |
+| `src/lifecycle`     | **Keep, but only as pass pipeline runner**                                            | No module-specific registry as source of truth. `verify`, `derive`, `canonicalize`, `legalize`, `lower`, `emit`.                                                                                         |
+| `src/gen`           | **Keep as public builder facade**                                                     | This is where ergonomic APIs live: `gen.entity`, `gen.rule`, `gen.action`, `gen.ui`, etc. They emit graph nodes/edges.                                                                                   |
+| `src/gen.ts`        | **Keep as public entrypoint**                                                         | Thin facade.                                                                                                                                                                                             |
+| `src/index.ts`      | **Keep as curated exports**                                                           | Should export kernel, dialects, targets, adapters, and `gen`, not every internal folder as a peer subsystem.                                                                                             |
+
+## What gets combined
+
+These should collapse into fewer conceptual dialects:
+
+```txt
+entity + relation + parts of types
+  -> dialects/domain
+
+types + merge + operation pieces
+  -> kernel/type + dialects/operation
+
+expression + rules
+  -> dialects/expression + dialects/rule
+
+function + query + crud action pieces
+  -> dialects/callable
+
+api + router + boundary
+  -> dialects/boundary + targets/http/router/rpc
+
+context + requirements + services
+  -> dialects/core/context + requirement + provider
+
+state + hydration + parts of reactivity
+  -> dialects/resource + placement + boundary
+
+events + reaction + offline + orchestration
+  -> dialects/event + dispatch + queue + workflow
+
+ui + forms + list + editor + admin
+  -> dialects/ui + admin preset
+
+storage + db
+  -> dialects/storage + targets/postgres/sqlite
+```
+
+## What gets spun out or isolated
+
+These should be treated as **targets/adapters**, not core semantics:
+
+```txt
+Effect interop
+  src/adapters/effect or src/targets/effect
+
+TanStack Query / Effect Atom
+  src/adapters/tanstack-query
+  src/adapters/effect-atom
+
+React / Solid / React Native
+  src/targets/react
+  src/targets/solid
+  src/targets/react-native
+
+Postgres / SQLite
+  src/targets/postgres
+  src/targets/sqlite
+
+JSON-Render
+  src/targets/json-render
+  optional importer too
+
+OpenAPI
+  src/targets/openapi
+
+Docs/tests/devtools
+  src/targets/docs
+  src/targets/tests
+  src/targets/devtools
+```
+
+Adapters should not define canonical business semantics. They translate graph semantics into external ecosystems.
+
+## What gets simplified
+
+A lot of folders become much smaller because they no longer own registries/checkers/emitters.
+
+For example, `ui` no longer needs to manually stitch together views, slots, styles, behaviors, forms, themes, platforms, renderers in one flat input object. Instead:
+
+```txt
+ViewNode
+SlotNode
+StyleNode
+BehaviorNode
+FormNode
+DesignSystemNode
+
+StyleAttachesToSlot edge
+BehaviorAttachesToSlot edge
+FormSubmitsAction edge
+ViewUsesDesignSystem edge
+```
+
+Then `checkUi` becomes dialect verify passes.
+
+Similarly, `reaction` no longer needs its own complete checker. It becomes:
+
+```txt
+DispatchNode
+RuleTrigger edge
+RunsAction edge
+DeliveryPlan node
+IdempotencyPlan node
+OutboxPlan node
+```
+
+Then generic dispatch/effect passes check idempotency, delivery, unsafe inline execution, outbox mismatch, etc.
+
+## What should not survive as permanent top-level roots
+
+I would not keep these as independent roots after the cutover:
+
+```txt
+crud
+forms
+list
+editor
+admin
+query
+reaction
+events
+offline
+merge
+obligations
+services
+router
+api
+db
+hydration
+```
+
+They may survive as public namespaces under `gen`, but not as architectural roots.
+
+Example:
+
+```ts
+gen.crud(...)
+gen.forms(...)
+gen.admin(...)
+gen.events(...)
+gen.offline(...)
+```
+
+can still exist. Internally they emit dialect graph objects.
+
+## Public API can remain familiar
+
+Users should not have to write low-level graph code.
+
+This should still exist:
+
+```ts
+gen.entity(...)
+gen.rule(...)
+gen.query(...)
+gen.action(...)
+gen.reactivity.key(...)
+gen.ui.view(...)
+gen.form(...)
+gen.event(...)
+gen.reaction(...)
+```
+
+But internally those are frontends over:
+
+```txt
+Graph.addNode
+Graph.addEdge
+Graph.addType
+Graph.addExpr
+Graph.applyTrait
+```
+
+## The new mental model
+
+After the rebase:
+
+```txt
+kernel
+  defines what a semantic graph is
+
+dialects
+  define vocabularies over that graph
+
+gen
+  gives ergonomic builders for dialects
+
+passes
+  verify, derive, canonicalize, legalize, lower, emit
+
+targets
+  generate artifacts from legalized graph IR
+
+adapters
+  interop with external libraries
+```
+
+So the answer is:
+
+> Most current folders are still conceptually needed, but not as separate sources of truth. They should be collapsed into dialects, targets, adapters, or public builder namespaces over the new kernel graph. The only permanent core should be `kernel`, `dialects`, `targets`, `adapters`, `gen`, `lifecycle`, and the root exports.

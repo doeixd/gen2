@@ -1,0 +1,6812 @@
+I think the library is **very compelling**, but it is also at the point where the main risk is no longer “is the idea good?” The idea is good. The main risk is **scope control, DX, and making the graph feel helpful instead of heavy**.
+
+My honest take:
+
+```txt
+This is not just a framework.
+It is a semantic application compiler.
+
+If executed well, it could be unusually powerful.
+If executed poorly, it could become an over-abstracted meta-framework.
+```
+
+## What is genuinely strong
+
+The strongest idea is:
+
+```txt
+Define semantic facts once.
+Derive implementations, tests, docs, migrations, UI, sync, deployment, and diagnostics from the graph.
+```
+
+That is a real thesis. It is not cosmetic.
+
+Most app frameworks encode meaning in scattered places:
+
+```txt
+database schema
+server handlers
+client hooks
+forms
+lists
+cache invalidation
+OpenAPI
+tests
+docs
+deployment config
+auth policies
+```
+
+Gen2’s bet is that those are all projections of the same semantic graph. I think that is the right bet.
+
+The second strongest idea is the separation between:
+
+```txt
+Authoring API:
+  rich, typed, ergonomic, recipe-driven
+
+Runtime/compiler IR:
+  boring graph of Node / Edge / Trait
+
+Passes:
+  verify, derive, canonicalize, legalize, lower, emit
+```
+
+That separation is what keeps the project from collapsing under its own abstraction.
+
+## The library has a real identity
+
+A lot of libraries are “React but better,” “Prisma but better,” “tRPC but better,” or “Rails but TypeScript.”
+
+This is more like:
+
+```txt
+MLIR for application semantics
++
+Rails-style productivity
++
+Effect-style explicitness
++
+semantic graph devtools
++
+AI-editable application IR
+```
+
+That is distinctive.
+
+The best possible pitch might be:
+
+```txt
+Gen2 is a typed semantic graph compiler for full-stack applications.
+
+It lets you define domain, rules, actions, UI, sync, policies, storage,
+deployment, tests, docs, and migrations as one inspectable graph, then derives
+target-specific artifacts from verified semantics.
+```
+
+That is a strong category.
+
+## What worries me
+
+The main worry is **too much surface area too early**.
+
+You now have concepts for:
+
+```txt
+entities
+fields
+relations
+types
+transforms
+expressions
+operations
+laws
+rules
+policies
+actions
+queries
+resources
+state
+sync
+merge
+boundary
+dispatch
+effects
+queues
+streams
+UI
+forms
+lists
+providers
+requirements
+placement
+storage
+deployment
+diagnostics
+invariants
+obligations
+versioning
+migrations
+observability
+privacy
+fixtures
+packages
+```
+
+All of those are defensible. But users cannot meet them all at once.
+
+So the product lives or dies on progressive disclosure.
+
+The library needs three clearly different entry points:
+
+```txt
+Beginner:
+  app.kit.saas(...)
+  app.crud(...)
+  app.form.fromAction(...)
+  app.ui.list(...)
+  app.deploy(...)
+
+Power user:
+  modules, recipes, projections, policies, resources, mutations
+
+Compiler/plugin author:
+  dialects, passes, protocols, target IR, lower/emit
+```
+
+If users hit dialect/pass terminology in the first 15 minutes, the library will feel intimidating.
+
+## The best version of this library
+
+The best version is not a giant DSL where users manually define every graph fact.
+
+The best version is:
+
+```ts
+const app = gen.quick.saas("OpsDesk", {
+  auth: "tenant",
+  database: "postgres",
+  ui: "dashboard",
+});
+
+const Incident = app.entity("Incident", {
+  title: t.string,
+  severity: t.enum(["sev1", "sev2", "sev3", "sev4"]),
+  status: app.stateMachine(["open", "acknowledged", "resolved"]),
+});
+
+app.crud(Incident);
+app.dashboard(Incident);
+app.deploy(targets.alchemy);
+```
+
+Then users can expand:
+
+```ts
+app.expand(Incident);
+app.preview(IncidentDashboard);
+app.explain(acknowledgeIncident);
+```
+
+And progressively reveal the graph.
+
+That would be magical.
+
+## The biggest DX requirement
+
+The library needs to make derived behavior visible.
+
+Because the compiler derives so much, users will constantly ask:
+
+```txt
+Why did this invalidate that?
+Why is this server-only?
+Why did this form get this widget?
+Why is this action not offline-safe?
+Why did this migration become destructive?
+Why is this target unsupported?
+Why did this provider leak to the client?
+```
+
+So `explain(...)` is not optional. It is central.
+
+I would prioritize these APIs:
+
+```ts
+app.preview(x)
+app.explain(edgeOrDiagnostic, subject)
+app.expand(recipe)
+app.traceArtifact(path)
+app.capabilities.report(...)
+app.diff(previous, current)
+```
+
+Without those, Gen2 feels like magic. With those, it feels like a compiler.
+
+## The best technical direction
+
+The architectural direction I’d keep strict:
+
+```txt
+No side registries as source of truth.
+No behavior hidden in metadata.
+No raw strings for semantic identity.
+No target emitters reading high-level source IR directly.
+No recipe that cannot expand/explain itself.
+No opaque code without declared blast radius.
+```
+
+The graph should own meaning.
+
+Metadata should describe. It should not control behavior.
+
+Targets should consume legalized target dialect IR, not arbitrary source objects.
+
+## The most important next implementation milestone
+
+I would stop adding concepts for a bit and build the spine:
+
+```txt
+1. Stable Id / Ref / SymbolDef
+2. Typed NodeKind / EdgeKind / TraitDef witnesses
+3. Indexed GraphStore + GraphView
+4. GraphFragment / module composition
+5. Dialect registry
+6. Pass registry and pipeline runner
+7. Diagnostics with remediation
+8. Entity / Field / Type graph-native implementation
+9. Requirement / Provider / Placement graph-native implementation
+10. Query / Action read-write edges
+```
+
+Once that spine is excellent, everything else becomes much easier.
+
+If the spine is weak, every advanced feature becomes painful.
+
+## The biggest product opportunity
+
+AI app-building.
+
+This architecture is unusually well-suited for AI because the graph gives agents:
+
+```txt
+structured facts
+stable refs
+diagnostics
+repair hints
+artifact provenance
+semantic diffs
+textual IR
+safe import/export boundaries
+```
+
+Most AI coding systems edit source code directly and hope tests catch issues. Gen2 could let AI edit semantic graph facts, run diagnostics, apply graph patches, and explain consequences before emitting code.
+
+That is a major differentiator.
+
+The AI loop should be:
+
+```txt
+Prompt
+  -> candidate graph patch
+  -> verify
+  -> diagnostics with repairs
+  -> semantic diff
+  -> user review
+  -> emit artifacts
+```
+
+That is much safer than “AI rewrote your app.”
+
+## The library’s biggest danger
+
+Trying to be:
+
+```txt
+ORM
+RPC framework
+React framework
+state manager
+workflow engine
+deployment tool
+migration engine
+test generator
+AI builder
+```
+
+as separate products.
+
+It should not present itself that way.
+
+It should present itself as:
+
+```txt
+one semantic compiler
+many projections
+```
+
+That framing keeps the project coherent.
+
+## My overall verdict
+
+I think the library is **high-potential and architecturally interesting**.
+
+It has a real chance to be something new if it stays disciplined:
+
+```txt
+Small kernel.
+Graph as source of truth.
+Rich but layered authoring API.
+Recipes that expand.
+Diagnostics that repair.
+Targets that legalize before emitting.
+Developer-visible explanations.
+```
+
+The current concept is probably too broad for an initial public version, but the core thesis is strong enough to justify the ambition.
+
+The MVP should be narrower:
+
+```txt
+Entities
+Relations
+Types
+Rules
+Actions
+Queries
+Resources
+Forms
+Lists
+Providers
+Policies
+Postgres
+React
+Effect server
+Diagnostics
+Graph preview/explain
+```
+
+Then add:
+
+```txt
+sync/offline
+dispatch/queues
+versioning/migrations
+observability
+privacy/compliance
+AI import/export
+```
+
+as the compiler spine proves itself.
+
+In one sentence:
+
+```txt
+This library could be excellent if it feels like Rails at the surface,
+MLIR in the middle, and TypeScript-native in the editor.
+```
+
+
+Yes. Operations should support the builder matrix, but **not every form equally**.
+
+Operations are too important to force into one object shape. They power expressions, rules, patches, optimistic updates, IVM, merge, retries, target lowering, and tests. So the public API should be flexible.
+
+But the canonical IR must stay one thing:
+
+```txt
+Node(Operation)
+Edge(OperationInputType)
+Edge(OperationOutputType)
+Edge(OperationHasLaw)
+Edge(OperationHasEffect)
+Edge(OperationHasImplementation)
+Edge(OperationHasPatchProtocol)
+Edge(OperationLowersToTarget)
+```
+
+All builders should normalize to that.
+
+## Recommended operation builder matrix
+
+```txt
+Operation builder forms
+
+object form
+  yes, primary, best for docs/codegen
+
+curried name form
+  yes, good default
+
+fluent/builder form
+  yes, best for complex laws/protocols/implementations
+
+callback form
+  yes, best inference and progressive composition
+
+pipe/graph-step form
+  yes, operations should be addable graph fragments
+
+type-family builder
+  yes, very important for numeric/string/collection ops
+
+class form
+  mostly no; only for rare plugin/target implementation classes
+
+decorator form
+  no, not primary
+
+raw JS function form
+  yes, but only as opaque implementation with declared blast radius
+```
+
+## 1. Object form: canonical and readable
+
+This should be the most stable/documented form.
+
+```ts
+export const AddQuantityDelta = gen.operation.define({
+  name: "AddQuantityDelta",
+
+  kind: "binary",
+
+  input: {
+    current: Quantity,
+    delta: Quantity,
+  },
+
+  output: Quantity,
+
+  traits: [
+    traits.pure,
+    traits.deterministic,
+    traits.patchable,
+    traits.invertible,
+  ],
+
+  laws: [
+    laws.associative({ assurance: assurance.byConstruction() }),
+    laws.commutative({ assurance: assurance.byConstruction() }),
+    laws.hasIdentity({ value: 0, assurance: assurance.byConstruction() }),
+    laws.hasInverse({
+      inverse: ({ delta }) => expr.mul(delta, -1),
+      assurance: assurance.byConstruction(),
+    }),
+  ],
+
+  implementations: {
+    typescript: op.ts("(current, delta) => current + delta"),
+    postgres: op.sql("($1 + $2)"),
+  },
+
+  protocols: {
+    patch: gen.operation.patchProtocol({
+      producePatch: ({ input }) =>
+        gen.patch.increment(input.current, input.delta),
+
+      invertPatch: ({ input }) =>
+        gen.patch.increment(input.current, expr.mul(input.delta, -1)),
+    }),
+  },
+});
+```
+
+This is verbose but excellent for generated docs, AI editing, and code review.
+
+## 2. Curried name form: best default DX
+
+```ts
+export const AddQuantityDelta = gen.operation.define("AddQuantityDelta")({
+  kind: "binary",
+
+  input: {
+    current: Quantity,
+    delta: Quantity,
+  },
+
+  output: Quantity,
+
+  traits: [traits.pure, traits.deterministic, traits.patchable],
+
+  laws: [
+    laws.associative(),
+    laws.commutative(),
+  ],
+});
+```
+
+This is likely the best everyday form.
+
+It keeps the name out front and gives object-literal inference for the rest.
+
+## 3. Kind-specific builders
+
+You should absolutely have kind-specific helpers.
+
+```ts
+export const AddQuantityDelta = gen.operation.binary("AddQuantityDelta", {
+  left: Quantity,
+  right: Quantity,
+  output: Quantity,
+
+  laws: [
+    laws.associative(),
+    laws.commutative(),
+    laws.hasIdentity({ value: 0 }),
+  ],
+
+  implementations: {
+    postgres: op.sql("($1 + $2)"),
+    typescript: op.ts("(a, b) => a + b"),
+  },
+});
+```
+
+And:
+
+```ts
+const IsPositive = gen.operation.predicate("IsPositive", {
+  input: Quantity,
+  output: t.boolean(),
+
+  body: expr.define(({ input }) => expr.gt(input, 0)),
+});
+
+const SumQuantity = gen.operation.aggregate("SumQuantity", {
+  input: Quantity,
+  output: Quantity,
+
+  laws: [
+    laws.associative(),
+    laws.commutative(),
+  ],
+
+  requires: [
+    operation.constraints.numeric,
+  ],
+});
+
+const SendEmail = gen.operation.effect("SendEmail", {
+  input: t.object({
+    to: t.email(),
+    subject: t.string(),
+    body: t.string(),
+  }),
+
+  output: t.void(),
+
+  effects: [
+    effects.emailSend(),
+    effects.network(),
+  ],
+
+  requires: [EmailApiKey],
+
+  placement: WorkerBoundary,
+});
+```
+
+This improves inference and lets the builder enforce kind-specific invariants:
+
+```txt
+predicate must output boolean
+comparison must output boolean
+effect operation must declare effects
+aggregate must have aggregate-compatible input
+reducer should declare laws or diagnostics
+```
+
+## 4. Fluent builder form for complex operations
+
+For complex operation protocols, fluent builders are useful.
+
+```ts
+export const AddQuantityDelta = gen.operation
+  .binary("AddQuantityDelta")
+  .left(Quantity)
+  .right(Quantity)
+  .output(Quantity)
+  .trait(traits.pure)
+  .trait(traits.deterministic)
+  .trait(traits.patchable)
+  .law(laws.associative({ assurance: assurance.byConstruction() }))
+  .law(laws.commutative({ assurance: assurance.byConstruction() }))
+  .law(laws.hasIdentity({ value: 0 }))
+  .impl("typescript", op.ts("(a, b) => a + b"))
+  .impl("postgres", op.sql("($1 + $2)"))
+  .patch(({ input }) =>
+    gen.patch.increment(input.left, input.right),
+  )
+  .inversePatch(({ input }) =>
+    gen.patch.increment(input.left, expr.mul(input.right, -1)),
+  );
+```
+
+This is best when users are building operations interactively.
+
+The downside is inference can degrade if the builder is not carefully typed. So I would support it, but keep object/curried forms as the primary README style.
+
+## 5. Callback builder form
+
+This may be the nicest for complex inference.
+
+```ts
+export const AddQuantityDelta = gen.operation.binary("AddQuantityDelta")((op) =>
+  op
+    .left(Quantity)
+    .right(Quantity)
+    .output(Quantity)
+    .traits([
+      traits.pure,
+      traits.deterministic,
+      traits.patchable,
+      traits.invertible,
+    ])
+    .laws([
+      laws.associative({ assurance: assurance.byConstruction() }),
+      laws.commutative({ assurance: assurance.byConstruction() }),
+      laws.hasIdentity({ value: 0 }),
+    ])
+    .implementations({
+      typescript: op.impl.ts("(a, b) => a + b"),
+      postgres: op.impl.sql("($1 + $2)"),
+    })
+    .patch(({ input }) =>
+      gen.patch.increment(input.left, input.right),
+    )
+    .inverse(({ input }) =>
+      gen.patch.increment(input.left, expr.mul(input.right, -1)),
+    ),
+);
+```
+
+The callback form also gives you a clean place for contextual helpers:
+
+```ts
+op.impl.ts(...)
+op.impl.sql(...)
+op.law.associative(...)
+op.patch.increment(...)
+op.constraints.numeric()
+```
+
+## 6. Type-family operation builders
+
+This is important and easy to miss.
+
+Many operations are not one-off. They belong to type families:
+
+```txt
+numeric
+string
+boolean
+array
+set
+map
+datetime
+money
+state machine
+```
+
+So support operation families:
+
+```ts
+export const NumericOps = gen.operation.family("numeric", {
+  typeParam: "T",
+  constraint: type.traits.numeric,
+}).define((ops) => ({
+  add: ops.binary("add", {
+    left: ops.T,
+    right: ops.T,
+    output: ops.T,
+    laws: [
+      laws.associative(),
+      laws.commutative(),
+    ],
+  }),
+
+  subtract: ops.binary("subtract", {
+    left: ops.T,
+    right: ops.T,
+    output: ops.T,
+  }),
+
+  greaterThan: ops.comparison("greaterThan", {
+    operand: ops.T,
+    output: t.boolean(),
+    requires: [type.traits.orderable],
+  }),
+}));
+```
+
+Then instantiate:
+
+```ts
+export const QuantityOps = NumericOps.for(Quantity);
+export const MoneyOps = NumericOps.for(Money);
+```
+
+This is useful for:
+
+```txt
+expression builders
+query lowering
+target capability checks
+generated operator overloads
+operation law tests
+```
+
+## 7. Operation as graph step
+
+Every operation should be composable as a graph fragment.
+
+```ts
+export const InventoryModule = app.module("inventory").pipe(
+  Quantity,
+  AddQuantityDelta,
+  SubtractQuantity,
+  reserveInventory,
+);
+```
+
+That means an operation should expose:
+
+```ts
+AddQuantityDelta.ref;
+AddQuantityDelta.type;
+AddQuantityDelta.input;
+AddQuantityDelta.output;
+AddQuantityDelta.laws;
+AddQuantityDelta.effects;
+AddQuantityDelta.fragment;
+AddQuantityDelta.$infer.input;
+AddQuantityDelta.$infer.output;
+```
+
+Consistent witness surface matters.
+
+## 8. Raw JS function wrapper should be explicit opaque implementation
+
+Support this, but do not let it masquerade as a semantic operation.
+
+```ts
+export const ComputeRiskScore = gen.operation.opaque("ComputeRiskScore", {
+  input: {
+    incident: Incident,
+  },
+
+  output: t.number(),
+
+  implementation: riskScoreImpl,
+
+  placement: ServerBoundary,
+
+  reads: [
+    Incident.fields.severity,
+    Incident.fields.createdAt,
+  ],
+
+  effects: [],
+
+  lowerability: {
+    sql: false,
+    client: false,
+    jsonRender: false,
+  },
+
+  reactivity: {
+    precision: "conservative",
+    fallback: "invalidate",
+  },
+
+  test: {
+    fixtures: "required",
+  },
+});
+```
+
+Rule:
+
+```txt
+Opaque is allowed.
+Unknown is not.
+```
+
+## 9. Class form should not be primary
+
+I would not make operations class-first.
+
+This is good:
+
+```ts
+class User extends app.entity.class("User", { ... }) {}
+```
+
+But this is probably not worth encouraging:
+
+```ts
+class AddQuantityDelta extends gen.operation.class(...) {}
+```
+
+Why?
+
+```txt
+Operations are semantic computation definitions.
+Classes imply runtime behavior and inheritance.
+Inheritance is usually the wrong semantic model for operations.
+```
+
+A rare plugin form might be okay:
+
+```ts
+class PostgresAddQuantityImpl extends gen.operation.implementation.class({
+  operation: AddQuantityDelta,
+  target: targets.postgres,
+}) {
+  emit() {
+    return "($1 + $2)";
+  }
+}
+```
+
+But that is an implementation plugin, not the operation definition itself.
+
+## 10. The overload shape I’d use
+
+Something like:
+
+```ts
+type DefineOperation = {
+  <const TDef extends OperationObjectDef>(def: TDef): OperationWitness<TDef>;
+
+  <const TName extends string>(
+    name: TName,
+  ): <const TDef extends OperationBodyDef>(
+    def: TDef,
+  ) => OperationWitness<{ name: TName } & TDef>;
+
+  unary<const TName extends string>(
+    name: TName,
+  ): UnaryOperationBuilder<TName>;
+
+  binary<const TName extends string>(
+    name: TName,
+  ): BinaryOperationBuilder<TName>;
+
+  predicate<const TName extends string>(
+    name: TName,
+  ): PredicateOperationBuilder<TName>;
+
+  aggregate<const TName extends string>(
+    name: TName,
+  ): AggregateOperationBuilder<TName>;
+
+  reducer<const TName extends string>(
+    name: TName,
+  ): ReducerOperationBuilder<TName>;
+
+  effect<const TName extends string>(
+    name: TName,
+  ): EffectOperationBuilder<TName>;
+
+  family<const TName extends string>(
+    name: TName,
+    config: OperationFamilyConfig,
+  ): OperationFamilyBuilder<TName>;
+
+  opaque<const TName extends string>(
+    name: TName,
+    config: OpaqueOperationConfig,
+  ): OpaqueOperationWitness<TName>;
+};
+```
+
+And support both:
+
+```ts
+gen.operation.binary("add", {
+  left: Quantity,
+  right: Quantity,
+  output: Quantity,
+});
+```
+
+and:
+
+```ts
+gen.operation.binary("add")((op) =>
+  op.left(Quantity).right(Quantity).output(Quantity),
+);
+```
+
+## 11. README-friendly example
+
+I’d show operations like this:
+
+```ts
+export const AddQuantityDelta = gen.operation.binary("AddQuantityDelta", {
+  left: Quantity,
+  right: Quantity,
+  output: Quantity,
+
+  traits: [
+    traits.pure,
+    traits.deterministic,
+    traits.patchable,
+    traits.invertible,
+  ],
+
+  laws: [
+    laws.associative({ assurance: assurance.byConstruction() }),
+    laws.commutative({ assurance: assurance.byConstruction() }),
+    laws.hasIdentity({ value: 0 }),
+    laws.hasInverse({
+      inverse: ({ right }) => expr.mul(right, -1),
+    }),
+  ],
+
+  implementations: {
+    typescript: op.ts("(current, delta) => current + delta"),
+    postgres: op.sql("($1 + $2)"),
+  },
+
+  patch: {
+    apply: ({ left, right }) =>
+      gen.patch.increment(left, right),
+
+    invert: ({ left, right }) =>
+      gen.patch.increment(left, expr.mul(right, -1)),
+  },
+});
+```
+
+Then later show the callback form as the advanced equivalent.
+
+## 12. Final recommendation
+
+Yes, operations should support the matrix, but I would rank them like this:
+
+```txt
+Primary:
+  object
+  curried object
+  kind-specific object
+
+Secondary:
+  fluent builder
+  callback builder
+  operation families
+
+Advanced:
+  opaque operation
+  target implementation plugins
+
+Avoid as primary:
+  class operation definitions
+  decorators
+  implicit JS function extraction
+```
+
+The most important design rule:
+
+```txt
+Many authoring forms.
+One operation IR.
+Every operation is inspectable unless explicitly opaque.
+Every opaque operation declares its blast radius.
+```
+
+That gives users great DX without sacrificing the compiler’s ability to reason about laws, rules, reactivity, IVM, optimistic updates, target lowering, and code generation.
+
+
+
+
+Yes. Writing the full example exposed a few design improvements I’d make before locking the library shape.
+
+The big theme: **the architecture is right, but the public API needs more “progressive disclosure.”** The ultimate API can support everything, but most users and AI agents should not have to touch every layer manually.
+
+## 1. Add higher-level “application kits”
+
+The example required the user to wire domain, rules, actions, queries, events, dispatch, reactivity, UI, storage, and deployment separately. That is powerful, but verbose.
+
+I’d add opinionated kits that expand into graph facts:
+
+```ts
+const app = gen.kit.saas({
+  tenant: Organization,
+  user: User,
+  auth: AuthSession,
+  database: targets.postgres,
+  frontend: targets.react,
+});
+```
+
+Then common patterns become one call:
+
+```ts
+const IncidentFeature = app.feature("Incident", {
+  entity: Incident,
+  lifecycle: IncidentStatus,
+  list: {
+    key: "openIncidents",
+    query: "listOpenIncidents",
+  },
+  actions: {
+    acknowledge: {
+      from: "open",
+      to: "acknowledged",
+      guard: canAcknowledgeIncident,
+    },
+    resolve: {
+      from: ["acknowledged", "mitigated"],
+      to: "resolved",
+      guard: canResolveIncident,
+    },
+  },
+  ui: {
+    dashboard: true,
+    detail: true,
+  },
+  sync: {
+    optimistic: true,
+    offline: ["acknowledge"],
+  },
+});
+```
+
+Internally this still emits nodes/edges/traits. But users get a much smaller surface.
+
+## 2. Make “feature modules” a first-class concept
+
+The example would be easier if everything related to incidents lived in a typed graph fragment:
+
+```ts
+export const IncidentModule = gen.module("incident")((m) =>
+  m
+    .entity(Incident)
+    .rules(canViewIncident, canManageIncident)
+    .queries(listOpenIncidents, getIncidentDetail)
+    .actions(declareIncident, acknowledgeIncident, resolveIncident)
+    .events(IncidentDeclared, IncidentAcknowledged, IncidentResolved)
+    .ui(IncidentDashboard)
+    .storage(IncidentStorage)
+);
+```
+
+Then:
+
+```ts
+const appGraph = gen.graph.pipe(
+  CoreModule,
+  AuthModule,
+  IncidentModule,
+  NotificationModule,
+  DeploymentModule,
+);
+```
+
+This gives agents and humans natural edit boundaries. It also helps graph shaking, documentation, tests, and ownership.
+
+## 3. Add “graph recipes” for common patterns
+
+There are patterns that should not be manually assembled every time:
+
+```txt
+CRUD resource
+state-machine action
+event + outbox dispatch
+notification queue
+audit log
+tenant-scoped policy
+client-safe projection
+optimistic mutation
+offline command
+JSON-render screen
+```
+
+Example:
+
+```ts
+const acknowledgeIncident = gen.recipes.stateTransitionAction({
+  name: "acknowledgeIncident",
+  entity: Incident,
+  field: Incident.fields.status,
+  from: "open",
+  to: "acknowledged",
+  guard: canAcknowledgeIncident,
+  audit: true,
+  event: "IncidentAcknowledged",
+  optimistic: true,
+});
+```
+
+This recipe can still expose the generated pieces:
+
+```ts
+acknowledgeIncident.action;
+acknowledgeIncident.event;
+acknowledgeIncident.mutation;
+acknowledgeIncident.auditEntry;
+acknowledgeIncident.tests;
+```
+
+Recipes make the system usable without compromising the kernel.
+
+## 4. Introduce “capability reports” as a product feature
+
+Gen2 should be able to explain what each target can or cannot support:
+
+```ts
+const report = appGraph.capabilities.report({
+  targets: [targets.postgres, targets.react, targets.alchemy],
+});
+```
+
+Output:
+
+```txt
+IncidentDashboard
+  React: supported
+  JSON-Render: supported
+  Client rule evaluation: partial
+    canResolveIncident reads server-only field Incident.assignedTeamId
+
+IncidentSyncPlan
+  Optimistic patches: supported for acknowledgeIncident
+  Offline replay: unsupported for resolveIncident
+    reason: missing idempotency strategy
+```
+
+This would be extremely helpful for AI repair and developer trust.
+
+## 5. Make diagnostics the primary UX, not an afterthought
+
+The design already treats diagnostics as first-class, which is right. The current architecture doc also emphasizes typed diagnostics with remediation hints for the AI repair loop. 
+
+I would go further: every advanced API should define its failure modes first.
+
+For example, `dispatch.outbox(...)` should come with built-in diagnostics:
+
+```txt
+dispatch:at_least_once_requires_idempotency
+dispatch:outbox_requires_persistent_storage
+dispatch:handler_effect_not_supported_by_boundary
+dispatch:event_payload_not_serializable
+```
+
+A good Gen2 API is one where the user can do something wrong and get a **specific graph repair**, not a vague TypeScript error.
+
+## 6. Add assurance levels for laws and traits
+
+The example uses laws like:
+
+```ts
+laws.idempotent(...)
+laws.rollbackSafe(...)
+laws.validStateTransition(...)
+```
+
+But not all laws are equally trustworthy. Some are compiler-derived, some are asserted by the user, some are tested, and some are formally proven.
+
+I’d model this explicitly:
+
+```ts
+laws.idempotent({
+  key: ({ input }) => input.updateId,
+  assurance: "by_construction",
+});
+```
+
+or:
+
+```ts
+laws.commutative({
+  assurance: gen.assurance.propertyTest({
+    samples: 10_000,
+  }),
+});
+```
+
+Possible assurance levels:
+
+```txt
+asserted
+derived
+tested
+checked_by_target
+proved_by_solver
+by_construction
+```
+
+This prevents “law traits” from becoming wishful metadata.
+
+## 7. Make unsafe/opaque code painfully explicit
+
+Opaque code is necessary, but the API should force users to declare its blast radius:
+
+```ts
+expr.opaque("riskScore", {
+  input: { incident: Incident },
+  output: t.number,
+  placement: ServerBoundary,
+
+  reads: [
+    Incident.fields.severity,
+    Incident.fields.projectId,
+  ],
+
+  effects: [],
+  lowerability: {
+    sql: false,
+    client: false,
+  },
+
+  fallback: {
+    reactivity: "invalidate",
+    target: "server_only",
+  },
+});
+```
+
+This keeps escape hatches safe.
+
+Rule of thumb:
+
+```txt
+Opaque code is allowed.
+Unknown impact is not.
+```
+
+## 8. Add projection APIs as a first-class safety feature
+
+A lot of client/server leakage problems can be solved with projections.
+
+Example:
+
+```ts
+const IncidentCard = gen.projection("IncidentCard", {
+  from: Incident,
+  fields: {
+    id: Incident.fields.id,
+    title: Incident.fields.title,
+    severity: Incident.fields.severity,
+    status: Incident.fields.status,
+    updatedAt: Incident.fields.updatedAt,
+  },
+  placement: ClientBoundary,
+});
+```
+
+Then UI uses:
+
+```ts
+OpenIncidentsResource.output(t.array(IncidentCard.type));
+```
+
+This gives the compiler a safe shape for client data and avoids accidentally exposing server-only fields.
+
+## 9. Make generated `.d.ts` graph witnesses a core artifact
+
+With the faster TypeScript compiler, I’d make this official:
+
+```ts
+gen.emit(targets.typescript.artifacts.graphWitness, {
+  path: "generated/opsdesk.graph.d.ts",
+});
+```
+
+The witness should include:
+
+```txt
+entities and fields
+actions and inputs
+queries and outputs
+rules and variables
+UI slots and traits
+keys and resources
+events and payloads
+target artifacts
+```
+
+Then app code can import a lightweight type-level view without importing the whole compiler graph.
+
+## 10. Add a graph inspector/devtools early
+
+This system needs a visual/debuggable graph inspector.
+
+Minimum views:
+
+```txt
+Entity graph
+Read/write graph
+Rule dependency graph
+Action/event/dispatch graph
+Provider/requirement graph
+UI slot/behavior graph
+Target lowering graph
+Diagnostic graph
+Artifact provenance graph
+```
+
+Example API:
+
+```ts
+appGraph.inspect().open("read-write");
+appGraph.explain(acknowledgeIncident);
+appGraph.traceArtifact("generated/web/components/IncidentDashboard.tsx");
+```
+
+This will be crucial because the compiler will derive a lot. Users need to see why.
+
+## 11. Add “explain” as a core API
+
+Every derived fact should be explainable:
+
+```ts
+appGraph.explain(
+  gen.reactivity.edges.invalidatesKey,
+  {
+    action: acknowledgeIncident,
+    key: OpenIncidentsKey.any(),
+  },
+);
+```
+
+Possible output:
+
+```txt
+acknowledgeIncident invalidates OpenIncidentsKey because:
+  1. acknowledgeIncident writes Incident.status
+  2. listOpenIncidents reads Incident.status
+  3. listOpenIncidents derives OpenIncidentsKey
+  4. operation TransitionIncidentStatus may affect predicate status != resolved/cancelled
+  5. exact patch was not proven for all sort positions
+  6. fallback is broad invalidation
+```
+
+This is a major differentiator.
+
+## 12. Split target legalization from emission in the public API
+
+The example already did this, but I would make it impossible to skip:
+
+```ts
+const legalized = appGraph.legalize(targets.react);
+const emitted = legalized.emit(targets.react.artifacts.component);
+```
+
+Instead of allowing:
+
+```ts
+appGraph.emitReact();
+```
+
+Direct emitters will be tempting, but they’ll rot the architecture.
+
+## 13. Add importers as peers to emitters
+
+Because AI-generated UI, existing schemas, OpenAPI files, SQL databases, and previous Gen2 graphs all need to come in.
+
+Importer examples:
+
+```ts
+gen.import.jsonRenderSpec(...);
+gen.import.openApi(...);
+gen.import.postgresSchema(...);
+gen.import.prismaSchema(...);
+gen.import.previousGraph(...);
+```
+
+Each importer should produce candidate graph facts plus diagnostics:
+
+```ts
+const imported = gen.import.openApi("openapi.json", {
+  mode: "candidate",
+  namespace: "legacyApi",
+});
+
+appGraph.pipe(imported.acceptedFacts);
+```
+
+This will matter a lot for real adoption.
+
+## 14. Add graph diff as a first-class concept
+
+Migrations, AI edits, reviews, and deployment planning all need graph diffing:
+
+```ts
+const diff = gen.graph.diff(previousGraph, nextGraph);
+```
+
+Diff should be semantic, not textual:
+
+```txt
+Added Entity IncidentUpdate
+Added Field Incident.status
+Changed Rule canResolveIncident
+Changed Action resolveIncident writes set
+Added Dispatch notifyOnIncidentDeclared
+Added DeploymentResource NotificationWorker
+```
+
+Then derive:
+
+```txt
+database migration
+API breaking-change report
+UI update plan
+deployment change set
+test updates
+AI review summary
+```
+
+## 15. Improve naming around “logic”
+
+The example made it clear that `logic` may be overloaded.
+
+I would split internally:
+
+```txt
+operation
+expr
+rule
+law
+```
+
+Publicly, `gen.logic` can exist as a convenience namespace, but source layout should probably be:
+
+```txt
+dialects/operation
+dialects/expr
+dialects/rule
+dialects/law
+```
+
+Operations are too important to be merely a subpart of “logic.” They drive sync, dataflow, reducers, storage, transitions, patches, and target lowerings.
+
+## 16. Be careful with `.class`
+
+The `.class` API is great for entities and maybe events/components, but I would not force it everywhere.
+
+Strong fits:
+
+```txt
+Entity
+Event
+View / Component
+Resource maybe
+```
+
+Weaker fits:
+
+```txt
+Rule
+Action
+Query
+Dispatch
+Operation
+Invariant
+```
+
+For rules/actions/queries, callback builders usually produce better inference and clearer scope.
+
+So document:
+
+```txt
+Use .class for named data-bearing definitions.
+Use callback builders for behavior-bearing definitions.
+Use pipe for composition.
+```
+
+## 17. Add “minimal mode” and “expert mode”
+
+A developer should be able to start with:
+
+```ts
+const app = gen.quickApp("opsdesk", {
+  entities: [Incident],
+  crud: true,
+  auth: "tenant",
+  ui: "react",
+  database: "postgres",
+});
+```
+
+Then progressively open the generated graph and customize it.
+
+This is important for Dirived as an AI app builder. The AI should start from high-level intent, not hand-author every edge.
+
+## 18. Add testing as a target, not a side effect
+
+The example emits property tests. I’d make test generation much richer:
+
+```ts
+targets.tests.emit({
+  property: true,
+  fixtures: true,
+  policyMatrix: true,
+  migration: true,
+  sync: true,
+  uiInteraction: true,
+});
+```
+
+Generated tests should come from graph facts:
+
+```txt
+state-machine transitions
+rule truth tables
+policy access matrix
+operation laws
+optimistic rollback
+offline replay
+invariant preservation
+target lowering snapshots
+```
+
+## 19. Add “subgraph package” support
+
+Teams will want reusable graph fragments:
+
+```ts
+import { MultiTenantAuth } from "@dirived/patterns/auth";
+import { IncidentWorkflow } from "@dirived/patterns/incident";
+```
+
+A graph package should export:
+
+```txt
+dialect requirements
+nodes
+edges
+passes
+diagnostics
+artifacts
+public refs
+configuration slots
+```
+
+This becomes the plugin/story-marketplace layer.
+
+## 20. Make deployment requirements bidirectional
+
+The example lowers graph requirements to Alchemy/IaC. That is good. But deployment should also feed back into verification.
+
+Example:
+
+```ts
+deploy.stack("production", {
+  region: "us-east-1",
+  capabilities: [
+    deploy.capabilities.email,
+    deploy.capabilities.queue,
+    deploy.capabilities.sql,
+  ],
+});
+```
+
+Then passes can say:
+
+```txt
+NotificationQueue requires durable queue capability.
+Production target supports it.
+
+SMS effect requires sms provider.
+Production target does not support it.
+```
+
+Deployment should not just emit infra; it should constrain legal graph plans.
+
+## Top priorities
+
+I’d prioritize these improvements:
+
+```txt
+1. Feature modules / graph fragments
+2. GraphIndex + GraphView traversal API
+3. Diagnostic definitions with remediation
+4. Recipes for common SaaS patterns
+5. Target capability reports
+6. Generated GraphWitness .d.ts
+7. Explain/trace APIs
+8. Importers + semantic graph diff
+```
+
+The architecture is already strong. The next big improvement is making it **usable at multiple altitudes**:
+
+```txt
+Beginner:
+  app kits and recipes
+
+Power user:
+  builders, .class, graph fragments
+
+Compiler author:
+  dialects, passes, protocols
+
+AI agent:
+  textual IR, diagnostics, remediation, graph diff
+
+Target author:
+  legalized target IR and capability reports
+```
+
+That layered usability is what will keep the ultimate design from becoming too powerful to comfortably use.
+
+
+These are useful. They are not “wrong direction” files. They are mostly **pre-kernel versions of concepts that should survive**, but they should be rebased into the dialect/graph architecture.
+
+My take:
+
+```txt id="j7xwmc"
+query.ts
+  strong semantic seed, but currently too record/registry oriented
+
+kernel(2).ts relation adapter
+  very aligned with the new design; probably the best migration pattern here
+
+state.ts
+  conceptually right, but should become resource/state dialect graph IR + passes
+```
+
+## 1. `query.ts`: keep the semantics, split the layers
+
+This file is a strong seed for the callable/query dialect. It already models structured query semantics: source, predicate, projection, joins, order, limit, offset, group-by, result type, requirements, effects, target runtimes, and target stores. It also includes cross-store composition and planning machinery through `QueryBackedField`, `CrossStoreQuery`, `StoreQueryPlan`, `FieldAssignment`, and `QueryPlan`. 
+
+That is exactly the kind of information Gen2 needs for:
+
+```txt id="atngq5"
+query lowering
+read-edge derivation
+sync planning
+projection safety
+cross-store planning
+materialized views
+server composition
+target capability checking
+```
+
+But I would not keep `QueryExpression` as one large standalone object that owns everything.
+
+I would split it into graph concepts.
+
+### Current shape
+
+```txt id="c8ey4j"
+QueryExpression
+  source
+  predicate
+  projection
+  joins
+  order_by
+  limit / offset
+  group_by
+  result_type
+  requirements
+  effects
+  target_runtimes
+  target_stores
+```
+
+### Revised graph shape
+
+```txt id="jbbgoa"
+Node(Query)
+Node(QueryPlan)
+Node(QuerySource)
+Node(QueryProjection)
+Node(QueryJoin)
+Node(QueryOrderBy)
+Node(CrossStoreCompositionPlan)
+Node(StoreQueryPlan)
+
+Edges:
+  QueryHasSource
+  QueryHasPredicate
+  QueryProjectsField
+  QueryUsesJoin
+  QueryOrdersBy
+  QueryGroupsBy
+  QueryReturnsType
+  QueryRequires
+  QueryHasEffect
+  QueryTargetsRuntime
+  QueryTargetsStore
+  QueryHasPlan
+  QueryReadsField
+  QueryReadsEntity
+  QueryReadsRelation
+  QueryLoweredTo
+```
+
+The public API can still look like:
+
+```ts id="gx8dte"
+const listOpenIncidents = app.query("listOpenIncidents")((ctx, q) =>
+  q
+    .from(Incident)
+    .where((i) => expr.not(expr.includes(["resolved", "cancelled"], i.status)))
+    .select(IncidentCard)
+    .orderBy((i) => [i.severity.desc(), i.updatedAt.desc()])
+    .key(OpenIncidentsKey)
+);
+```
+
+But internally, the query should lower to graph facts.
+
+## 2. Query planning belongs in passes, not the source query object
+
+The planning types are valuable:
+
+```txt id="v9oyr0"
+CrossStoreQuery
+StoreQueryPlan
+FieldSource
+FieldAssignment
+QueryPlan
+QueryPlanner
+```
+
+But those are derived/target-planning artifacts, not the logical query source itself. `query.ts` currently puts the logical query IR and compiled planning IR side-by-side. 
+
+In the new architecture:
+
+```txt id="70y3op"
+Logical query dialect:
+  Query, source, predicate, projection, order, group, result type
+
+Derive passes:
+  QueryReadsField
+  QueryReadsEntity
+  QueryRequiresProvider
+  QueryKeyDerivation
+
+Legalize/lower passes:
+  QueryPlan
+  StoreQueryPlan
+  CrossStoreCompositionPlan
+  FieldAssignment
+```
+
+So I would keep these concepts, but move them into stages:
+
+```txt id="smkxps"
+query.ts
+  logical query builders and graph-lowering helpers
+
+query-plan.ts
+  derived plan dialect nodes and protocols
+
+query-passes.ts
+  verify/derive/legalize passes
+
+query-views.ts
+  graph views for query dependencies
+```
+
+## 3. Query builder needs better inference
+
+The current fluent builder is a good start, but it has a few type-inference compromises. For example, `select` returns `readonly InferField<Fields[number]>[]`, which loses object/alias shape. The implementation also sets `result_type` to the first selected field’s semantic type, which is a placeholder rather than a correct projection type. 
+
+I would redesign query projection around named object projection:
+
+```ts id="xz720j"
+const q = query.from(User)
+  .select({
+    id: User.fields.id,
+    email: User.fields.email,
+    displayName: User.fields.displayName,
+  });
+```
+
+Infer:
+
+```ts id="2k7x0o"
+{
+  id: Uuid;
+  email: Email;
+  displayName: string;
+}
+```
+
+Instead of:
+
+```ts id="5f0r1r"
+readonly (Uuid | Email | string)[]
+```
+
+Support array projection as a lower-level mode if needed, but default to object projection because APIs, UI, JSON, OpenAPI, and docs usually need named outputs.
+
+Better shape:
+
+```ts id="vvz7ah"
+type ProjectionSpec = Record<
+  string,
+  FieldRef | Expr | AggregateCall | NestedProjection
+>;
+
+type InferProjection<P> = {
+  [K in keyof P]: InferProjectionValue<P[K]>;
+};
+```
+
+Then:
+
+```ts id="t73g6t"
+query
+  .from(Incident)
+  .select({
+    id: Incident.fields.id,
+    title: Incident.fields.title,
+    severity: Incident.fields.severity,
+    status: Incident.fields.status,
+  });
+```
+
+This also dovetails with the projection API we discussed.
+
+## 4. Query sources should be refs/witnesses, not object pointers
+
+`QuerySource` currently holds optional direct `Entity`, `Relation`, `QueryExpression`, or `Expr` objects. 
+
+For the new graph model, make source identity ref-based:
+
+```ts id="egr684"
+type QuerySource =
+  | { kind: "entity"; entity: Ref<typeof domain.nodes.entity> }
+  | { kind: "relation"; relation: Ref<typeof domain.edges.relation> }
+  | { kind: "subquery"; query: Ref<typeof callable.nodes.query> }
+  | { kind: "expr"; expr: Ref<typeof expr.nodes.expr> };
+```
+
+The public API can still accept `Entity` witnesses, but canonical IR should store refs.
+
+This matters for:
+
+```txt id="5lgx5d"
+serialization
+graph diffing
+artifact provenance
+AI edits
+cross-module references
+pass indexing
+```
+
+## 5. Query checks should become diagnostic-producing passes
+
+`checkQueries` and `checkQueryRuntimes` are useful, but they should become dialect passes. The current checks validate aggregate operation kind, numeric aggregate fields, projected field existence, join predicate shape, wrong-entity field refs, join condition refs, and runtime effect support. 
+
+That maps very cleanly to:
+
+```txt id="nbs3s6"
+query.verify.projectionFieldsExist
+query.verify.aggregateOperationCompatibility
+query.verify.joinPredicateReferencesJoinedSource
+query.verify.predicateScope
+query.verify.runtimeEffectsSupported
+query.derive.readEdges
+query.derive.requirements
+query.legalize.targetStorePlan
+```
+
+The diagnostics should also become definitions with remediation:
+
+```ts id="be8psr"
+diagnostic.define("query.projection.field_not_in_source", {
+  severity: "error",
+  message:
+    "Projected field does not belong to the query source or joined sources.",
+  remediation: {
+    kind: "replace_field",
+    source: "valid_fields_from_query_scope",
+  },
+});
+```
+
+This is better than ad hoc string diagnostics.
+
+## 6. `kernel(2).ts`: this is the closest to the new architecture
+
+The relation adapter is very aligned with the revised kernel. It turns a legacy `Relation` into a `DOMAIN_RELATION` edge with four endpoints: `from_entity`, `to_entity`, `from_field`, and `to_field`. It also emits relation kind and integrity mode as typed traits and derives endpoint cardinality from relation kind. 
+
+That is exactly the right migration style:
+
+```txt id="cd1oj6"
+legacy semantic object
+  -> pure graph-fragment lowering
+  -> typed edge kind
+  -> named endpoints
+  -> traits for semantic claims
+  -> metadata only for passive bridge info
+```
+
+I would use this as the pattern for other old modules.
+
+For example:
+
+```txt id="0k60iz"
+Action -> ActionNode + ActionWrites + ActionAppliesOperation + GuardedBy
+Query -> QueryNode + QueryReads + QueryReturnsType + QueryHasPredicate
+StateResource -> StateResourceNode + PlacedIn + HasKeyFamily + HydratesThrough
+UI Behavior -> BehaviorNode + AttachesToSlot + RunsAction + HasEffect
+```
+
+## 7. Improve relation traits into dialect-owned symbols
+
+The relation adapter defines relation traits locally because they are stdlib-domain claims, not hard kernel claims. That is conceptually correct. 
+
+I would just move them into the domain dialect definition rather than the adapter file:
+
+```ts id="0rzr4r"
+export const domain = defineDialect("domain")((d) => {
+  const relation = d.edgeKind("relation", { ... });
+
+  const traits = {
+    oneToOne: d.trait("relation.oneToOne", { target: ["edge"] }),
+    oneToMany: d.trait("relation.oneToMany", { target: ["edge"] }),
+    databaseForeignKey: d.trait("relation.integrity.databaseForeignKey", {
+      target: ["edge"],
+    }),
+  };
+
+  return { edges: { relation }, traits };
+});
+```
+
+Then the adapter imports:
+
+```ts id="35b0zz"
+domain.traits.relation.oneToMany
+domain.edges.relation
+```
+
+not locally defined symbols.
+
+This avoids duplicate symbols and makes plugin/dialect registration clean.
+
+## 8. Relation cardinality should maybe be endpoint payload, not only traits
+
+The adapter uses traits for relation kind and endpoint cardinality on endpoint records. That is a good hybrid. The endpoint cardinality is more structural than semantic; keeping it on endpoints is useful for traversal/planning. The relation kind trait is useful for querying and diagnostics. 
+
+I would standardize:
+
+```txt id="qgbcep"
+endpoint payload:
+  cardinality at this endpoint
+
+edge traits:
+  relation kind
+  integrity mode
+  required/optional
+  cascade/restrict semantics
+
+edge metadata:
+  label, docs, bridge ref only
+```
+
+That lets storage, UI, and sync passes ask different questions efficiently.
+
+## 9. `state.ts`: strong concept, wrong final storage
+
+`StateResource` is a good concept. It models non-query app state with value type, optional key family, storage, default value, read/write access, reactivity, sensitivity, lifetime, and hydration. It also has useful checks for unsafe sensitive persistence, server-only state in client-readable storage, and query-cache state without key family. 
+
+This should survive almost exactly, but not as `ctx.state_resources`.
+
+It should become part of the `resource/state` dialect:
+
+```txt id="81oak3"
+Node(StateResource)
+Edge(StateHasValueType)
+Edge(StateHasKeyFamily)
+Edge(StatePlacedIn)
+Edge(StateReadableBy)
+Edge(StateWritableBy)
+Edge(StateHydratesThrough)
+Trait(StateReactive)
+Trait(StateHydratable)
+Trait(StateSensitive)
+Trait(StateServerOnly)
+```
+
+The current checker becomes passes:
+
+```txt id="mlol9a"
+state.verify.sensitivePlacementSafe
+state.verify.serverOnlyNotClientReadable
+state.verify.queryCacheHasKeyFamily
+state.derive.hydrationPlan
+state.derive.reactivityEdges
+```
+
+## 10. State access should be placement edges, not enum fields
+
+`readable_by` and `writable_by` are currently `"server" | "client" | "shared"`. 
+
+That is fine as an initial facade, but the graph should express this through placement/boundary facts:
+
+```ts id="jvvhaj"
+state.resource("CurrentUserDraft", {
+  value: UserDraft,
+  storage: storage.client.localStorage(),
+  readableBy: [ClientBoundary],
+  writableBy: [ClientBoundary],
+});
+```
+
+Graph:
+
+```txt id="jsc2z4"
+StateResource --placedIn--> ClientLocalStorage
+StateResource --readableBy--> ClientBoundary
+StateResource --writableBy--> ClientBoundary
+StateResource --hasKeyFamily--> CurrentUserDraftKey
+```
+
+This is more general than server/client/shared and works for:
+
+```txt id="541v3b"
+worker
+edge runtime
+database
+queue
+session storage
+tenant scope
+request scope
+test runtime
+```
+
+## 11. State resource should unify with UI and JSON-render
+
+This file is directly relevant to the UI design. The UI doc argued that typed `StateResource` nodes are the bridge between AF-UI/Effect-style state and JSON-Render pointer state: React can lower it to an atom/signal, while JSON-Render can lower the same typed binding to a JSON pointer. 
+
+So `state.ts` should be treated as a core piece of `dialect.resource`, not a side module.
+
+Ideal usage:
+
+```ts id="t02fd7"
+const CurrentIncidentDraft = gen.resource.state("CurrentIncidentDraft", {
+  type: t.object({
+    title: t.string,
+    severity: Severity,
+  }),
+
+  key: IncidentDraftKey,
+  storage: storage.client.sessionStorage(),
+  readableBy: ClientBoundary,
+  writableBy: ClientBoundary,
+  hydrate: false,
+});
+```
+
+UI binding:
+
+```ts id="fnc0ne"
+ui.input("Title").bind(CurrentIncidentDraft.fields.title);
+```
+
+JSON-Render lowering:
+
+```json id="bsjyp5"
+{ "$bindState": "/CurrentIncidentDraft/title" }
+```
+
+React lowering:
+
+```ts id="t59pvr"
+const title = useAtom(CurrentIncidentDraftAtom).title;
+```
+
+Same graph fact, different targets.
+
+## 12. How I’d organize these files after the rebase
+
+I’d split them like this:
+
+```txt id="137irj"
+src/dialects/query/
+  dialect.ts
+  kinds.ts
+  traits.ts
+  builders.ts
+  lower.ts
+  passes/verify-query.ts
+  passes/derive-query-reads.ts
+  passes/legalize-query-plan.ts
+  views/query-view.ts
+
+src/dialects/domain/relation/
+  dialect.ts
+  traits.ts
+  adapter-legacy.ts
+  passes/verify-relations.ts
+
+src/dialects/resource/
+  dialect.ts
+  state-resource.ts
+  resource-state.ts
+  hydration.ts
+  passes/verify-state-placement.ts
+  passes/derive-hydration.ts
+  passes/derive-reactivity.ts
+```
+
+And the old direct functions become compatibility fronts:
+
+```txt id="n4eedq"
+buildQuery(...)
+  -> returns GraphFragment or QueryWitness
+
+checkQueries(...)
+  -> query.verify passes
+
+defineStateResource(...)
+  -> StateResource graph fragment
+
+checkStateResources(...)
+  -> state.verify passes
+
+relationToKernelEdge(...)
+  -> legacy adapter until domain.relation emits graph directly
+```
+
+## 13. Recommended rewritten API shapes
+
+### Query
+
+```ts id="4u8vn2"
+const listOpenIncidents = app.query("listOpenIncidents")((q) =>
+  q
+    .from(Incident)
+    .where((i, ctx) =>
+      expr.and(
+        expr.eq(i.organizationId, ctx.input.organizationId),
+        expr.not(expr.includes(["resolved", "cancelled"], i.status)),
+      ),
+    )
+    .select(IncidentCard)
+    .orderBy((i) => [i.severity.desc(), i.updatedAt.desc()])
+    .key(OpenIncidentsKey)
+    .target("logical"),
+);
+```
+
+Then passes derive:
+
+```txt id="787msd"
+QueryReadsField
+QueryReturnsType
+QueryRequiresProvider
+QueryTargetsStore
+QueryPlan
+PostgresSelect
+ReactResourceHook
+OpenAPIEndpoint
+```
+
+### Relation
+
+```ts id="zu974r"
+const projectIncidents = domain.relation("ProjectIncidents", {
+  from: Project,
+  to: Incident,
+  kind: "one_to_many",
+  fromField: Project.fields.id,
+  toField: Incident.fields.projectId,
+  integrity: domain.integrity.databaseForeignKey({
+    onDelete: "restrict",
+  }),
+});
+```
+
+Lowers to:
+
+```txt id="2925yj"
+Edge(DomainRelation)
+  from: Project
+  to: Incident
+  fromField: Project.id
+  toField: Incident.projectId
+
+Traits:
+  oneToMany
+  databaseForeignKey
+  restrictOnDelete
+```
+
+### State resource
+
+```ts id="l3mhmh"
+const CurrentUserDraft = app.state.resource("CurrentUserDraft", {
+  type: UserDraft,
+  key: CurrentUserDraftKey,
+  storage: storage.client.sessionStorage(),
+  readableBy: ClientBoundary,
+  writableBy: ClientBoundary,
+  sensitivity: "client_safe",
+  hydrate: false,
+});
+```
+
+Lowers to:
+
+```txt id="3b2ed2"
+Node(StateResource): CurrentUserDraft
+Edge(HasValueType): CurrentUserDraft -> UserDraft
+Edge(HasKeyFamily): CurrentUserDraft -> CurrentUserDraftKey
+Edge(PlacedIn): CurrentUserDraft -> sessionStorage
+Edge(ReadableBy): CurrentUserDraft -> client
+Edge(WritableBy): CurrentUserDraft -> client
+```
+
+## 14. Biggest concrete fixes
+
+I would make these changes first:
+
+```txt id="1lco0m"
+1. Keep relationToKernelEdge as migration pattern.
+2. Move relationTraits into the domain dialect.
+3. Convert StateResource into StateResourceNodeKind + edges.
+4. Convert checkStateResources into dialect verify passes.
+5. Convert QueryExpression into QueryNode + child graph facts.
+6. Split query logical IR from query planning IR.
+7. Replace direct entity/field object references in canonical query IR with refs.
+8. Improve query projection inference to named object projections.
+9. Make cross-store query planning a legalize/lower pass, not source-level IR.
+10. Add QueryView and ResourceView graph views for pass authors.
+```
+
+## Bottom line
+
+These files are not throwaway.
+
+They are three important seeds:
+
+```txt id="g8bzox"
+query.ts
+  seed for callable/query dialect + query planning dialect
+
+kernel(2).ts
+  seed for how to migrate legacy semantic objects into graph IR
+
+state.ts
+  seed for resource/state dialect and UI/JSON-render state binding
+```
+
+The relation adapter is closest to the target architecture. The state resource model is conceptually right but needs to move from `ctx.state_resources` into graph nodes/edges. The query model has the richest semantics, but it needs the most refactoring: logical query, query expression, query reads, query planning, and target lowering should be separate graph stages rather than one large record.
+
+
+These three files are important because they show the **migration layer** starting to exist in code.
+
+My read:
+
+```txt
+obligations.ts
+  very good concept; should become an obligation/artifact/test dialect
+
+kernel(3).ts
+  good policy → graph adapter, but should become more typed and dialect-owned
+
+lifecycle.ts
+  the main transitional bottleneck; it is half new pass pipeline, half old GenContext runner
+```
+
+## 1. `obligations.ts`: this should survive, but as graph IR
+
+This file is conceptually excellent. It introduces a “semantic obligation graph” for tests, docs, and devtools. It derives obligations like policy tests, access matrix docs, mutation invalidation tests, provider mock tests, hydration safety tests, form validation tests, enum exhaustiveness tests, reaction delivery tests, cron idempotency tests, workflow error-handler tests, and boundary auth tests. 
+
+That is exactly the right idea.
+
+The insight is:
+
+```txt
+Some graph facts imply generated-output responsibilities.
+```
+
+Examples:
+
+```txt
+Policy exists
+  -> generate policy tests
+  -> generate access matrix docs
+
+Action invalidates keys
+  -> generate mutation invalidation tests
+
+Hydrated state resource exists
+  -> generate hydration safety tests
+
+At-least-once reaction/dispatch exists
+  -> generate delivery/idempotency tests
+
+Workflow has error handlers
+  -> generate workflow error tests
+```
+
+This is broader than diagnostics. Diagnostics say “something is wrong or notable.” Obligations say “this semantic fact should produce a test/doc/devtool artifact.”
+
+I would keep the concept, but not as a separate `ObligationGraph` object built by scanning `ctx.*` arrays.
+
+### Revised model
+
+Make obligations graph-native:
+
+```txt
+Node(Obligation)
+  kind: policy_test | access_matrix_doc | mutation_invalidation_test | ...
+
+Edges:
+  ObligationSource -> source node/edge
+  ObligationAffectsArtifact -> artifact kind/path/template
+  ObligationConsumedBy -> target/test/docs/devtools pass
+  ObligationSatisfiedBy -> generated artifact
+  ObligationBlockedBy -> diagnostic/finding
+
+Traits:
+  Required
+  Recommended
+  Optional
+  TestObligation
+  DocumentationObligation
+  DevtoolsObligation
+```
+
+Then a pass derives obligations:
+
+```txt
+derive.obligations.policyTests
+derive.obligations.reactivityTests
+derive.obligations.hydrationTests
+derive.obligations.dispatchDeliveryTests
+derive.obligations.workflowTests
+```
+
+And another pass verifies them:
+
+```txt
+verify.obligations.requiredSatisfied
+verify.obligations.hasConsumer
+```
+
+### Better API shape
+
+```ts
+const PolicyTestObligation = obligations.kind("policy_test", {
+  priority: "required",
+  targetArtifacts: [targets.tests.artifacts.policyMatrix],
+});
+
+const derivePolicyTestObligations = pass.define("derive.policyTestObligations", {
+  reads: {
+    nodes: [auth.nodes.policy],
+    edges: [auth.edges.policyTargetsEntity, auth.edges.policyUsesRule],
+  },
+  writes: {
+    nodes: [obligations.nodes.obligation],
+    edges: [
+      obligations.edges.source,
+      obligations.edges.affectsArtifact,
+    ],
+  },
+  run(ctx) {
+    for (const policy of ctx.graph.view(auth.views.policies).all()) {
+      ctx.add(
+        obligations.obligation("policy-test", {
+          source: policy,
+          kind: PolicyTestObligation,
+          priority: "required",
+          artifact: targets.tests.artifacts.policyTest,
+        }),
+      );
+    }
+  },
+});
+```
+
+The current file hardcodes paths like `tests/policy/${policy.name}.test.ts`. That is okay as a first pass, but in the final design, artifact paths should be owned by target artifact kinds or path templates.
+
+### What I would change
+
+```txt
+Keep:
+  obligation kinds
+  priority
+  source
+  affected artifacts
+  consumers
+  required/unhandled diagnostics
+
+Change:
+  source_kind/source_name -> source Ref
+  affected_artifacts strings -> ArtifactKind refs / artifact path templates
+  consumers strings -> target/pass refs
+  deriveObligationGraph(ctx) -> derive obligation graph pass
+  checkObligations(ctx) -> verify obligation satisfaction pass
+  ctx array scans -> graph views
+```
+
+This should become a real dialect:
+
+```txt
+dialect.obligation
+  nodes:
+    Obligation
+    ObligationKind
+
+  edges:
+    ObligationSource
+    ObligationAffectsArtifact
+    ObligationConsumedBy
+    ObligationSatisfiedBy
+
+  traits:
+    Required
+    Recommended
+    Optional
+```
+
+I would also connect it to the tests/docs targets:
+
+```txt
+Obligation -> tests target
+Obligation -> docs target
+Obligation -> devtools target
+```
+
+That makes test generation part of the semantic graph, not an afterthought.
+
+---
+
+## 2. `kernel(3).ts`: policy adapter is directionally right
+
+This file adapts a legacy `Policy` object into kernel graph IR: a `Policy` node plus a `TARGETS` edge to the target entity and a `POLICY_USES_RULE` edge to the predicate rule when present. It intentionally avoids mutating `ctx.graph`; registration happens through a dual-write binder. 
+
+That is the right migration pattern.
+
+Current shape:
+
+```txt
+Policy
+  -> Node(POLICY)
+
+Policy targets entity
+  -> Edge(TARGETS)
+
+Policy uses predicate
+  -> Edge(POLICY_USES_RULE)
+```
+
+That should survive.
+
+### What is good
+
+The file does three good things:
+
+```txt
+1. Treats policy as a graph node.
+2. Treats policy relationships as graph edges.
+3. Keeps conversion pure instead of mutating ctx.graph directly.
+```
+
+That is exactly how legacy adapters should work.
+
+### What I would improve
+
+The file manually converts dialect edge kind definitions into loose `EdgeKind` / `EndpointRole` objects using helper functions like `edgeKindFromDef` and `endpointRoleFromDef`. 
+
+That is a bridge smell. In the final API, use the typed edge kind witness directly:
+
+```ts
+defineEdgeFromKind(POLICY_TARGETS_ENTITY_EDGE_KIND, id, {
+  policy: policyRef,
+  entity: policy.target_entity.ref,
+});
+```
+
+Not:
+
+```ts
+defineEdge(policyTargetsEntityKind, id, [
+  { role: policyTargetsPolicyRole, target: policyRef },
+  { role: policyTargetsEntityRole, target: entityRef },
+]);
+```
+
+The typed version preserves endpoint names, endpoint target constraints, direction, and metadata shape.
+
+### Policy needs more edges
+
+The current adapter only emits:
+
+```txt
+Policy targets entity
+Policy uses rule
+```
+
+But the target design needs more policy facts:
+
+```txt
+PolicyEnforcesOperation
+PolicyAppliesToAction
+PolicyAppliesToQuery
+PolicyRequiresClaim
+PolicyExposesClientHint
+PolicyRequiresServerEnforcement
+PolicyLowersToRls
+PolicyHasAudience
+PolicyHasDecisionMode
+```
+
+For example:
+
+```txt
+Policy IncidentPolicy
+  targets Incident
+  uses canViewIncident
+  enforces read
+  enforcement server + database
+  exposes client hint true
+```
+
+Graph shape:
+
+```txt
+Node(Policy): IncidentPolicy
+Edge(PolicyTargetsEntity): IncidentPolicy -> Incident
+Edge(PolicyUsesRule): IncidentPolicy -> canViewIncident
+Edge(PolicyEnforcesOperation): IncidentPolicy -> read
+Edge(PolicyRequiresServerEnforcement): IncidentPolicy -> ServerBoundary
+Edge(PolicyLowersTo): IncidentPolicy -> PostgresRlsPolicy
+Edge(PolicyExposesClientHint): IncidentPolicy -> UIHint
+```
+
+### Revised policy adapter target
+
+```ts
+export const policyToGraphFragment = (policy: Policy): GraphFragment =>
+  fragment(
+    node(auth.nodes.policy, policy.id, {
+      name: policy.name,
+    }),
+
+    edge(auth.edges.policyTargetsEntity, {
+      policy: ref(policy),
+      entity: ref(policy.target_entity),
+    }),
+
+    policy.predicate &&
+      edge(auth.edges.policyUsesRule, {
+        policy: ref(policy),
+        rule: ref(policy.predicate),
+      }),
+
+    ...policy.enforcement.map((boundary) =>
+      edge(auth.edges.requiresEnforcementAt, {
+        policy: ref(policy),
+        boundary: ref(boundary),
+      }),
+    ),
+  );
+```
+
+The policy adapter is a good seed, but it should become a typed graph-fragment lowering rather than a loose bridge.
+
+---
+
+## 3. `lifecycle.ts`: this is the migration bottleneck
+
+This is the biggest and most important file of the three.
+
+It already contains the transition idea: lifecycle checks are routed through `PassRegistry`; built-in checks are registered as passes; target pipelines are represented as lower/emit pass sequences; and there are phase names like `verify-symbols`, `verify-dialects`, `derive`, `canonicalize`, and `legalize`. 
+
+But it is still deeply mixed with the old architecture.
+
+It imports a long list of old checkers:
+
+```txt
+checkEntities
+checkEvents
+checkQueries
+checkRelations
+checkUi
+checkCrud
+checkReactivity
+checkAuthz
+checkStateResources
+checkObligations
+...
+```
+
+and the built-in passes still call those old checkers over `ctx.entities`, `ctx.queries`, `ctx.views`, `ctx.forms`, `ctx.reactive_resources`, `ctx.state_resources`, `ctx.workflows`, etc. 
+
+So this file is not wrong. It is a **bridge runner**.
+
+But it should not survive as the final lifecycle architecture.
+
+## The right interpretation
+
+`lifecycle.ts` currently means:
+
+```txt
+The old checker world has been wrapped in the new pass vocabulary.
+```
+
+That is a useful transitional step.
+
+The final architecture should become:
+
+```txt
+The checker world disappears.
+Dialect-owned passes query the graph directly.
+Targets consume legalized target dialect IR.
+```
+
+## What is good in `lifecycle.ts`
+
+Several things are valuable and should remain conceptually:
+
+```txt
+Pass registry
+Pipeline registry
+Built-in pass names
+Phased execution
+Target lower/emit separation
+Target input legalization marker
+Compatibility helper for legacy checkers
+Cross-store planner diagnostics
+Fallback diagnostics
+Context/storage diagnostics
+Target capability diagnostics
+```
+
+The file is doing real migration work.
+
+## What should change
+
+### 1. `ctxCheckerToPass` should be temporary only
+
+This adapter wraps old `GenContext` checkers into pass runners by passing `genContext` through `passCtx.options`. 
+
+That is fine for migration.
+
+But in the final design, pass runners should look like:
+
+```ts
+run(graph, ctx) {
+  const queries = ctx.view(query.views.all);
+  ...
+}
+```
+
+not:
+
+```ts
+const genCtx = passCtx.options?.genContext as GenContext;
+return checkQueries(genCtx.queries);
+```
+
+A good rule:
+
+```txt
+No new pass may require passCtx.options.genContext.
+Only legacy bridge passes may do that.
+```
+
+### 2. Built-in passes should move to dialect files
+
+Right now `lifecycle.ts` owns a giant `builtInCheckPasses()` list. 
+
+Final structure should be:
+
+```txt
+domain.dialect.ts
+  registers domain verify/derive passes
+
+query.dialect.ts
+  registers query verify/derive/legalize passes
+
+ui.dialect.ts
+  registers ui verify/legalize passes
+
+reactivity.dialect.ts
+  registers derive invalidation/optimistic passes
+
+dispatch.dialect.ts
+  registers delivery/idempotency passes
+
+target/postgres.dialect.ts
+  registers postgres legalization/lowering/emission passes
+```
+
+Then lifecycle only orchestrates:
+
+```ts
+const pipeline = pipelineRegistry.resolve("gen2.check");
+runPipeline(graph, pipeline);
+```
+
+It should not know every module.
+
+### 3. `standardPhases()` is old-shaped
+
+The current phases are:
+
+```txt
+collect_refs
+resolve_plugins
+check_targets
+run_checks
+generate
+```
+
+But the revised compiler phases should be:
+
+```txt
+verify-symbols
+verify-dialects
+derive
+canonicalize
+legalize
+lower
+emit
+```
+
+The file already uses those internally, but `standardPhases()` still exposes the older lifecycle vocabulary. 
+
+I would replace it with:
+
+```ts
+export const standardPassPhases = () => [
+  "verify-symbols",
+  "verify-dialects",
+  "derive",
+  "canonicalize",
+  "legalize",
+  "lower",
+  "emit",
+] as const;
+```
+
+Plugin resolution can be a preflight step, not a semantic phase.
+
+### 4. Target legalization is currently metadata/bridge based
+
+The functions `markTargetInputLegalized` and `isTargetInputLegalized` create target/input nodes and a `TARGET_LEGALIZES_INPUT` edge. That idea is right. But `isTargetInputLegalized` scans all edges and checks `edge.metadata.custom.targetName/inputName/inputKind`. 
+
+That is exactly what the new design should avoid.
+
+Better:
+
+```txt
+Edge(TargetLegalizesInput)
+  target: TargetNodeRef
+  input: TargetInputNodeRef
+```
+
+Then query:
+
+```ts
+graph.edges
+  .ofKind(target.edges.legalizesInput)
+  .whereEndpoint("target", target.ref)
+  .whereEndpoint("input", input.ref)
+  .exists();
+```
+
+No metadata-driven behavior. No global scan.
+
+### 5. `bridge lower pass` is a stub
+
+`registerBridgeLowerPass` currently registers a lower pass that just returns success. 
+
+That is acceptable as a placeholder, but the final architecture needs real lower passes:
+
+```txt
+domain.entity -> storage.record
+storage.record -> postgres.table
+rule.expr -> sql.predicate
+action -> server.mutation
+ui.view -> react.component_model
+deployment.requirement -> alchemy.resource
+```
+
+A lower pass that does nothing means emitters are still doing too much.
+
+### 6. Target emit pass still calls old target generators
+
+The bridge emit pass looks up plugin contributions and calls `targetContrib.generate(input)` and codegen hooks directly. 
+
+Again: okay for bridge mode.
+
+Final state:
+
+```txt
+emit pass consumes legalized target dialect nodes
+emit pass emits Artifact nodes/artifacts
+```
+
+Not:
+
+```txt
+targetContrib.generate(old input record)
+```
+
+### 7. Async pass hooks should eventually be supported
+
+The current runner rejects async check/codegen hooks with diagnostics like `lifecycle:async-check-hook-unsupported`. 
+
+For a compiler that targets deployment, remote schemas, AI imports, file IO, external OpenAPI, and package inspection, async will eventually matter.
+
+I would keep the synchronous runner for deterministic local passes, but add:
+
+```txt
+runPipelineSync
+runPipelineAsync
+```
+
+Rule:
+
+```txt
+Core semantic verification should be sync when possible.
+Importers, external target probes, deployment planning, and remote capability discovery may be async.
+```
+
+## 4. Cross-store planning in `lifecycle.ts`
+
+The cross-store planner types and checks are valuable. The file validates that cross-store planners have more than one store, distinct stores, projection coverage, explicit composition plans for cross-store reads, and coordinator requirements for cross-store transactional writes. 
+
+This should move out of lifecycle and into query/storage/dataflow legalization passes.
+
+Final home:
+
+```txt
+dialects/query/passes/legalize-cross-store-read.ts
+dialects/storage/passes/legalize-cross-store-write.ts
+dialects/dataflow/passes/derive-materialized-composition.ts
+```
+
+Graph concepts:
+
+```txt
+Node(CrossStorePlan)
+Node(StoreQueryPlan)
+Edge(QueryHasPlan)
+Edge(PlanReadsStore)
+Edge(PlanCoversField)
+Edge(PlanUsesCompositionStrategy)
+```
+
+Diagnostics:
+
+```txt
+query.cross_store.missing_plan
+query.cross_store.duplicate_store
+query.cross_store.missing_projected_field
+write.cross_store.transaction_requires_coordinator
+```
+
+This is important. Keep it, but move it.
+
+## 5. How these three files fit together
+
+They point to a useful future pipeline:
+
+```txt
+Policy adapter
+  Policy -> graph facts
+
+Obligation pass
+  Policy graph facts -> policy test/doc obligations
+
+Lifecycle pipeline
+  derive obligations -> legalize test/doc targets -> emit artifacts
+```
+
+Example final graph flow:
+
+```txt
+Node(Policy): IncidentPolicy
+Edge(PolicyTargetsEntity): IncidentPolicy -> Incident
+Edge(PolicyUsesRule): IncidentPolicy -> canViewIncident
+
+derive.obligations.policy
+  -> Node(Obligation): policy-test-IncidentPolicy
+  -> Edge(ObligationSource): obligation -> IncidentPolicy
+  -> Edge(ObligationAffectsArtifact): obligation -> PolicyTestArtifactKind
+
+legalize.tests
+  -> Node(TestPlan): IncidentPolicyPolicyTest
+
+emit.tests
+  -> Artifact: tests/policy/IncidentPolicy.test.ts
+```
+
+That is exactly the kind of graph-native derivation Gen2 should do.
+
+## 6. Recommended migration plan for these files
+
+### Step 1: Keep adapters, but mark them bridge-only
+
+```txt
+policyToKernelNode
+policyToKernelEdges
+relationToKernelEdge
+```
+
+These are useful until builders emit graph IR directly.
+
+Add comments like:
+
+```txt
+Bridge adapter. Do not add new semantics here.
+Final home is auth dialect builder/lowering.
+```
+
+### Step 2: Move policy edge definitions into auth dialect
+
+Make `POLICY_TARGETS_ENTITY_EDGE_KIND` and `POLICY_USES_RULE_EDGE_KIND` strongly typed endpoint witnesses.
+
+Use `defineEdgeFromKind`, not manual role conversion.
+
+### Step 3: Create `dialect.obligation`
+
+Move obligation kinds and deriving logic into:
+
+```txt
+src/dialects/obligation/
+  dialect.ts
+  kinds.ts
+  builders.ts
+  passes/derive-obligations.ts
+  passes/verify-obligations.ts
+```
+
+### Step 4: Split lifecycle into runner + bridge
+
+Current `lifecycle.ts` should split:
+
+```txt
+src/lifecycle/runner.ts
+  pipeline orchestration only
+
+src/lifecycle/legacy-check-bridge.ts
+  ctxCheckerToPass, builtIn legacy pass list
+
+src/lifecycle/target-bridge.ts
+  bridge lower/emit pass adapters
+
+src/lifecycle/cross-store-legacy.ts
+  temporary cross-store checks until moved
+```
+
+That makes it obvious what is final and what is transitional.
+
+### Step 5: Move built-in checks into dialect-owned passes
+
+Port in this order:
+
+```txt
+1. domain/relation
+2. query
+3. rule
+4. callable/action/query reads/writes
+5. reactivity
+6. auth/policy
+7. state/resource
+8. dispatch/reaction/event
+9. ui
+10. obligations/tests/docs
+11. target legalization
+```
+
+### Step 6: Remove `genContext` from pass context for non-bridge passes
+
+Add an architecture test:
+
+```txt
+Only files under lifecycle/*bridge* may read passCtx.options.genContext.
+```
+
+## 7. My verdict
+
+These files are valuable, but they are three different maturity levels:
+
+```txt
+obligations.ts
+  strong product/compiler idea, needs graph-native dialect form
+
+kernel(3).ts
+  good migration adapter, should become typed auth graph fragment lowering
+
+lifecycle.ts
+  necessary transition bridge, but must shrink drastically over time
+```
+
+The biggest architectural takeaway:
+
+```txt
+Obligations should become first-class semantic graph facts.
+Policy adapters show the right migration pattern.
+Lifecycle should stop owning domain knowledge and become only a pipeline runner.
+```
+
+The immediate next refactor I’d do:
+
+```txt
+1. Create dialect.obligation.
+2. Turn SemanticObligation into ObligationNode.
+3. Port checkObligations into derive/verify passes.
+4. Replace policy adapter's loose defineEdge calls with defineEdgeFromKind.
+5. Split lifecycle.ts into runner + legacy bridge.
+```
+
+That would move these files closer to the final Gen2 architecture without throwing away the useful work already there.
+
+
+These are both **important enough to become first-class dialects** in the new architecture.
+
+My read:
+
+```txt id="k9htq4"
+merge.ts
+  should become the merge/conflict/law dialect used by sync, offline, retry,
+  optimistic updates, CRDT-ish dataflow, and migration planning.
+
+boundary.ts
+  should become the placement/boundary/transport dialect used by client-server,
+  worker, queue, edge, hydration, offline, and deployment planning.
+```
+
+They are not throwaway. They are two of the main reasons Gen2 can be more than codegen.
+
+---
+
+## 1. `merge.ts`: this is a very strong semantic seed
+
+This file defines typed merge strategies and conflict metadata for semantic types. The key idea is that merge behavior is inspectable metadata attached to semantic types and optionally overridden by fields, telling the compiler how values combine, conflict, fold, or reconcile. It includes operations like `replace`, `last_write_wins`, `max`, `sum_delta`, `set_union`, `add_remove_set`, `field_wise`, `by_id_collection`, `state_machine`, `manual_conflict`, `reject_conflict`, `custom_expr`, and `opaque_runtime`. 
+
+That is exactly the kind of semantic information Gen2 needs for:
+
+```txt id="3a4fjo"
+offline sync
+optimistic updates
+rollback
+conflict resolution
+collaborative editing
+event replay
+retry safety
+parallel execution
+state-machine transitions
+CRDT-like merges
+materialized views
+migration repair
+```
+
+This should not disappear.
+
+But I would change the framing.
+
+Right now `MergeStrategy` is attached to `SemanticType` as metadata:
+
+```txt id="hjl74i"
+field.semantic_type.merge_strategy
+```
+
+That is useful, but too buried. In the final architecture, merge strategy should become graph-visible.
+
+---
+
+# Recommended final shape for merge
+
+## Merge as graph dialect
+
+```txt id="84vvjf"
+dialect.merge
+
+Nodes:
+  MergeStrategy
+  ConflictPolicy
+  MergePlan
+  FieldMergePlan
+  EntityMergePlan
+  ReconciliationPlan
+
+Edges:
+  FieldUsesMergeStrategy
+  EntityUsesMergePolicy
+  ActionRequiresMergeSafety
+  ActionWritesMergeField
+  PlanRequiresIdempotency
+  MergeStrategyHasValueType
+  MergeStrategyHasDeltaType
+  MergeStrategyUsesOperation
+  MergePlanCoversField
+
+Traits:
+  Associative
+  Commutative
+  Idempotent
+  Invertible
+  Monotonic
+  ConflictFree
+  MayConflict
+  AlwaysConflicts
+  OpaqueRuntime
+```
+
+The public API can still be ergonomic:
+
+```ts id="5v0azj"
+const Counter = t.number.merge(merge.sumDelta({
+  associative: true,
+  commutative: true,
+}));
+
+const Tags = t.set(t.string).merge(merge.setUnion({
+  idempotent: true,
+}));
+
+const IncidentStatusType = IncidentStatus.type.merge(
+  merge.stateMachine({
+    machine: IncidentStatus,
+    conflict: "may_conflict",
+  }),
+);
+```
+
+But internally this should lower to graph facts:
+
+```txt id="u7m7jq"
+Node(MergeStrategy): sum_delta
+Trait(Associative)
+Trait(Commutative)
+Edge(FieldUsesMergeStrategy): Incident.retryCount -> sum_delta
+```
+
+---
+
+## Merge should connect to laws
+
+`merge.ts` currently stores booleans like `associative`, `commutative`, `idempotent`, `invertible`, and `monotonic` directly on `MergeStrategy`. 
+
+That is useful, but in the final design these should be law/trait claims with assurance levels:
+
+```ts id="f2n50x"
+merge.setUnion({
+  laws: [
+    laws.associative({ assurance: "by_construction" }),
+    laws.commutative({ assurance: "by_construction" }),
+    laws.idempotent({ assurance: "by_construction" }),
+  ],
+});
+```
+
+Why? Because a law is not just metadata. It is a claim that other passes rely on.
+
+Better distinction:
+
+```txt id="qni3m1"
+Merge operation:
+  set_union
+
+Law claims:
+  associative
+  commutative
+  idempotent
+
+Assurance:
+  asserted | derived | tested | proved_by_solver | by_construction
+```
+
+This prevents accidental “metadata lies.”
+
+---
+
+## Merge strategy should be attached at multiple levels
+
+Current code derives an entity merge plan by walking `entity.fieldList` and checking each field’s semantic type for a merge strategy. It emits diagnostics for missing strategies, delta/value type mismatch, and missing conflict policy. 
+
+That is right, but the final design needs hierarchy:
+
+```txt id="spkali"
+Type-level default merge
+Field-level override
+Entity-level conflict policy
+Action-level conflict behavior
+Plan-level retry/replay semantics
+Target-level capability support
+```
+
+Example:
+
+```ts id="2plyx6"
+class Incident extends domain.entity.class("Incident", {
+  merge: merge.entityPolicy({
+    default: merge.fieldWise(),
+    conflict: merge.manualResolution({
+      surface: IncidentConflictDialog,
+    }),
+  }),
+
+  fields: {
+    status: field(IncidentStatus.type).merge(
+      merge.stateMachine({ machine: IncidentStatus }),
+    ),
+
+    tags: field(t.set(t.string)).merge(
+      merge.setUnion(),
+    ),
+
+    updatedAt: field(t.datetime).merge(
+      merge.lastWriteWins({ clock: "server" }),
+    ),
+  },
+}) {}
+```
+
+Graph facts:
+
+```txt id="64pdz5"
+EntityUsesMergePolicy: Incident -> IncidentMergePolicy
+FieldUsesMergeStrategy: Incident.status -> state_machine
+FieldUsesMergeStrategy: Incident.tags -> set_union
+FieldUsesMergeStrategy: Incident.updatedAt -> last_write_wins
+ConflictPolicyUsesSurface: IncidentMergePolicy -> IncidentConflictDialog
+```
+
+---
+
+## Merge checks should become passes
+
+The current file has `deriveEntityMergePlan`, `checkActionMergeSemantics`, and `checkPlanMergeSemantics`. These inspect entity fields, action body operations, retry plans, and parallel plans. 
+
+In the new architecture:
+
+```txt id="mzsatv"
+derive.merge.entityPlans
+verify.merge.deltaTypeCompatibility
+verify.merge.actionConflictSafety
+verify.merge.retryRequiresIdempotency
+verify.merge.parallelWritesCommutative
+legalize.merge.targetCapability
+```
+
+Examples of diagnostics:
+
+```txt id="kjwrn8"
+merge.field.strategy_missing
+merge.delta_type_mismatch
+merge.entity.conflict_policy_missing
+merge.action.reject_conflict_write
+merge.action.manual_conflict_requires_handler
+merge.retry.requires_idempotency
+merge.parallel.requires_commutative_writes
+merge.opaque_runtime_requires_broad_invalidation
+```
+
+This directly supports the sync story.
+
+---
+
+## Important merge design consideration
+
+Do **not** make merge a subfeature of sync only.
+
+Merge is used by:
+
+```txt id="aflawr"
+sync
+offline commands
+optimistic rollback
+parallel workflows
+retry plans
+event replay
+queue deduplication
+state resources
+CRDT-style collaboration
+database migrations
+field-level conflict UI
+```
+
+So it should probably be its own dialect:
+
+```txt id="nbzjen"
+dialect.merge
+```
+
+not merely `reactivity.merge`.
+
+---
+
+# 2. `boundary.ts`: this is also a core standard dialect
+
+This file describes where functions/resources/actions run, which transports connect them, and what serialization/auth/reactivity semantics cross boundaries. It models runtime boundaries like browser, server, database, worker, edge, native, queue, and external service; transport kinds like HTTP, RPC, WebSocket, server action, queue, offline command, and hydration; plus `TransportPlan` and `BoundaryCallPlan`. 
+
+This is very aligned with the “boundary anchor” idea.
+
+But I would refine it.
+
+The file currently treats a boundary call plan as a single object:
+
+```txt id="xh1ef4"
+BoundaryCallPlan
+  callable
+  client_boundary
+  server_boundary
+  transport
+  input_contract
+  output_contract
+  error_contract
+  auth_requirements
+  provider_requirements
+  invalidation_payloads
+  optimistic_plan
+  offline_plan
+```
+
+That is semantically good, but in final Gen2 it should be graph-native.
+
+---
+
+# Recommended final shape for boundary
+
+## Boundary as graph dialect
+
+```txt id="9qx7v7"
+dialect.boundary
+
+Nodes:
+  Boundary
+  Transport
+  BoundaryCallPlan
+  SerializationContract
+  HydrationPlan
+  OfflineCommandPlan
+
+Edges:
+  CallableRunsInBoundary
+  CallCrossesBoundary
+  BoundaryCallUsesTransport
+  BoundaryCallHasInputContract
+  BoundaryCallHasOutputContract
+  BoundaryCallHasErrorContract
+  BoundaryCallRequiresAuth
+  BoundaryCallRequiresProvider
+  BoundaryCallCarriesInvalidationPayload
+  BoundaryCallUsesOptimisticPlan
+  BoundaryCallUsesOfflinePlan
+  TransportSourceBoundary
+  TransportTargetBoundary
+
+Traits:
+  ClientBoundary
+  ServerBoundary
+  WorkerBoundary
+  EdgeBoundary
+  QueueBoundary
+  ExternalServiceBoundary
+  RequiresSerialization
+  RequiresAuth
+  StreamingTransport
+  DurableTransport
+```
+
+Public API:
+
+```ts id="an9gcc"
+const AcknowledgeBoundaryCall = boundary.call("AcknowledgeIncidentCall", {
+  callable: acknowledgeIncident,
+  from: ClientBoundary,
+  to: ServerBoundary,
+  transport: boundary.transport.serverAction(),
+  auth: AuthSession,
+  input: serialization.json(acknowledgeIncident.input),
+  output: serialization.json(acknowledgeIncident.output),
+  errors: serialization.taggedUnion(acknowledgeIncident.errors),
+  invalidates: acknowledgeIncident.invalidates,
+  optimistic: AcknowledgeIncidentMutation.optimisticPlan,
+});
+```
+
+Graph:
+
+```txt id="wk3hms"
+Node(BoundaryCallPlan): AcknowledgeIncidentCall
+Edge(CallCrossesBoundary): call -> client
+Edge(CallCrossesBoundary): call -> server
+Edge(BoundaryCallUsesTransport): call -> server_action
+Edge(BoundaryCallRequiresAuth): call -> AuthSession
+Edge(BoundaryCallHasInputContract): call -> input codec
+Edge(BoundaryCallCarriesInvalidationPayload): call -> OpenIncidentsKey
+```
+
+---
+
+## Boundary derivation should be a pass
+
+The current `deriveBoundaryPlans` scans action/query functions from the graph and creates default client→server plans for server actions and HTTP queries. 
+
+That should become:
+
+```txt id="oxppgt"
+derive.boundary.defaultActionCalls
+derive.boundary.defaultQueryCalls
+derive.boundary.hydrationPlans
+derive.boundary.offlineCommandPlans
+derive.boundary.queueCalls
+```
+
+Inputs:
+
+```txt id="9gqw1i"
+CallableRunsInBoundary
+ComponentRunsInBoundary
+QueryUsedByComponent
+ActionUsedByBehavior
+ProviderRequirements
+ReactivityInvalidations
+SerializationContracts
+```
+
+Outputs:
+
+```txt id="fju1v2"
+BoundaryCallPlan nodes
+TransportPlan nodes
+Serialization contract edges
+Auth requirement edges
+Invalidation payload edges
+```
+
+This becomes incredibly useful for target emission:
+
+```txt id="qk59ak"
+React target
+  uses boundary plans to generate hooks/server calls
+
+Effect target
+  uses boundary plans to generate server handlers
+
+OpenAPI target
+  uses boundary plans to generate routes
+
+Alchemy target
+  uses boundary plans to create workers/queues/secrets/network resources
+```
+
+---
+
+## Boundary checks should become diagnostics/invariants
+
+`checkBoundaryPlans` currently catches several useful cases:
+
+```txt id="h12gkk"
+server-only callable invoked from browser boundary
+websocket capability warning
+non-idempotent action sent over queue
+queue transport missing strict serialization
+unsupported edge runtime effects
+non-HTTP transport missing serializer
+HTTP/websocket transport missing auth requirements
+```
+
+Those are exactly the right checks. 
+
+Final passes:
+
+```txt id="srggif"
+verify.boundary.serverOnlyNotClientCallable
+verify.boundary.queueRequiresIdempotency
+verify.boundary.queueRequiresStrictSerialization
+verify.boundary.edgeRuntimeEffectSupport
+verify.boundary.nonHttpRequiresSerialization
+verify.boundary.publicTransportRequiresAuth
+legalize.boundary.targetTransportSupport
+```
+
+Diagnostics should have remediation:
+
+```ts id="yxdfy4"
+diagnostic.define("boundary.queue.requires_idempotency", {
+  severity: "warning",
+  message:
+    "Queued boundary call invokes a write action without idempotency.",
+  remediation: {
+    kind: "add_idempotency",
+    suggestions: [
+      "idempotency.eventId(...)",
+      "idempotency.inputHash(...)",
+      "idempotency.commandId(...)",
+    ],
+  },
+});
+```
+
+This is a major AI repair surface.
+
+---
+
+# 3. Boundary should not be just client/server
+
+The file already recognizes multiple runtime boundaries: browser, server, database, worker, edge, native, queue, external service. 
+
+Good. Keep that.
+
+But I would avoid naming fields `client_boundary` and `server_boundary` in the canonical shape. That bakes in one crossing shape.
+
+Use:
+
+```ts id="rd1r4u"
+from: BoundaryRef
+to: BoundaryRef
+```
+
+or for multi-hop:
+
+```ts id="jbs0ud"
+path: [ClientBoundary, ServerBoundary, QueueBoundary, WorkerBoundary]
+```
+
+Example:
+
+```ts id="lhk3ef"
+boundary.route("NotifyIncidentRoute", {
+  path: [
+    ServerBoundary,
+    QueueBoundary,
+    WorkerBoundary,
+    ExternalSlackBoundary,
+  ],
+  transports: [
+    transport.outbox(),
+    transport.queue(),
+    transport.http(),
+  ],
+});
+```
+
+This matters because real apps have chains:
+
+```txt id="y7lhxo"
+browser -> server action -> outbox -> queue -> worker -> external API
+browser -> websocket -> server stream -> database logical replication
+native app -> offline command queue -> sync endpoint -> server worker
+server -> edge cache -> origin server -> database
+```
+
+So canonical boundary plans should support paths, not only pairs.
+
+---
+
+# 4. Boundary and merge should connect
+
+These two files are related.
+
+Boundary transport affects merge/conflict requirements:
+
+```txt id="bggm4i"
+offline_command transport
+  requires merge strategy or conflict policy
+
+queue transport
+  requires idempotency and serialization
+
+websocket stream
+  requires ordering/replay/backpressure semantics
+
+parallel worker execution
+  requires commutative/idempotent merges
+
+edge runtime
+  restricts effects and storage access
+```
+
+So the final graph should let passes combine them:
+
+```txt id="q7qrjp"
+BoundaryCallPlan uses offline_command
+Action writes Incident.status
+Incident.status uses merge.stateMachine
+Action has optimistic plan
+State machine transition is valid
+=> offline replay is legal
+
+BoundaryCallPlan uses queue
+Action writes field with manual_conflict
+Action lacks conflict handler
+=> diagnostic
+```
+
+Example final diagnostic:
+
+```txt id="s2ezgm"
+offline.command.requires_merge_policy
+
+acknowledgeIncident is allowed offline, but it writes Incident.status.
+Incident.status has state_machine merge, but no conflict policy for concurrent
+open -> acknowledged and open -> cancelled transitions.
+```
+
+This is exactly why merge and boundary should be graph-visible dialects.
+
+---
+
+# 5. How they fit into the revised example
+
+With these integrated, the incident example becomes much better:
+
+```ts id="dcc7x3"
+const IncidentMergePolicy = merge.entityPolicy("IncidentMergePolicy", {
+  entity: Incident,
+
+  fields: {
+    status: merge.stateMachine({
+      machine: IncidentStatus,
+      conflict: merge.manual({
+        surface: IncidentConflictResolutionView,
+      }),
+    }),
+
+    tags: merge.setUnion(),
+    updatedAt: merge.lastWriteWins({ clock: "server" }),
+  },
+});
+```
+
+Boundary:
+
+```ts id="psfh7f"
+const AcknowledgeIncidentBoundary = boundary.call("AcknowledgeIncidentBoundary", {
+  callable: acknowledgeIncident,
+
+  from: ClientBoundary,
+  to: ServerBoundary,
+
+  transport: boundary.transport.serverAction(),
+
+  auth: AuthSession,
+
+  serialization: {
+    input: serialization.json(acknowledgeIncident.input),
+    output: serialization.json(acknowledgeIncident.output),
+    error: serialization.taggedUnion(acknowledgeIncident.errors),
+  },
+
+  invalidates: AcknowledgeIncidentMutation.invalidates,
+  optimistic: AcknowledgeIncidentMutation.optimistic,
+  offline: IncidentSyncPlan.offline.commands.acknowledgeIncident,
+});
+```
+
+Queue/worker path:
+
+```ts id="v2gwgk"
+const NotificationDeliveryBoundary = boundary.route("NotificationDelivery", {
+  path: [
+    ServerBoundary,
+    QueueBoundary,
+    WorkerBoundary,
+    ExternalSlackBoundary,
+  ],
+
+  transports: [
+    boundary.transport.outbox({
+      idempotency: idempotency.eventId(),
+    }),
+
+    boundary.transport.queue({
+      serialization: serialization.strictJson(NotificationMessage),
+      retry: retry.exponential({ maxAttempts: 8 }),
+    }),
+
+    boundary.transport.http({
+      auth: deploy.secret("SlackWebhookUrl"),
+    }),
+  ],
+});
+```
+
+Now legality checks become obvious.
+
+---
+
+# 6. Where to put these in source layout
+
+I would add:
+
+```txt id="dqjbbs"
+src/dialects/merge/
+  dialect.ts
+  kinds.ts
+  builders.ts
+  laws.ts
+  passes/derive-entity-merge-plans.ts
+  passes/verify-action-merge-semantics.ts
+  passes/verify-plan-merge-semantics.ts
+  passes/legalize-merge-target-support.ts
+  views/merge-view.ts
+
+src/dialects/boundary/
+  dialect.ts
+  kinds.ts
+  builders.ts
+  transports.ts
+  serialization.ts
+  passes/derive-boundary-plans.ts
+  passes/verify-boundary-plans.ts
+  passes/legalize-transport-target-support.ts
+  views/boundary-view.ts
+```
+
+Maybe `boundary` belongs under `core`, but I would still implement it as a standard dialect:
+
+```txt id="6drhth"
+kernel core:
+  Boundary is not a hard primitive.
+
+standard dialect:
+  boundary/placement/transport is first-class and ships with Gen2.
+```
+
+---
+
+# 7. Concrete changes I’d make to these files
+
+## `merge.ts`
+
+Keep:
+
+```txt id="28puyd"
+MergeOperationKind
+ConflictBehavior
+MergeStrategy
+strategy constructors
+deriveEntityMergePlan idea
+action/plan merge diagnostics
+```
+
+Change:
+
+```txt id="n7h7wz"
+SemanticType.merge_strategy
+  -> TypeUsesMergeStrategy / FieldUsesMergeStrategy edge
+
+boolean law fields
+  -> law traits with assurance
+
+EntityMergePlan object
+  -> EntityMergePlan node + FieldMergePlan nodes
+
+checkActionMergeSemantics(action)
+  -> graph pass using action writes view
+
+checkPlanMergeSemantics(ctx)
+  -> graph pass using plan/effect/merge views
+
+manual strings
+  -> typed diagnostic definitions
+```
+
+## `boundary.ts`
+
+Keep:
+
+```txt id="aimbx4"
+RuntimeBoundary kinds
+TransportKind
+TransportPlan
+BoundaryCallPlan concept
+derive default boundary plans
+boundary diagnostics
+```
+
+Change:
+
+```txt id="3mel3w"
+client_boundary/server_boundary
+  -> from/to or path
+
+direct callable object
+  -> callable Ref
+
+string optimistic_plan/offline_plan
+  -> refs to plan nodes
+
+auth_requirements/provider_requirements arrays
+  -> requirement edges
+
+deriveBoundaryPlans(ctx)
+  -> derive boundary plans pass
+
+checkBoundaryPlans(ctx)
+  -> verify boundary plans pass
+
+transport-specific checks
+  -> diagnostic definitions with remediation
+
+server-only heuristic from effects/runtime names
+  -> traits/protocols: serverOnly, clientCallable, effect support
+```
+
+---
+
+# 8. Most important design point
+
+Merge and boundary should be treated as **compiler reasoning dialects**, not just metadata.
+
+They answer questions like:
+
+```txt id="29wbev"
+Can this action be retried?
+Can this action run offline?
+Can this write be merged after concurrent edits?
+Can this call cross from browser to server?
+Can this queue message be serialized?
+Can this effect run on edge?
+Can this optimistic patch be safely rolled back?
+Can this target legally emit this transport?
+```
+
+That is the heart of Gen2.
+
+---
+
+# My verdict
+
+These are strong, useful modules.
+
+```txt id="isqfan"
+merge.ts
+  should become dialect.merge, tied to laws, sync, retry, offline,
+  optimistic updates, and conflict resolution.
+
+boundary.ts
+  should become dialect.boundary, tied to placement, transports,
+  serialization, auth, hydration, offline, queues, workers, and deployment.
+```
+
+They should not remain as isolated check helpers over `GenContext`.
+
+The target shape is:
+
+```txt id="98wo3c"
+Merge facts are graph facts.
+Boundary facts are graph facts.
+Passes derive plans from them.
+Targets legalize and emit from those plans.
+Diagnostics explain unsafe retries, unsafe transports, missing serializers,
+missing auth, unsupported edge effects, and unresolved conflicts.
+```
+
+In the ultimate API, these two dialects are what make the compiler capable of reasoning about **real distributed application behavior**, not just schemas and components.
+
+
+Yes — these are some of the most important pieces. They are basically the **UI/form + reactivity/sync + rule-derived invalidation bridge layer**.
+
+My read:
+
+```txt id="yq4u22"
+forms.ts
+  good product-level API seed; should become ui.form recipe/dialect lowering
+
+reactivity.ts
+  critical semantic model; too much is currently a parallel reactive graph
+
+rule-derived.ts
+  very strong direction; closest to the “derive from graph edges” vision
+
+kernel(4).ts KeyFamily adapter
+  useful bridge-only migration helper
+
+kernel(5).ts Reaction adapter
+  useful bridge-only helper, but reactions should become dispatch facts
+```
+
+## 1. `forms.ts`: keep the idea, make it a UI form dialect/recipe
+
+This file is good because it says forms are not an independent model. They derive from action function contracts and produce UI IR. It maps semantic field types to default widgets, derives validation rules from field nullability/traits, checks platform widget capability, and builds forms from action input fields. 
+
+That is the right product idea:
+
+```txt id="zc1cvi"
+Action contract
+  -> form fields
+  -> widgets
+  -> validation
+  -> slots
+  -> error mapping
+  -> UI IR
+  -> target component / JSON-render form / tests
+```
+
+But in the final design, `Form` should not be a parallel subsystem. It should be a **UI dialect graph fragment**.
+
+### Final shape
+
+```txt id="k9ov35"
+Node(Form)
+Node(FormField)
+Node(Widget)
+Node(ValidationRule)
+Node(FormErrorMapping)
+
+Edges:
+  FormSubmitsAction
+  FormHasField
+  FormFieldBindsInput
+  FormFieldUsesWidget
+  FormFieldHasValidation
+  FormMapsError
+  WidgetRequiresCapability
+  FormHasSlot
+```
+
+The public API can still stay high-level:
+
+```ts id="nsg47q"
+const DeclareIncidentForm = app.form.fromAction("DeclareIncidentForm", {
+  action: declareIncident,
+
+  fields: {
+    title: {
+      widget: ui.widget.textInput(),
+      label: "Incident title",
+    },
+
+    severity: {
+      widget: ui.widget.select({
+        options: Severity,
+      }),
+    },
+
+    assignedTeamId: {
+      widget: ui.widget.relationSelect({
+        relation: Team,
+      }),
+      visibleWhen: canAssignIncident,
+    },
+  },
+
+  errors: {
+    "incident.title.required": "title",
+    "incident.sev1.requires_team": "assignedTeamId",
+  },
+});
+```
+
+Internally:
+
+```txt id="878hde"
+Form submits declareIncident
+Field title binds declareIncident.input.title
+Field title uses TextInput widget
+TextInput requires TextInput capability
+Field severity uses Select widget
+Select options come from Severity enum
+Error incident.title.required maps to title field
+```
+
+### What I would change
+
+The current `defaultWidget` function eagerly falls back to `textInput` when a platform lacks support. That is useful ergonomically, but the final compiler should separate:
+
+```txt id="tiad54"
+authoring derivation
+  choose semantic widget
+
+legalization
+  choose target-supported widget or emit diagnostic
+
+lowering
+  emit concrete React/JSON-render/native UI
+```
+
+So:
+
+```txt id="rul1l5"
+inferWidgetKind(field.type)
+  belongs in ui.form derivation
+
+platformSupportsWidget(...)
+  belongs in ui target legalization
+
+fallback to textInput
+  should be a legalization decision with a diagnostic/explanation
+```
+
+This way the graph still knows the intended control, not just the fallback.
+
+## 2. `reactivity.ts`: this is essential, but it should stop being a parallel graph
+
+This file contains a lot of the right semantic ingredients: `KeyFamily`, `ReactiveKey`, key patterns, resource states, refresh plans, reactive resources, pull/infinite/stream resources, derived resources, scoped resources, tracking scopes, mutations, optimistic plans, resource composition, and a derived reactive graph with edges like `reads_key`, `writes_entity`, `invalidates_key`, `wraps_query`, `wraps_action`, `form_submits`, `reads_state`, and `hydrates_state`. 
+
+The problem is not the concepts. The problem is that `ReactiveGraph` is another graph.
+
+Final stance:
+
+```txt id="d1ifvp"
+Keep manual keys.
+Keep resources.
+Keep mutations.
+Keep optimistic plans.
+Keep tracking scopes.
+Keep single-flight/resource-chain/resource-all concepts.
+
+But move them into the kernel graph as node/edge kinds.
+```
+
+The current reactivity checker already validates valuable invariants: duplicate key families, resources wrapping non-query functions, mutations wrapping non-action functions, duplicate resource/mutation names, invalid key payloads, raw key usage, and invalid key matches. 
+
+Those should become dialect passes:
+
+```txt id="ql59qu"
+reactivity.verify.keyFamiliesUnique
+reactivity.verify.resourceWrapsQuery
+reactivity.verify.mutationWrapsAction
+reactivity.verify.keyPayloadShape
+reactivity.verify.noRawKeys
+reactivity.derive.queryReadsKeys
+reactivity.derive.actionInvalidatesKeys
+reactivity.derive.singleFlightPlan
+reactivity.derive.optimisticPlan
+```
+
+### Final graph shape
+
+```txt id="z6c681"
+Node(KeyFamily)
+Node(ReactiveResource)
+Node(ReactiveMutation)
+Node(OptimisticPlan)
+Node(TrackingScope)
+Node(ResourceAll)
+Node(ResourceChain)
+Node(DerivedResource)
+Node(StreamResource)
+
+Edges:
+  ResourceWrapsQuery
+  MutationWrapsAction
+  QueryHasKey
+  ActionInvalidatesKey
+  ScopeReadsKey
+  ScopeReadsQuery
+  ResourceComposesResource
+  ResourceChainsTo
+  MutationHasOptimisticPlan
+  OptimisticPlanAppliesPatch
+  OptimisticPlanRollsBackPatch
+  ResourceHasRefreshPlan
+  ResourceHasBinding
+```
+
+Public API:
+
+```ts id="kymaui"
+const OpenIncidentsKey = app.key.family("openIncidents", {
+  input: {
+    organizationId: Organization.fields.id.type,
+    projectId: t.optional(Project.fields.id.type),
+  },
+  hierarchy: "collection",
+});
+
+const OpenIncidentsResource = app.resource.query("OpenIncidentsResource", {
+  query: listOpenIncidents,
+  key: OpenIncidentsKey,
+  refresh: ["on_invalidate", "on_mount"],
+});
+
+const AcknowledgeIncidentMutation = app.mutation("AcknowledgeIncidentMutation", {
+  action: acknowledgeIncident,
+
+  invalidates: [
+    OpenIncidentsKey.any(),
+    IncidentDetailKey.match(({ input }) => ({
+      incidentId: input.incidentId,
+    })),
+  ],
+
+  optimistic: app.optimistic.derive({
+    from: acknowledgeIncident,
+    fallback: "invalidate",
+  }),
+});
+```
+
+This is much cleaner than maintaining a separate `ReactiveGraph`.
+
+## 3. `rule-derived.ts`: this is one of the strongest files
+
+This file is very aligned with the new design. It explicitly says rule-derived reactivity should derive invalidation from `WRITES` / `READS` edge overlap rather than ad hoc AST walking. It walks policies, rules, queries, action writes, rule reads, derives invalidation plans, computes precision levels, and derives IVM plans based on rule monotonicity. 
+
+This is exactly the compiler advantage.
+
+The core idea is:
+
+```txt id="vhhqlh"
+Action writes field
+Rule reads field
+Policy/query depends on rule
+Query has key family
+Therefore action invalidates key family
+```
+
+That is the right architecture.
+
+### What should change
+
+The implementation still uses bridge metadata and global graph scans. It has helpers like `getBridgeRule`, `getBridgeQuery`, `getBridgeAction`, scans `graph.edges.values()`, and manually matches endpoint role IDs. 
+
+That is fine during migration, but the final version should use graph views and indexes:
+
+```ts id="9eq7si"
+const rw = ctx.view(reactivity.views.readWriteIndex);
+const policies = ctx.view(auth.views.policyDependencyIndex);
+const keys = ctx.view(reactivity.views.queryKeyIndex);
+
+for (const action of rw.actionsWritingFields()) {
+  const affectedRules = rw.rulesReadingAny(action.writtenFields);
+  const affectedQueries = policies.queriesGuardedByRules(affectedRules);
+  const invalidatedKeys = keys.keysForQueries(affectedQueries);
+
+  ctx.add(
+    reactivity.derivedInvalidationPlan({
+      action,
+      rules: affectedRules,
+      keys: invalidatedKeys,
+      precision: derivePrecision(action, affectedRules),
+    }),
+  );
+}
+```
+
+### Final outputs should be graph facts
+
+Currently it returns records like:
+
+```txt id="q13bjk"
+DerivedInvalidationPlan
+IvmMaintenancePlan
+RulePatchPlan
+```
+
+Those should become graph nodes:
+
+```txt id="l8gwfp"
+Node(DerivedInvalidationPlan)
+Node(IvmMaintenancePlan)
+Node(RulePatchPlan)
+
+Edges:
+  PlanForAction
+  PlanAffectedRule
+  PlanInvalidatesKey
+  PlanMaintainsRelation
+  PlanUsesPatch
+  PlanHasPrecision
+```
+
+The checker can still emit diagnostics like broad invalidation selected, non-monotonic IVM unsupported, cross-store dependency, or time-dependent rule, but the plans themselves should be visible graph artifacts. The file already produces warnings for broad invalidation and info diagnostics when mutations write fields/entities read by rules. 
+
+## 4. `kernel(4).ts`: KeyFamily adapter is useful, but bridge-only
+
+This file converts a legacy `KeyFamily` object into a `KEY_FAMILY` kernel node, stores the original family in metadata, and provides graph extraction helpers. 
+
+That is a useful migration bridge.
+
+But final KeyFamily should not live in metadata. It should be an actual graph node with edges:
+
+```txt id="szwhhi"
+Node(KeyFamily): openIncidents
+Edge(KeyFamilyHasInputType): openIncidents -> OpenIncidentsKeyPayload
+Trait(CollectionKey)
+Trait(PropagatesToChildren)
+```
+
+Current bridge:
+
+```txt id="s1wdmd"
+Node(KEY_FAMILY)
+metadata.custom._bridgeKeyFamily = family
+```
+
+Final:
+
+```txt id="e1m823"
+Node(KeyFamily)
+Edge(HasInputType)
+Edge(HasInvalidationSemantics)
+Trait(EntityKey | CollectionKey | FieldKey | RelationKey | ViewKey)
+```
+
+Also, `findKeyFamilyByNameOnGraph` should eventually go away. Name lookup is okay for UI/devtools, but compiler logic should use refs/witnesses.
+
+## 5. `kernel(5).ts`: Reaction adapter should become dispatch
+
+This file bridges a `Reaction` into a `REACTION` node and stores the original reaction as bridge metadata so downstream passes can recover it without `ctx.reactions`. 
+
+Again: useful migration helper, not final design.
+
+The bigger design call is that **Reaction should not remain a special standalone subsystem**.
+
+From the newer model:
+
+```txt id="wwsenu"
+Reaction = dispatch triggered by a rule becoming true
+Subscription = dispatch triggered by an event
+Reducer = event-triggered state/resource update
+Dispatch = generic trigger -> select/project -> handler -> delivery plan
+```
+
+So final reaction lowering:
+
+```txt id="68d8hf"
+Node(Dispatch): notifyWhenIncidentSev1
+Edge(DispatchTriggeredByRule): dispatch -> isSev1Incident
+Edge(DispatchRunsAction): dispatch -> enqueueNotification
+Edge(DispatchUsesDelivery): dispatch -> outbox/queue
+Edge(DispatchUsesIdempotency): dispatch -> eventId/inputHash
+```
+
+If you keep `Reaction` as a public convenience API, it should lower to a dispatch graph fragment:
+
+```ts id="92youb"
+const notifyOnSev1 = app.reaction("notifyOnSev1", {
+  when: incidentBecomesSev1,
+  run: enqueueIncidentNotification,
+  delivery: delivery.outbox(),
+  idempotency: idempotency.ruleMatchId(),
+});
+```
+
+Internally:
+
+```txt id="l8wz55"
+Reaction builder -> Dispatch node + trigger edges
+```
+
+## 6. How these five pieces fit together
+
+These files describe a complete loop:
+
+```txt id="1zc5ei"
+forms.ts
+  UI submits actions and binds validation/errors.
+
+reactivity.ts
+  resources wrap queries; mutations wrap actions; keys track stable identity.
+
+rule-derived.ts
+  compiler derives invalidation from action writes and rule/query reads.
+
+KeyFamily adapter
+  moves key identities into graph.
+
+Reaction adapter
+  moves old reactions toward dispatch graph facts.
+```
+
+The important relationship:
+
+```txt id="i5xc02"
+Form submits Action
+Action writes Field
+Rule reads Field
+Query guarded by Rule has KeyFamily
+Resource wraps Query
+Mutation wraps Action
+Mutation invalidates Resource/Key
+UI reads Resource
+```
+
+That chain is the heart of the app compiler.
+
+Graph version:
+
+```txt id="xty9zl"
+Form --submits--> Action
+Action --writes--> Field
+Rule --reads--> Field
+Policy --usesRule--> Rule
+Query --guardedBy--> Policy
+Query --hasKey--> KeyFamily
+Resource --wrapsQuery--> Query
+Mutation --wrapsAction--> Action
+Mutation --invalidatesKey--> KeyFamily
+View --readsResource--> Resource
+```
+
+That is exactly what should power React hooks, JSON-render forms, tests, docs, devtools, optimistic updates, and cache invalidation.
+
+## 7. Recommended final source layout
+
+I would split this into dialects like this:
+
+```txt id="zgca3z"
+src/dialects/ui/form/
+  builders.ts
+  widgets.ts
+  validation.ts
+  passes/derive-form-from-action.ts
+  passes/legalize-widget-capabilities.ts
+  passes/derive-form-test-obligations.ts
+
+src/dialects/reactivity/
+  key-family.ts
+  resource.ts
+  mutation.ts
+  optimistic.ts
+  tracking-scope.ts
+  passes/verify-reactivity.ts
+  passes/derive-reactive-graph-facts.ts
+  passes/derive-single-flight.ts
+  views/reactivity-view.ts
+
+src/dialects/reactivity/rule-derived/
+  passes/derive-rule-invalidation.ts
+  passes/derive-ivm-plans.ts
+  passes/verify-rule-reactivity.ts
+
+src/dialects/dispatch/
+  reaction.ts
+  dispatch.ts
+  passes/lower-reaction-to-dispatch.ts
+```
+
+Keep the current `kernel.ts` adapter files under something like:
+
+```txt id="ksr0aw"
+src/legacy-bridge/reactivity/key-family.ts
+src/legacy-bridge/dispatch/reaction.ts
+```
+
+so nobody mistakes them for final architecture.
+
+## 8. Concrete migration recommendations
+
+### `forms.ts`
+
+Keep:
+
+```txt id="fdizqv"
+inferWidgetKind
+widgetCapability
+deriveValidation
+controlFor
+buildForm from action contract
+error mapping
+```
+
+Change:
+
+```txt id="v3e7vm"
+Form/FormField/Widget records
+  -> UI graph nodes
+
+field paths as string arrays
+  -> typed refs/path expressions
+
+platform fallback inside builder
+  -> target legalization pass
+
+validation rules from traits
+  -> invariant/expr-backed validation nodes
+
+form checks
+  -> ui.form verify/legalize passes
+
+form test obligations
+  -> obligation dialect
+```
+
+### `reactivity.ts`
+
+Keep:
+
+```txt id="mug7c3"
+KeyFamily
+ReactiveKey / ReactiveKeyPattern
+ResourceState
+ReactiveResource
+ReactiveMutation
+OptimisticPlan
+TrackingScope
+ResourceAll / ResourceChain
+SingleFlightPlan concept
+manual invalidation
+```
+
+Change:
+
+```txt id="l2299v"
+ReactiveGraph
+  -> kernel graph facts
+
+string IDs/from/to
+  -> typed refs/endpoints
+
+duplicate edge interfaces
+  -> EdgeKindDef witnesses
+
+operation_laws booleans
+  -> law traits with assurance
+
+checkReactivity(...)
+  -> dialect passes
+
+deriveReactiveGraph(...)
+  -> derive graph facts/view, not a separate graph object
+```
+
+### `rule-derived.ts`
+
+Keep:
+
+```txt id="8y49ug"
+WRITES/READS overlap as source of truth
+precision levels: broad/matched/exact/patchable
+confidence: conservative/proven
+IVM plan derivation
+diagnostics for conservative invalidation
+```
+
+Change:
+
+```txt id="hd0xub"
+bridge metadata
+  -> typed graph refs/views
+
+global edge scans
+  -> GraphIndex + graph views
+
+returned plan records
+  -> plan nodes/edges
+
+AST-specific monotonicity
+  -> expr/operation traits and law analysis
+
+find queries via hand edge walk
+  -> auth/query/reactivity views
+```
+
+### KeyFamily adapter
+
+Keep temporarily.
+
+Final replacement:
+
+```ts id="zdxqci"
+const OpenIncidentsKey = reactivity.keyFamily("openIncidents", {
+  input: t.object({
+    organizationId: Organization.fields.id.type,
+    projectId: t.optional(Project.fields.id.type),
+  }),
+  hierarchy: "collection",
+});
+```
+
+which directly emits:
+
+```txt id="p4jmsl"
+Node(KeyFamily)
+Edge(HasInputType)
+Trait(CollectionKey)
+```
+
+### Reaction adapter
+
+Keep temporarily.
+
+Final replacement:
+
+```ts id="ks0kuw"
+const notifyOnIncidentDeclared = dispatch.reaction("notifyOnIncidentDeclared", {
+  when: incidentDeclaredRule,
+  run: enqueueIncidentNotification,
+  delivery: delivery.outbox(),
+});
+```
+
+which lowers to dispatch facts.
+
+## 9. What this means for the “ultimate API”
+
+These files suggest one improvement to the API example: forms and reactivity should be tied together more explicitly.
+
+Example:
+
+```ts id="1da5qk"
+const DeclareIncidentForm = app.form.fromAction("DeclareIncidentForm", {
+  action: declareIncident,
+
+  fields: {
+    title: {},
+    severity: {},
+    assignedTeamId: {
+      visibleWhen: expr.eq(form.values.severity, "sev1"),
+    },
+  },
+
+  submit: {
+    mutation: DeclareIncidentMutation,
+    optimistic: "derive",
+  },
+});
+```
+
+Then the graph knows:
+
+```txt id="lhqetk"
+Form submits declareIncident
+Form uses DeclareIncidentMutation
+DeclareIncidentMutation wraps declareIncident
+declareIncident writes Incident
+listOpenIncidents reads Incident
+OpenIncidentsResource wraps listOpenIncidents
+Form submit invalidates OpenIncidentsResource
+```
+
+This gives the UI target everything it needs.
+
+## 10. Verdict
+
+These files are valuable and should mostly survive conceptually.
+
+```txt id="dk78fe"
+forms.ts
+  should become ui.form recipe + form graph dialect.
+
+reactivity.ts
+  should become the graph-native reactivity/resource/mutation dialect.
+
+rule-derived.ts
+  should become the main derive-rule-invalidation and IVM pass family.
+
+kernel(4).ts
+  should remain a bridge adapter until key families are directly graph-native.
+
+kernel(5).ts
+  should remain a bridge adapter until reactions lower to dispatch nodes/edges.
+```
+
+The key architectural correction is:
+
+```txt id="4ckscb"
+Do not maintain FormGraph, ReactiveGraph, ReactionGraph, etc. as separate semantic sources.
+
+Use the one kernel graph.
+
+Forms, resources, mutations, keys, reactions, invalidation plans, and IVM plans
+are nodes/edges/traits in that graph.
+```
+
+The core insight from these files is excellent:
+
+```txt id="8xa7au"
+A form is not just UI.
+A resource is not just a hook.
+A mutation is not just a cache wrapper.
+A reaction is not just an event handler.
+
+They are semantic graph facts that connect actions, queries, rules, keys,
+state, UI, tests, docs, and target artifacts.
+```
+
+These are another good batch. They mostly belong to the **core placement / UI surface / provider-satisfaction** part of the system.
+
+My read:
+
+```txt id="9q3ntj"
+kernel(6).ts
+  good bridge adapter for storage locations into placement graph facts
+
+list.ts
+  useful UI/product primitive, but should be a ui.list recipe over query/resource/table slots
+
+requirements.ts
+  very important semantic model; should become core requirement/provider dialect
+
+kernel(7).ts
+  strong graph-native version of requirements; this is close to the target migration pattern
+```
+
+## 1. `kernel(6).ts`: storage location adapter is good bridge work
+
+This file converts a `StorageLocation` into a kernel node using `STORAGE_LOCATION_NODE_KIND`, attaches placement traits like persistent/ephemeral, sensitive-safe, client-readable, client-writable, server-readable, and server-writable, and stores low-level storage metadata such as `location_kind`, `ttl_ms`, and capabilities. 
+
+That is exactly the right direction.
+
+The conceptual model should be:
+
+```txt id="665v70"
+StorageLocation is not just metadata.
+It is a graph node with placement/capability traits.
+```
+
+Final graph shape:
+
+```txt id="2xs4ep"
+Node(StorageLocation): client.localStorage
+Trait(Persistent)
+Trait(ClientReadable)
+Trait(ClientWritable)
+
+Node(StorageLocation): server.session
+Trait(Ephemeral)
+Trait(SensitiveSafe)
+Trait(ServerReadable)
+Trait(ServerWritable)
+
+Edges:
+  ProviderPlacedIn -> StorageLocation
+  StateResourcePlacedIn -> StorageLocation
+  ArtifactStoredIn -> StorageLocation
+  BoundaryUsesStorage -> StorageLocation
+```
+
+This file should survive as a bridge adapter until storage locations are defined directly through the placement/storage dialect.
+
+The only thing I’d change is: avoid making behavior depend on `metadata.custom.capabilities`. The traits are the important semantic facts. Metadata should only preserve passive bridge details.
+
+Better final API:
+
+```ts id="w70z9b"
+const SessionCookieStorage = placement.storage("sessionCookie", {
+  location: "cookie",
+  traits: [
+    placement.traits.clientReadable,
+    placement.traits.serverReadable,
+    placement.traits.persistent,
+  ],
+  ttl: "7d",
+});
+```
+
+Graph:
+
+```txt id="97fd6e"
+Node(StorageLocation): sessionCookie
+Trait(ClientReadable)
+Trait(ServerReadable)
+Trait(Persistent)
+Metadata: ttl = 7d
+```
+
+## 2. `list.ts`: good UX concept, but should be `ui.list` over query/resource
+
+This file models list/table/grid surfaces: columns, sorting, filtering, searching, pagination, row actions, bulk actions, loading/empty/error states, virtualization, column resize/reorder/visibility, density, sticky headers, and target-specific table features. It also has helpers for columns, cursor/offset pagination, list actions, auto-list derivation from CRUD, and validation. 
+
+This is a strong product API. It should not be thrown away.
+
+But final architecture-wise, `List` should not be a separate top-level subsystem. It should be a **UI dialect recipe** that emits view/component/resource/query graph facts.
+
+A list is really:
+
+```txt id="ewg6h7"
+query/resource + projection + table view + slots + behaviors + pagination + actions
+```
+
+Final graph shape:
+
+```txt id="8q8oma"
+Node(ListView)
+Node(ListColumn)
+Node(PaginationPlan)
+Node(FilterControl)
+Node(SortControl)
+Node(RowAction)
+Node(BulkAction)
+
+Edges:
+  ListTargetsEntity
+  ListUsesQuery
+  ListReadsResource
+  ListHasColumn
+  ColumnDisplaysField
+  ColumnUsesCellComponent
+  ListHasPagination
+  ListRowActionRunsAction
+  ListBulkActionRunsAction
+  ListHasEmptyState
+  ListHasLoadingState
+  ListHasErrorState
+```
+
+The public API can stay almost the same, but should live under `ui.list` or `app.recipes.list`.
+
+Example:
+
+```ts id="er8ldd"
+const IncidentList = app.ui.list("IncidentList", {
+  entity: Incident,
+  resource: OpenIncidentsResource,
+  projection: IncidentCard,
+
+  columns: {
+    title: ui.list.column(IncidentCard.fields.title, {
+      searchable: true,
+      sortable: true,
+    }),
+
+    severity: ui.list.column(IncidentCard.fields.severity, {
+      filterable: true,
+      filter: "select",
+      sortable: true,
+    }),
+
+    status: ui.list.column(IncidentCard.fields.status, {
+      filterable: true,
+      filter: "select",
+    }),
+  },
+
+  pagination: ui.list.cursor({
+    cursor: IncidentCard.fields.id,
+    defaultLimit: 50,
+  }),
+
+  rowActions: {
+    acknowledge: ui.list.rowAction({
+      label: "Acknowledge",
+      action: acknowledgeIncident,
+      input: ({ row }) => ({ incidentId: row.id }),
+      enabledWhen: ({ row, session }) =>
+        canAcknowledgeIncident.call({ incident: row, session }),
+    }),
+  },
+
+  table: {
+    virtualization: true,
+    stickyHeader: true,
+    columnResize: true,
+    density: "normal",
+  },
+});
+```
+
+That should lower to:
+
+```txt id="vvsoui"
+Node(ListView): IncidentList
+Edge(ListUsesResource): IncidentList -> OpenIncidentsResource
+Edge(ListHasColumn): IncidentList -> severityColumn
+Edge(ColumnDisplaysField): severityColumn -> IncidentCard.severity
+Edge(RowActionRunsAction): acknowledgeRowAction -> acknowledgeIncident
+```
+
+### What I’d change in `list.ts`
+
+Keep:
+
+```txt id="n9zdm6"
+ListColumn
+pagination models
+row actions
+bulk actions
+autoList idea
+validation checks
+table feature flags
+empty/loading/error states
+```
+
+Change:
+
+```txt id="mvwyvw"
+List as standalone record
+  -> UI graph node / recipe
+
+direct Entity/Field/Action object refs
+  -> typed refs/witnesses in canonical IR
+
+TanStack-specific fields
+  -> generic UI capabilities + target-specific legalization
+
+checkList(...)
+  -> ui.list verify/legalize passes
+
+autoList(...)
+  -> app.recipes.listFromCrud(...)
+```
+
+Important design note: do not bake TanStack Table too deeply into core `List`. Keep table features semantic:
+
+```txt id="un4x6i"
+semantic:
+  sortable
+  filterable
+  searchable
+  virtualized
+  column visibility
+  row selection
+
+target:
+  TanStack Table
+  React Aria
+  native list
+  JSON-render table
+```
+
+## 3. `requirements.ts`: this is central, not optional
+
+This file is very important. It models requirements, providers, provider sources, sensitivity, provider lifetimes, provider scopes, safe projections, requirement satisfaction plans, missing/ambiguous providers, provider cycles, sensitive placement checks, lifetime escape checks, and unsafe storage diagnostics. 
+
+This belongs very close to the standard core dialects.
+
+It answers questions like:
+
+```txt id="ff7qdf"
+Who provides AuthSession?
+Where does this provider run?
+Can this provider be hydrated?
+Can this secret ever reach client storage?
+Does this provider outlive its source?
+Is a required context missing?
+Are there ambiguous providers?
+Is there a provider dependency cycle?
+```
+
+That is fundamental compiler reasoning.
+
+Final model:
+
+```txt id="n4hr7u"
+dialect.requirement
+dialect.provider
+dialect.placement
+```
+
+Graph shape:
+
+```txt id="j6ve87"
+Node(Requirement)
+Node(Provider)
+Node(ProviderSource)
+Node(RequirementSatisfactionPlan)
+Node(RequirementBinding)
+
+Edges:
+  ProviderSatisfiesRequirement
+  ProviderDependsOnProvider
+  ProviderPlacedInStorage
+  ProviderSourcedFrom
+  ConsumerRequiresRequirement
+  ProviderHasLifetime
+  ProviderHasScope
+  ProviderHasSafeProjection
+```
+
+Traits:
+
+```txt id="sh7pxf"
+Public
+UserSensitive
+TenantSensitive
+AuthSensitive
+Secret
+ServerOnly
+Regulated
+LocalProvider
+ExternalProvider
+OpaqueRuntimeProvider
+```
+
+The existing concepts map very cleanly.
+
+Example final API:
+
+```ts id="t6orwh"
+const AuthSession = core.requirement("AuthSession", {
+  type: t.object({
+    userId: User.fields.id.type,
+    organizationId: Organization.fields.id.type,
+    role: OrgRole,
+  }),
+  sensitivity: "auth",
+});
+
+const AuthSessionProvider = core.provider("AuthSessionProvider", {
+  provides: AuthSession,
+  source: core.providerSource.cookie("opsdesk_session"),
+  placement: ServerBoundary,
+  lifetime: "request",
+  projection: AuthSessionClientProjection,
+});
+```
+
+Graph:
+
+```txt id="2zlhzr"
+Node(Requirement): AuthSession
+Node(Provider): AuthSessionProvider
+Edge(Satisfies): AuthSessionProvider -> AuthSession
+Edge(SourcedFrom): AuthSessionProvider -> cookie:opsdesk_session
+Edge(PlacedIn): AuthSessionProvider -> ServerBoundary
+Trait(AuthSensitive): AuthSession
+```
+
+## 4. `requirements.ts` should merge with boundary/placement/resource reasoning
+
+Requirements/providers are not isolated. They connect to almost every other dialect:
+
+```txt id="2mrw92"
+actions require auth/session/clock/services
+queries require auth/session/providers
+UI requires resources/capabilities
+state resources can provide requirements
+providers may use storage locations
+boundary calls carry provider requirements
+deployment must provide capabilities/secrets/services
+tests need provider mocks
+```
+
+The current `ProviderSource` union already reflects this: static value, env var, request header, cookie, route param, query param, hydration snapshot, client storage, state resource, reactive resource, service constructor, opaque runtime. 
+
+That is excellent.
+
+Final design should make these graph facts:
+
+```txt id="6d2dzv"
+ProviderSource(cookie)
+ProviderSource(envVar)
+ProviderSource(stateResource)
+ProviderSource(reactiveResource)
+ProviderSource(serviceConstructor)
+```
+
+and let target legalizers decide whether each source is valid in each boundary.
+
+## 5. `kernel(7).ts`: this is the best of this batch
+
+This file is the graph-native requirement/provider adapter. It converts requirements and providers into kernel nodes, emits `SATISFIES`, `DEPENDS_ON_PROVIDER`, `PLACED_IN`, and `SOURCED_FROM` edges, adapts storage locations into nodes, and derives a graph-native requirement satisfaction plan from the kernel graph. 
+
+This is very close to the target architecture.
+
+The strongest part is that it no longer only checks `ctx.providers`; it reconstructs requirements/providers/bindings from graph nodes and edges, then diagnoses missing providers, ambiguous providers, unsafe placement, lifetime escape, global cache misuse, regulated client exposure, and provider cycles. 
+
+That is exactly the migration pattern you want.
+
+Current graph flow:
+
+```txt id="ys0qne"
+RequirementRef -> Node(REQUIREMENT)
+Provider -> Node(PROVIDER)
+Provider satisfies target -> Edge(SATISFIES)
+Provider depends on provider -> Edge(DEPENDS_ON_PROVIDER)
+Provider placement/storage -> Edge(PLACED_IN)
+Provider source storage -> Edge(SOURCED_FROM)
+StorageLocation -> Node(STORAGE_LOCATION)
+```
+
+This should become the final provider/requirement dialect, with less bridge metadata.
+
+## 6. One important issue in `kernel(7).ts`
+
+A lot of useful semantic details are still stored in `metadata.custom`:
+
+```txt id="f8tu39"
+value_type
+sensitivity
+provides
+source_kind
+source_lifetime_ceiling
+lifetime
+client_projection
+location_kind
+role
+```
+
+That is okay during migration, but the final design should move behavior-relevant facts into nodes/edges/traits.
+
+For example:
+
+```txt id="bpvd3r"
+sensitivity
+  should be trait or edge to Sensitivity node
+
+lifetime
+  should be trait/edge to Lifetime node
+
+source_kind
+  should be ProviderSource node kind
+
+client_projection
+  should be edge to Projection node
+
+source_lifetime_ceiling
+  should be derived by pass, not stored as behavior metadata
+
+role: placement/storage/source
+  should be endpoint role or edge kind, not metadata
+```
+
+Better final graph:
+
+```txt id="oosxvn"
+Node(Provider): AuthSessionProvider
+Node(ProviderSource): CookieSource(opsdesk_session)
+Node(Lifetime): request
+Node(Sensitivity): auth
+Node(Projection): ClientAuthSession
+
+Edge(Satisfies): provider -> AuthSession
+Edge(SourcedFrom): provider -> CookieSource
+Edge(HasLifetime): provider -> request
+Edge(HasSensitivity): provider -> auth
+Edge(HasClientProjection): provider -> ClientAuthSession
+Edge(PlacedIn): provider -> ServerBoundary
+```
+
+Metadata should be docs/display/provenance only.
+
+## 7. Recommended source layout
+
+These files suggest this layout:
+
+```txt id="jn01op"
+src/dialects/placement/
+  dialect.ts
+  storage-location.ts
+  traits.ts
+  passes/verify-placement-safety.ts
+
+src/dialects/provider/
+  requirement.ts
+  provider.ts
+  provider-source.ts
+  lifetime.ts
+  sensitivity.ts
+  passes/derive-satisfaction-plan.ts
+  passes/verify-provider-placement.ts
+  passes/verify-provider-cycles.ts
+  views/provider-view.ts
+
+src/dialects/ui/list/
+  list.ts
+  columns.ts
+  pagination.ts
+  actions.ts
+  passes/derive-list-from-crud.ts
+  passes/verify-list.ts
+  passes/legalize-table-target.ts
+```
+
+Or, if you want fewer dialect directories:
+
+```txt id="awnm8e"
+src/dialects/core/placement
+src/dialects/core/provider
+src/dialects/ui/list
+```
+
+I would put provider/requirement under `core` standard dialects because they are used everywhere.
+
+## 8. How this improves the ultimate API example
+
+These pieces suggest the app example should include explicit provider and list recipes:
+
+```ts id="0qnmo2"
+const AuthSession = app.requirement("AuthSession", {
+  type: AuthSessionType,
+  sensitivity: "auth",
+});
+
+const AuthSessionProvider = app.provider("AuthSessionProvider", {
+  provides: AuthSession,
+  source: app.providerSource.cookie("opsdesk_session"),
+  lifetime: "request",
+  placement: ServerBoundary,
+});
+```
+
+And list:
+
+```ts id="3z8fja"
+const IncidentList = app.ui.list("IncidentList", {
+  resource: OpenIncidentsResource,
+  projection: IncidentCard,
+
+  columns: {
+    title: { field: IncidentCard.fields.title, searchable: true },
+    severity: { field: IncidentCard.fields.severity, filter: "select" },
+    status: { field: IncidentCard.fields.status, filter: "select" },
+  },
+
+  pagination: ui.list.cursor({
+    cursor: IncidentCard.fields.id,
+    defaultLimit: 50,
+  }),
+
+  rowActions: {
+    acknowledge: {
+      action: acknowledgeIncident,
+      input: ({ row }) => ({ incidentId: row.id }),
+    },
+  },
+});
+```
+
+Then the compiler can derive:
+
+```txt id="9fi7t7"
+List reads OpenIncidentsResource
+Resource wraps listOpenIncidents
+Query requires AuthSession
+AuthSessionProvider satisfies AuthSession
+Provider source is cookie
+Provider lifetime is request
+Provider placement is server
+React target can emit useOpenIncidents + IncidentList table
+Tests target can emit provider mock tests and list interaction tests
+```
+
+## 9. Concrete migration recommendations
+
+### `kernel(6).ts`
+
+Keep as bridge:
+
+```txt id="k05dyt"
+storageLocationToKernelNode
+locationTraits
+```
+
+Change later:
+
+```txt id="v6buak"
+capabilities in metadata
+  -> traits/edges
+
+location_kind
+  -> storage location node kind or source node
+
+ttl_ms
+  -> metadata okay, or explicit TTL policy node if compiler reasons about it
+```
+
+### `list.ts`
+
+Keep:
+
+```txt id="u4vk31"
+ListColumn
+pagination
+row/bulk actions
+autoList
+validation rules
+empty/loading/error states
+table capabilities
+```
+
+Change:
+
+```txt id="h2s8co"
+List record
+  -> UI ListView node/graph fragment
+
+TanStack-specific language
+  -> target legalization hints
+
+query/action direct objects
+  -> refs/witnesses
+
+checkList
+  -> ui.list verify pass
+
+autoList
+  -> recipe over CRUD/query/action/UI graph
+```
+
+### `requirements.ts`
+
+Keep:
+
+```txt id="mtgyvk"
+RequirementRef
+Provider
+ProviderSource
+Sensitivity
+ProviderLifetime
+ProviderScope
+RequirementSatisfactionPlan
+provider cycle check
+lifetime escape check
+safe projection concept
+```
+
+Change:
+
+```txt id="n4zpng"
+ctx arrays
+  -> graph nodes/edges
+
+sameTarget by string name
+  -> ref/witness matching
+
+storage checks from raw locations
+  -> placement graph view
+
+diagnostics
+  -> diagnostic definitions with remediation
+
+client_projection
+  -> projection graph edge
+```
+
+### `kernel(7).ts`
+
+Keep and promote:
+
+```txt id="69cu02"
+requirementToKernelNode
+providerToKernelNode
+providerToKernelEdges
+deriveRequirementSatisfactionPlanFromGraph
+checkRequirementsOnGraph
+```
+
+Change:
+
+```txt id="7mqcbz"
+behavior metadata
+  -> graph facts
+
+nodesOfKindDef / edgesOfKindDef scans
+  -> graph indexes/views
+
+provider source/lifetime/sensitivity
+  -> first-class nodes/traits/edges
+
+GraphRequirement / GraphProvider intermediate records
+  -> GraphView objects or plan nodes
+```
+
+## 10. Verdict
+
+These files are good and mostly aligned.
+
+```txt id="n6h4lf"
+kernel(6).ts
+  good bridge for placement/storage capability facts.
+
+list.ts
+  useful UI list/table recipe, should live under ui.list and lower to graph facts.
+
+requirements.ts
+  central provider/requirement semantic model, should become core standard dialect.
+
+kernel(7).ts
+  strong graph-native migration of requirement/provider reasoning; close to final pattern.
+```
+
+The biggest architecture lesson from this batch:
+
+```txt id="943dcg"
+Provider satisfaction and placement safety should be graph-derived,
+not checked from side arrays.
+
+Lists should be UI/resource/query composition,
+not a separate UI model.
+
+Storage locations should be graph nodes with traits,
+not passive config objects.
+```
+
+I would prioritize `requirements/kernel(7).ts` as a model for the rest of the rebase. It shows the right future: legacy object in, graph facts out, then diagnostics derived from graph structure.
+
+
+Yes. The v3 example feels close, but it exposed a few missing or under-specified layers.
+
+The biggest takeaway:
+
+```txt
+The compiler model is strong.
+The authoring model still needs more guardrails, escape hatches, and progressive disclosure.
+```
+
+## 1. Add a first-class **module contract** system
+
+Feature modules should not just be bags of graph facts. They should have explicit imports, exports, configuration slots, capabilities, and privacy boundaries.
+
+Example:
+
+```ts
+export const IncidentModule = app.module("incident", {
+  imports: {
+    auth: AuthModule.exports.session,
+    teams: CoreDomainModule.exports.Team,
+  },
+
+  exports: {
+    entity: Incident,
+    listResource: OpenIncidentsResource,
+    dashboard: IncidentDashboard,
+    actions: {
+      declare: declareIncident,
+      acknowledge: acknowledgeIncident,
+      resolve: resolveIncident,
+    },
+  },
+
+  config: {
+    allowOfflineAcknowledge: t.boolean.default(true),
+    notificationChannels: t.array(NotificationChannel).default(["email", "slack"]),
+  },
+});
+```
+
+Why it matters:
+
+```txt
+Better package reuse
+Better AI editing boundaries
+Better graph shaking
+Better generated docs
+Better semantic versioning
+Better error messages
+```
+
+Without module contracts, large apps will become “one giant graph blob.”
+
+---
+
+## 2. Make **schema/app evolution** first-class
+
+We have graph diff, but the example still treats migration as mostly target output. Evolution should be its own standard dialect.
+
+Missing concepts:
+
+```txt
+GraphVersion
+SchemaVersion
+MigrationPlan
+BreakingChange
+Deprecation
+Rename
+Backfill
+DataRepair
+CompatibilityWindow
+RollbackPlan
+```
+
+Example:
+
+```ts
+const v2 = app.evolution.version("2026-05-incident-escalations", {
+  from: previousGraph,
+  to: appGraph,
+
+  rename: [
+    app.evolution.renamedField({
+      from: "Incident.summary",
+      to: Incident.fields.description,
+    }),
+  ],
+
+  backfills: [
+    app.evolution.backfill({
+      field: Incident.fields.assignedTeamId,
+      strategy: "infer_from_project_owner",
+    }),
+  ],
+
+  compatibility: {
+    api: "minor",
+    database: "requires_migration",
+    ui: "non_breaking",
+  },
+});
+```
+
+This is a major real-world gap. Apps change constantly. Gen2 should reason about change as deeply as it reasons about initial generation.
+
+---
+
+## 3. Add a proper **failure/error dialect**
+
+The example uses `action.errors`, `serialization.taggedUnion`, diagnostics, and error mappings, but error semantics are still not centralized.
+
+You probably want:
+
+```txt
+ExpectedError
+Defect
+RecoverableError
+ValidationError
+AuthorizationError
+ConflictError
+TransportError
+ProviderUnavailable
+RetryPolicy
+ErrorSurface
+ErrorMapping
+```
+
+Example:
+
+```ts
+export const IncidentConflictError = app.error("IncidentConflictError", {
+  kind: "conflict",
+  recoverable: true,
+  userVisible: true,
+  remediation: "manual_resolution",
+});
+
+export const resolveIncident = app.action("resolveIncident")((a) =>
+  a
+    .errors([IncidentConflictError, app.errors.Forbidden])
+    .onError(IncidentConflictError, {
+      surface: IncidentConflictResolutionView,
+      retry: "after_resolution",
+    }),
+);
+```
+
+This would improve UI generation, OpenAPI, Effect runtime output, test obligations, and AI repair.
+
+---
+
+## 4. Strengthen TypeScript inference with “input/output witnesses”
+
+The v3 API is ergonomic, but inference could collapse in places like forms, lists, projections, and action recipes.
+
+I’d standardize every major definition around a witness object:
+
+```ts
+const declareIncident = app.action("declareIncident")(...)
+```
+
+should expose:
+
+```ts
+declareIncident.ref
+declareIncident.input
+declareIncident.output
+declareIncident.errors
+declareIncident.requirements
+declareIncident.writes
+declareIncident.events
+declareIncident.fragment
+declareIncident.$infer.input
+declareIncident.$infer.output
+declareIncident.$infer.error
+```
+
+For all concepts:
+
+```txt
+Entity.$infer.value
+Projection.$infer.value
+Query.$infer.input / output
+Action.$infer.input / output / error
+Resource.$infer.state / value / error
+Form.$infer.values / errors
+List.$infer.row
+Event.$infer.payload
+BoundaryCall.$infer.input / output / error
+```
+
+This gives developers a reliable pattern instead of hunting through utility types.
+
+---
+
+## 5. Make “named object projection” the default everywhere
+
+Avoid array projection as the common path.
+
+Prefer:
+
+```ts
+.select({
+  id: Incident.fields.id,
+  title: Incident.fields.title,
+  severity: Incident.fields.severity,
+})
+```
+
+over:
+
+```ts
+.select([
+  Incident.fields.id,
+  Incident.fields.title,
+  Incident.fields.severity,
+])
+```
+
+Because object projection preserves names for:
+
+```txt
+TypeScript inference
+OpenAPI
+JSON-render
+React props
+docs
+forms
+lists
+test fixtures
+AI editing
+```
+
+The array form can still exist for low-level query work, but it should not be the default.
+
+---
+
+## 6. Add a “preview generated graph facts” DX loop
+
+Before users run a full compile, they should be able to ask:
+
+```ts
+app.preview(IncidentDashboard);
+app.preview(acknowledgeIncident);
+app.preview(IncidentModule);
+```
+
+Output:
+
+```txt
+IncidentDashboard emits:
+  Node(Component)
+  Node(ListView)
+  Node(Form)
+  Edge(ComponentRendersList)
+  Edge(FormSubmitsAction)
+  Edge(ListUsesResource)
+  Edge(RowActionRunsAction)
+
+Derived:
+  4 resource bindings
+  2 mutation bindings
+  3 boundary calls
+  7 test obligations
+  1 client-safety diagnostic
+```
+
+This would massively improve trust. Gen2 derives a lot, so developers need a lightweight way to see “what just happened?”
+
+---
+
+## 7. Add “recipe expansion” as a visible artifact
+
+Recipes are great, but opaque recipes become scary.
+
+Every recipe should support:
+
+```ts
+IncidentLifecycle.expand();
+IncidentDashboardFeature.expand();
+NotificationPipeline.expand();
+```
+
+and maybe:
+
+```ts
+IncidentLifecycle.expand({ format: "graph" });
+IncidentLifecycle.expand({ format: "typescript" });
+IncidentLifecycle.expand({ format: "explain" });
+```
+
+Example output:
+
+```txt
+stateMachineFeature("IncidentLifecycle") expands to:
+  2 actions
+  2 events
+  2 mutations
+  1 operation family
+  1 merge validation
+  4 tests
+  6 diagnostics
+```
+
+This is important for AI too. Agents need to understand generated structure before editing it.
+
+---
+
+## 8. Add a formal **escape hatch protocol**
+
+We already talked about opaque code, but the API needs one consistent shape for escape hatches.
+
+Example:
+
+```ts
+const RiskScore = expr.opaque("RiskScore", {
+  input: { incident: Incident },
+  output: t.number,
+
+  placement: ServerBoundary,
+
+  reads: [
+    Incident.fields.severity,
+    Incident.fields.projectId,
+    Incident.fields.createdAt,
+  ],
+
+  effects: [],
+
+  lowerability: {
+    sql: false,
+    client: false,
+    jsonRender: false,
+  },
+
+  reactivity: {
+    precision: "conservative",
+    fallback: "invalidate",
+  },
+
+  test: {
+    fixtures: "required",
+  },
+});
+```
+
+One rule:
+
+```txt
+Opaque is fine.
+Unknown is not.
+```
+
+Every escape hatch should declare reads, writes, effects, placement, lowerability, reactivity precision, and testing obligations.
+
+---
+
+## 9. Add observability as a graph dialect
+
+Real apps need runtime introspection.
+
+Missing concepts:
+
+```txt
+Metric
+TraceSpan
+LogEvent
+AuditEvent
+RuntimeProbe
+HealthCheck
+Slo
+Alert
+TelemetrySink
+```
+
+Example:
+
+```ts
+const IncidentDeclaredMetric = app.observability.metric("incident_declared_total", {
+  type: "counter",
+  labels: {
+    severity: Severity,
+    organizationId: Organization.fields.id.type,
+  },
+  source: IncidentDeclared,
+});
+
+const NotificationQueueHealth = app.observability.healthCheck("NotificationQueueHealth", {
+  target: NotificationQueue,
+  checks: ["depth", "oldest_message_age", "dead_letter_rate"],
+});
+```
+
+This would make deployment and devtools much more useful.
+
+---
+
+## 10. Add privacy/compliance beyond simple sensitivity
+
+Current sensitivity is good:
+
+```txt
+public
+user
+tenant
+auth
+secret
+server_only
+regulated
+```
+
+But real apps often need more:
+
+```txt
+PII
+PHI
+PCI
+GDPR eraseable
+retention period
+consent required
+audit required
+export allowed
+redaction policy
+devtools visibility
+logs allowed / forbidden
+```
+
+Example:
+
+```ts
+User.fields.email.classify({
+  privacy: "pii",
+  retention: "while_account_active",
+  erase: "on_user_delete",
+  logs: "redact",
+  devtools: "masked",
+});
+```
+
+Then passes can verify:
+
+```txt
+PII is not logged raw
+regulated fields are not client-readable
+eraseable data has deletion path
+audit-required actions emit audit facts
+```
+
+This would be extremely useful for serious SaaS apps.
+
+---
+
+## 11. Add target capability negotiation, not just checking
+
+Capability reports are good, but targets should also be able to propose plans.
+
+Example:
+
+```ts
+const plan = appGraph.targets.negotiate({
+  desired: {
+    optimistic: "exact",
+    offline: true,
+    streaming: true,
+    rls: true,
+  },
+  targets: [targets.react, targets.postgres, targets.effect],
+});
+```
+
+Output:
+
+```txt
+Exact optimistic updates:
+  supported for acknowledgeIncident
+  degraded for resolveIncident
+
+Streaming:
+  SSE supported
+  WebSocket unsupported by selected deployment
+
+RLS:
+  canViewIncident lowerable
+  canManageIncident partially server-only
+```
+
+This turns target capability checking into target planning.
+
+---
+
+## 12. Add “composability tests” for modules and plugins
+
+When someone publishes a module, Gen2 should test whether it composes cleanly.
+
+```ts
+app.moduleTest(IncidentModule, {
+  with: [AuthModule, CoreDomainModule],
+  targets: [targets.postgres, targets.react],
+}).expectNoErrors();
+```
+
+Check:
+
+```txt
+all imports satisfied
+no symbol collisions
+no duplicate providers
+no incompatible traits
+no unsupported target requirements
+no hidden client/server leaks
+all required obligations consumed
+```
+
+This would make reusable Gen2 packages much safer.
+
+---
+
+## 13. Add graph-package semantic versioning
+
+Reusable modules should publish semantic surfaces:
+
+```txt
+public nodes
+public edges
+public traits
+public builders
+public recipes
+public artifacts
+diagnostic codes
+migration guarantees
+```
+
+Example:
+
+```ts
+export default app.package("incident-workflows", {
+  version: "2.1.0",
+
+  exports: IncidentModule.exports,
+
+  compatibility: {
+    graph: "^1.0",
+    postgres: ">=16",
+    react: ">=19",
+  },
+
+  breakingChanges: app.package.detectBreakingChanges(),
+});
+```
+
+This is especially important if Dirived becomes an ecosystem.
+
+---
+
+## 14. Improve AI repair loop with patchable diagnostics
+
+Diagnostics should not just have remediation text. They should be able to emit candidate graph patches.
+
+Example:
+
+```ts
+diagnostic.define("boundary.queue.requires_idempotency", {
+  severity: "error",
+  message: "Queued boundary call requires idempotency.",
+  repair: ({ dispatch }) =>
+    gen.patch.addEdge(dispatch.edges.usesIdempotency, {
+      dispatch,
+      idempotency: idempotency.inputHash(),
+    }),
+});
+```
+
+Then:
+
+```ts
+const repaired = checkResult.applyFixes({
+  codes: ["boundary.queue.requires_idempotency"],
+  mode: "candidate",
+});
+```
+
+This would be huge for AI-assisted building.
+
+---
+
+## 15. Add a small “core app” mode
+
+The v3 example is powerful but intimidating.
+
+There should be a minimal mode:
+
+```ts
+const app = gen.quick.saas("OpsDesk", {
+  entities: {
+    Incident: {
+      fields: {
+        title: t.string,
+        severity: ["sev1", "sev2", "sev3", "sev4"],
+        status: ["open", "acknowledged", "resolved"],
+      },
+    },
+  },
+
+  crud: true,
+  auth: "tenant",
+  ui: "dashboard",
+  database: "postgres",
+});
+```
+
+Then let users expand:
+
+```ts
+const expanded = app.expand();
+```
+
+Progressive disclosure matters more than raw expressiveness.
+
+---
+
+## 16. Add “strict mode levels”
+
+Different users need different enforcement.
+
+```ts
+gen.config({
+  strictness: {
+    graph: "strict",
+    typing: "strict",
+    target: "strict",
+    privacy: "strict",
+    obligations: "warn",
+    opaqueCode: "deny_without_declared_blast_radius",
+  },
+});
+```
+
+Suggested levels:
+
+```txt
+prototype
+developer
+production
+regulated
+```
+
+This gives a smooth path from AI prototype to production app.
+
+---
+
+## 17. Add snapshot-friendly textual IR earlier
+
+The graph JSON is useful, but humans and AI need a readable textual IR.
+
+Example:
+
+```txt
+entity Incident {
+  field id: uuid primary
+  field title: string required
+  field status: IncidentStatus merge state_machine
+}
+
+action acknowledgeIncident {
+  input incidentId: uuid
+  requires AuthSession, RequestClock
+  guard canAcknowledgeIncident
+  writes Incident.status, Incident.acknowledgedAt
+  emits IncidentAcknowledged
+}
+```
+
+This should be a first-class artifact, not a debugging afterthought.
+
+It helps:
+
+```txt
+reviews
+AI edits
+semantic diffs
+docs
+tests
+migration explanations
+```
+
+---
+
+## 18. Add typed test fixture generation
+
+Tests should have graph-aware fixtures:
+
+```ts
+const fixtures = app.fixtures("IncidentFixtures", {
+  entities: [Organization, User, Team, Project, Incident],
+
+  scenarios: {
+    sev1OpenIncident: {
+      Incident: {
+        severity: "sev1",
+        status: "open",
+      },
+    },
+
+    viewerCannotAcknowledge: {
+      session: { role: "viewer" },
+      expected: app.expect.forbidden(acknowledgeIncident),
+    },
+  },
+});
+```
+
+Then tests, docs, and examples share the same fixture graph.
+
+---
+
+## 19. Possible missing dialects
+
+I would consider these standard dialects:
+
+```txt
+evolution
+  versions, migrations, deprecations, breaking changes
+
+error
+  typed failures, recoverability, user surfaces
+
+observability
+  logs, metrics, traces, health checks, alerts
+
+privacy
+  PII, retention, redaction, consent, audit
+
+fixture
+  generated data, scenario graphs, test cases
+
+package
+  module contracts, exports, compatibility, semantic versioning
+```
+
+Not all need to be in the hard kernel. They should be standard dialects.
+
+---
+
+## 20. Priority order
+
+I would not build everything at once. The order I’d choose:
+
+```txt
+1. Module contracts
+2. Better inference witnesses
+3. Recipe expansion / preview
+4. Error dialect
+5. Evolution/migration dialect
+6. AI patchable diagnostics
+7. Observability dialect
+8. Privacy/compliance dialect
+9. Graph package/versioning
+10. Textual IR
+```
+
+The architecture is not missing more primitives. It is missing a few **product-grade standard dialects** and **developer-trust tools**.
+
+The core should still stay:
+
+```txt
+Semantic ontology:
+  Node
+  Edge
+  Trait
+
+Compiler infrastructure:
+  Id
+  Ref
+  SymbolDef
+  Graph
+  Location
+  Metadata
+  Pass runtime
+  Diagnostic runtime
+```
+
+Everything above that should remain dialects, recipes, passes, protocols, views, and artifacts.
+
+
+Yes. These files add a few important missing pieces, especially around **type identity**, **graph-native adapters**, **context/provider unification**, and **versioning/evolution**.
+
+My updated read:
+
+```txt
+entity-to-semantic.ts
+  useful compatibility helper, but it points to a deeper Type/Entity modeling issue
+
+kernel(8).ts
+  good entity/field graph adapter, but should be typed-witness based and emit real type nodes
+
+kernel(9).ts
+  strong context graph adapter; should probably merge into requirement/provider dialect
+
+versioning-plan.md
+  very important; should become a first-class evolution/migration/versioning dialect
+```
+
+## 1. `entity-to-semantic.ts`: useful, but it exposes a design smell
+
+The helper converts an `Entity` into a struct-shaped `SemanticType`, mainly so expression builders and function DSL boundaries can accept `SemanticType | Entity`. It detects entities using `"fieldList" in value`, then synthesizes a struct type with the entity name and document storage representation. 
+
+That is practical, but in the ultimate design I would not let `Entity` silently become an anonymous-ish `SemanticType` at runtime.
+
+The problem:
+
+```ts
+entityToSemanticType(User)
+```
+
+looks convenient, but semantically there are at least three different things:
+
+```txt
+Entity node:
+  User as a domain object/table/resource
+
+Entity value type:
+  the shape of a User record
+
+Projection type:
+  a client-safe subset or target-specific view of User
+```
+
+So I’d replace the helper with explicit witness fields:
+
+```ts
+User.entity       // Entity witness / node ref
+User.type         // full semantic value type
+User.inputType    // create/update input type, if derived
+User.ref          // graph ref
+User.projection(...) // explicit safe projection
+```
+
+Then public APIs can accept entity witnesses ergonomically:
+
+```ts
+action.output(User)
+```
+
+but internally normalize through:
+
+```ts
+toValueType(User) === User.type
+```
+
+not synthesize a fresh struct every time.
+
+### Recommendation
+
+Keep `entityToSemanticType` temporarily as compatibility glue, but rename its final version to something explicit:
+
+```ts
+typeOf(User)
+valueTypeOf(User)
+toSemanticValueType(User)
+```
+
+And ensure it returns a **stable graph type ref**, not a synthetic object with no serializer/deserializer and empty traits.
+
+---
+
+## 2. `kernel(8).ts`: entity/field adapter is the right bridge pattern
+
+This file converts legacy `Entity` / `Field` objects into graph IR: one `ENTITY` node per entity, one `FIELD` node per field, `ENTITY_OWNS_FIELD` edges, and `FIELD_HAS_TYPE` edges pointing to synthesized type refs. It also pays attention to stable IDs where available and falls back to name-based IDs. 
+
+This is exactly the migration pattern you want:
+
+```txt
+legacy object
+  -> graph nodes
+  -> graph edges
+  -> stable IDs
+  -> no ctx mutation
+```
+
+But it still has two bridge smells.
+
+First, it manually converts edge kind definitions into loose `EdgeKind` and endpoint-role records.  Final code should use typed `defineEdgeFromKind(...)` directly:
+
+```ts
+defineEdgeFromKind(ENTITY_OWNS_FIELD_EDGE_KIND, id, {
+  entity: entity.ref,
+  field: field.ref,
+});
+```
+
+not:
+
+```ts
+defineEdge(edgeKind, id, [
+  { role, target },
+]);
+```
+
+Second, the field type edge points to a synthesized `KernelRef<"type">` that is not yet registered as a real type node.  That is fine as a bridge phase, but the final graph should contain first-class type nodes.
+
+Final shape:
+
+```txt
+Node(Entity): User
+Node(Field): User.email
+Node(Type): Email
+Edge(EntityOwnsField): User -> User.email
+Edge(FieldHasType): User.email -> Email
+Edge(TypeHasCodec): Email -> EmailCodec
+Trait(Unique): User.email
+Trait(ClientReadable): User.email
+```
+
+### Recommendation
+
+Promote this adapter pattern, but change the destination:
+
+```txt
+field.semantic_type.name as ref
+  -> registered Type node / Type witness
+
+manual endpoint roles
+  -> defineEdgeFromKind
+
+_bridgeRef metadata
+  -> only temporary provenance, not semantic behavior
+```
+
+Also, stable IDs should become mandatory sooner than later. Name fallback is okay for prototypes, but versioning and migration need stable IDs.
+
+---
+
+## 3. `kernel(9).ts`: context is basically requirement/provider now
+
+This file adapts `ContextDef`, `ContextProvision`, and `ContextRequirement` into graph IR. It creates context nodes, provision edges from context to storage location, requirement edges, and checks duplicate contexts, unsafe storage locations, and missing required context provisions directly from the graph. 
+
+This is good work. It is more graph-native than many older modules.
+
+But architecturally, I would avoid keeping `context` as a separate conceptual system from requirements/providers.
+
+A context is really:
+
+```txt
+Requirement:
+  something a callable/view/pass needs
+
+Provider:
+  something that satisfies that requirement
+
+Provider source:
+  request header, cookie, env var, runtime, state resource, reactive resource
+
+Placement/storage:
+  where the provided value lives
+```
+
+So `ContextDef` should likely lower into the same provider/requirement graph as `RequirementRef`.
+
+For example:
+
+```ts
+const AuthSession = app.context("AuthSession", ...)
+```
+
+and:
+
+```ts
+const AuthSession = app.requirement("AuthSession", ...)
+```
+
+should not produce unrelated graph models.
+
+### Final unification
+
+```txt
+Node(Requirement): AuthSession
+Node(Provider): AuthSessionProvider
+Node(ProviderSource): Cookie(opsdesk_session)
+Node(StorageLocation): SessionCookieStorage
+
+Edge(ProviderSatisfies): AuthSessionProvider -> AuthSession
+Edge(ProviderSourcedFrom): AuthSessionProvider -> CookieSource
+Edge(ProviderPlacedIn): AuthSessionProvider -> RequestStorage
+Edge(ConsumerRequires): resolveIncident -> AuthSession
+```
+
+`Context` can remain a public convenience name, but internally it should be a requirement/provider pattern.
+
+### Recommendation
+
+Keep `kernel(9).ts` as a bridge adapter, but eventually fold it into:
+
+```txt
+dialects/core/requirement
+dialects/core/provider
+dialects/core/placement
+```
+
+Also move behavior-relevant facts out of metadata:
+
+```txt
+semantic_type
+optional
+storage safety
+request scoped
+```
+
+Those should be graph facts, traits, or edges. Metadata can keep descriptions and source locations.
+
+---
+
+## 4. `versioning-plan.md`: this should become a major standard dialect
+
+This plan is very important. It says the current system already has stable identity, structural diffing, migration artifacts, migration-step traits, storage versioning, and optimistic-locking fields, but lacks a migration runner, schema versioning on the graph, snapshot persistence, and semantic-version derivation. 
+
+That is exactly right.
+
+I would not treat this as a side CLI feature. This should become a first-class **evolution dialect**.
+
+```txt
+dialect.evolution
+
+Nodes:
+  SchemaManifest
+  GraphSnapshot
+  GraphVersion
+  MigrationPlan
+  MigrationStep
+  MigrationHook
+  MigrationState
+  BreakingChange
+  CompatibilityReport
+  BackfillPlan
+  RenameHint
+
+Edges:
+  VersionFollowsVersion
+  SnapshotCapturesGraph
+  MigrationFromSnapshot
+  MigrationToSnapshot
+  MigrationHasStep
+  StepAffectsEntity
+  StepAffectsField
+  StepRequiresBackfill
+  StepHasHook
+  StepEmitsArtifact
+  VersionHasSemverDelta
+```
+
+The plan’s milestones map very naturally:
+
+```txt
+Schema versioning
+  -> SchemaManifest node
+
+Snapshot persistence
+  -> GraphSnapshot artifact + snapshot format
+
+Migration plan generation
+  -> MigrationPlan / MigrationStep nodes
+
+Target-specific execution
+  -> target lower/emit migration artifacts
+
+Semantic version derivation
+  -> CompatibilityReport / SemverDelta
+
+User-defined migration hooks
+  -> MigrationHook nodes
+
+Validation & integration
+  -> diagnostics + obligations + test artifacts
+```
+
+### My main change to the plan
+
+The plan asks whether version should live on `GenContext` or a first-class `Schema` node, and recommends starting with `GenContext.version`. 
+
+Given everything we’ve designed, I’d now choose the first-class graph node earlier:
+
+```ts
+export const Schema = gen.evolution.schema("opsdesk", {
+  version: "1.2.0",
+  previous: "1.1.0",
+});
+```
+
+Why? Because:
+
+```txt
+multiple schemas may exist
+plugins may contribute schema fragments
+targets need version metadata
+snapshots need provenance
+docs/tests need version surfaces
+graph diff should target a schema node
+AI migrations need explicit graph anchors
+```
+
+You can still mirror `schema.version` onto `GenContext` for convenience, but the graph should own it.
+
+---
+
+## 5. Versioning should connect to stable IDs immediately
+
+The versioning plan correctly says stable IDs are non-negotiable and missing/inconsistent stable IDs can turn renames into destructive drop/add. 
+
+This affects `kernel(8).ts` directly. That file currently falls back to name-based IDs when explicit IDs are absent. 
+
+I would introduce strictness levels:
+
+```ts
+gen.config({
+  identity: {
+    stableIds: "warn", // prototype
+  },
+});
+```
+
+and production mode:
+
+```ts
+gen.config({
+  identity: {
+    stableIds: "required",
+  },
+});
+```
+
+Diagnostics:
+
+```txt
+ref:missing-stable-id
+ref:rename-without-stable-id
+ref:duplicate-stable-id
+ref:unstable-name-derived-id
+```
+
+This is one of the most important DX/product correctness areas.
+
+---
+
+## 6. Add **rename intent** to the authoring API
+
+Graph diff can infer renames by stable IDs, but users should also be able to declare intent.
+
+Example:
+
+```ts
+class Incident extends domain.entity.class("Incident", {
+  fields: {
+    description: domain
+      .field(t.optional(t.string))
+      .renamedFrom("summary"),
+  },
+}) {}
+```
+
+or:
+
+```ts
+gen.evolution.renameField({
+  from: "Incident.summary",
+  to: Incident.fields.description,
+});
+```
+
+This prevents ambiguous migration plans and gives better docs.
+
+The migration plan can then distinguish:
+
+```txt
+drop + add
+rename
+rename + type change
+split field
+merge fields
+backfill required
+```
+
+That’s a big usability improvement.
+
+---
+
+## 7. Add **data-shape transforms** to migrations
+
+The plan includes `backfill_field`, but the system needs a typed transform model for migration data.
+
+Example:
+
+```ts
+gen.evolution.backfill({
+  field: Incident.fields.priority,
+  from: [Incident.fields.severity],
+  body: ({ severity }) =>
+    expr.match(severity, {
+      sev1: "critical",
+      sev2: "high",
+      sev3: "medium",
+      sev4: "low",
+    }),
+});
+```
+
+This should reuse the existing `Transform` / `Expr` / `Operation` dialects.
+
+Migration transforms should have:
+
+```txt
+input type
+output type
+SQL lowerability
+runtime fallback
+idempotency
+batching policy
+rollback/restore strategy
+diagnostics
+```
+
+---
+
+## 8. Add snapshot privacy/security policy
+
+The versioning plan says snapshots must not contain secrets, database URLs, or environment config.  Good. I’d formalize this as a pass:
+
+```txt
+snapshot.verify.noSecrets
+snapshot.verify.noRuntimeClosures
+snapshot.verify.noEnvironmentSpecificConfig
+snapshot.verify.allRefsStable
+```
+
+And add an explicit snapshot profile:
+
+```ts
+gen.evolution.snapshot("production", {
+  include: ["schema", "policies", "rules", "storage", "artifacts"],
+  exclude: ["providers.secretValues", "runtimeConfig", "closures"],
+  redaction: "strict",
+});
+```
+
+This ties into the privacy/compliance dialect suggestion from before.
+
+---
+
+## 9. Add graph **compatibility surfaces**, not just SemVer
+
+The plan notes that a stable-ID rename may be safe for Postgres but breaking for generated client SDKs, and recommends target-aware SemVer rules.  Yes.
+
+I’d model compatibility by surface:
+
+```txt
+database
+server API
+client SDK
+UI JSON spec
+OpenAPI
+event payloads
+queue messages
+deployment resources
+test fixtures
+```
+
+Example:
+
+```ts
+const compat = gen.evolution.compatibility(previousGraph, appGraph, {
+  surfaces: [
+    targets.postgres.surface,
+    targets.openapi.surface,
+    targets.typescript.surface,
+    targets.jsonRender.surface,
+  ],
+});
+```
+
+Output:
+
+```txt
+database: patch
+  renamed field with stable id
+
+openapi: major
+  response property renamed summary -> description
+
+typescript: major
+  Incident.summary removed from public type
+
+jsonRender: minor
+  new optional field added
+```
+
+This is far more useful than one global SemVer answer.
+
+---
+
+## 10. Tie versioning into obligations
+
+Versioning should generate obligations.
+
+Examples:
+
+```txt
+field type changed
+  -> migration test obligation
+
+field renamed
+  -> compatibility doc obligation
+
+destructive drop requested
+  -> manual approval obligation
+
+new provider introduced
+  -> provider mock test obligation
+
+event payload changed
+  -> consumer compatibility test obligation
+```
+
+API:
+
+```ts
+const VersioningObligations = obligation.derive("VersioningObligations", {
+  from: [MigrationPlan],
+  produce: [
+    obligation.kind.migrationTest({ priority: "required" }),
+    obligation.kind.compatibilityDoc({ priority: "recommended" }),
+    obligation.kind.rollbackRunbook({ priority: "required" }),
+  ],
+});
+```
+
+This fits the obligation graph perfectly.
+
+---
+
+## 11. Add dev-mode “unsafe migration preview”
+
+Great DX would be:
+
+```ts
+gen.evolution.preview(previousGraph, appGraph).print();
+```
+
+Output:
+
+```txt
+Schema change preview
+
+Safe:
+  + Added field Incident.priority nullable
+  ~ Renamed Incident.summary -> Incident.description by stable id
+
+Needs attention:
+  ! Changed Incident.status enum values
+    affected: Postgres, OpenAPI, React types
+    suggested: add compatibility mapping
+
+Blocked:
+  ✖ Dropped User.email
+    reason: destructive data loss
+    fix: add explicit allowDestructive or deprecate first
+```
+
+This gives the developer confidence before target-specific migration output.
+
+---
+
+## 12. Improve context/provider DX with `.requires(...)` inference
+
+With `requirements.ts` and `kernel(9).ts`, users may have to wire requirements too explicitly.
+
+Better:
+
+```ts
+const resolveIncident = app.action("resolveIncident")((a) =>
+  a
+    .input(...)
+    .use(({ auth, clock, db }) => {
+      // referencing auth implies AuthSession requirement
+      // referencing clock implies RequestClock requirement
+    }),
+);
+```
+
+The builder can infer:
+
+```txt
+ActionRequires AuthSession
+ActionRequires RequestClock
+```
+
+But users should still be able to declare explicitly:
+
+```ts
+.requires(AuthSession)
+.requires(RequestClock)
+```
+
+Best DX is both:
+
+```txt
+explicit for clarity
+inferred for safety
+diagnostic if body uses undeclared requirement
+```
+
+---
+
+## 13. Contexts should have **scope-safe typing**
+
+Provider lifetimes are great. Push them into TS witnesses:
+
+```ts
+const RequestClock = requirement.define("RequestClock", {
+  type: RequestClockType,
+  lifetime: "request",
+});
+```
+
+Then prevent obvious misuse:
+
+```ts
+app.globalProvider("SomethingGlobal", {
+  requires: [RequestClock], // TS warning or diagnostic: request lifetime escapes global
+});
+```
+
+Not everything can be caught in TS, but some can.
+
+---
+
+## 14. More concrete package/source layout suggestion
+
+Given these files, I’d organize the rebase like this:
+
+```txt
+src/dialects/domain/
+  entity.ts
+  field.ts
+  relation.ts
+  type-lowering.ts
+  adapters/entity-legacy.ts
+
+src/dialects/core/context/
+  context.ts
+  adapters/context-legacy.ts
+  passes/verify-context.ts
+
+src/dialects/core/provider/
+  requirement.ts
+  provider.ts
+  source.ts
+  lifetime.ts
+  passes/derive-satisfaction.ts
+  passes/verify-provider-placement.ts
+
+src/dialects/evolution/
+  schema.ts
+  snapshot.ts
+  diff.ts
+  migration-plan.ts
+  migration-step.ts
+  compatibility.ts
+  hooks.ts
+  passes/verify-version.ts
+  passes/derive-migration-plan.ts
+  passes/derive-semver.ts
+  passes/verify-snapshot-safety.ts
+```
+
+And keep old bridge files under:
+
+```txt
+src/legacy-bridge/
+```
+
+so final APIs and migration adapters are visibly separate.
+
+---
+
+## Updated priority list
+
+These files shift my priorities slightly. I’d now put versioning/evolution higher:
+
+```txt
+1. Stable IDs and entity/field graph adapters
+2. First-class Type nodes for entity value types
+3. Requirement/provider/context unification
+4. Evolution/schema/versioning dialect
+5. Snapshot format + graph snapshot artifact
+6. Migration plan nodes and target lowering
+7. Target-aware compatibility/SemVer surfaces
+8. Recipe expansion / graph preview
+9. Patchable diagnostics and AI repair
+10. Textual IR
+```
+
+## Bottom line
+
+The new files reveal one major missing pillar:
+
+```txt
+Evolution/versioning must be a first-class graph dialect,
+not a CLI afterthought.
+```
+
+And they reinforce two earlier conclusions:
+
+```txt
+Entity, Field, Context, Requirement, Provider, StorageLocation should all be graph-native.
+
+Compatibility helpers are okay during migration, but final compiler reasoning
+must use refs, typed edge kinds, traits, and graph views—not synthesized objects
+or behavior hidden in metadata.
+```

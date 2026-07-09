@@ -1,0 +1,695 @@
+Yes. The old unification idea is still right, but in the revised kernel I would **not** make `Reaction`, `Event`, or `Effect` a new hard primitive alongside `Node` and `Edge`.
+
+I’d model them like this:
+
+```txt
+Effect
+  = typed effect footprint / capability requirement
+
+Event
+  = trigger node with typed payload
+
+Reaction
+  = derived-trigger dispatch: when a rule becomes true, run a handler
+
+Subscription
+  = event-trigger dispatch: when an event occurs, run a handler
+
+Reducer
+  = event-trigger dispatch whose handler is a reducer/combiner
+
+Dispatch
+  = graph pattern connecting Trigger -> Select/Projection -> Handler -> Delivery
+```
+
+So in the revised kernel:
+
+```txt
+Dispatch is a dialect node/edge pattern, not a hard kernel primitive.
+Effects are typed semantic facts attached to operations/functions/nodes/edges.
+```
+
+The current repo already has the right separation: reactions are “typed effect plans that run when a rule becomes true,” and the comment explicitly says rules stay pure while reactions own the effectful interpretation.  Events/reducers/subscriptions/outbox are also already related concepts around event payloads, emissions, subscriptions, reducers, and reliable delivery.  The revised kernel should preserve those concepts but rebase them on nodes/edges/operations/protocols.
+
+# The revised model
+
+## 1. Effects are not dispatches
+
+An **effect** is a footprint:
+
+```txt
+db.read
+db.write
+network.request
+email.send
+queue.enqueue
+outbox.write
+cache.invalidate
+state.write
+cookie.write
+localStorage.write
+analytics.track
+```
+
+Effects answer:
+
+```txt
+What side effect can this thing perform?
+Where can it run?
+What target/runtime capabilities are required?
+Is it retry-safe?
+Is it idempotent?
+Can it be moved across a boundary?
+```
+
+So effects should be typed values or trait applications, not strings:
+
+```ts
+const DbWrite = defineEffect({
+  id: effectId("effect.db.write"),
+  capabilities: [CapabilityTransactions],
+});
+
+const SendEmail = defineEffect({
+  id: effectId("effect.email.send"),
+  capabilities: [CapabilityNetwork],
+});
+```
+
+Then an action, operation, or dispatch handler can carry effects:
+
+```ts
+defineAction({
+  name: "sendWelcomeEmail",
+  effects: [SendEmail],
+});
+```
+
+In graph form:
+
+```txt
+ActionNode --hasEffect--> SendEmail
+SendEmail --requiresCapability--> NetworkCapability
+ActionNode --runsIn--> ServerRuntime
+```
+
+Effects are **facts about execution**, not execution plans themselves.
+
+## 2. Dispatch is the effectful execution binding
+
+Dispatch connects a trigger to a handler.
+
+```txt
+Trigger
+  Event emitted
+  Rule becomes true
+  Record matches inserted/updated/deleted
+  Timer fires
+  External webhook arrives
+  Query/resource invalidated
+
+Handler
+  ActionFunction
+  StaticFunction
+  Reducer/Combiner
+  Subscription handler
+  Workflow
+  Queue job
+
+Delivery
+  inline
+  outbox
+  job queue
+  webhook
+  target decides
+
+Safety
+  idempotency key
+  retry policy
+  dedupe window
+  transaction boundary
+  outbox guarantees
+```
+
+In the old model, `Reaction` already has:
+
+```txt
+when: Rule
+select?: ExprFunction
+run: ActionFunction
+mode
+idempotency
+delivery
+outbox
+```
+
+That is basically a dispatch. 
+
+So the revised internal representation should be:
+
+```txt
+Reaction
+  public frontend
+
+DispatchNode
+  canonical graph node
+
+Edges:
+  DispatchTriggeredBy -> Rule/Event/Timer/Webhook
+  DispatchSelectsWith -> ExprFunction
+  DispatchRuns -> Action/Handler/Reducer/Workflow
+  DispatchDeliveredBy -> DeliveryPlan
+  DispatchUsesIdempotency -> IdempotencyPlan
+  DispatchWritesOutbox -> OutboxPlan
+```
+
+A reaction becomes:
+
+```txt
+Rule trigger + optional select + action handler + delivery/idempotency
+```
+
+An event subscription becomes:
+
+```txt
+Event trigger + handler + delivery/idempotency
+```
+
+A reducer becomes:
+
+```txt
+Event trigger + combiner/reducer handler + target field
+```
+
+Same dispatch shape.
+
+# What should become dialects
+
+I’d add a `dispatch` dialect and an `effect` dialect.
+
+```txt
+effect dialect:
+  EffectDefNodeKind
+  EffectCapabilityEdgeKind
+  HasEffectEdgeKind
+  RequiresCapabilityEdgeKind
+  EffectRuntimeSupport traits
+
+dispatch dialect:
+  DispatchNodeKind
+  EventTriggerNodeKind
+  RuleTriggerNodeKind
+  TimerTriggerNodeKind
+  WebhookTriggerNodeKind
+  DeliveryPlanNodeKind
+  IdempotencyPlanNodeKind
+  OutboxPlanNodeKind
+  TriggeredByEdgeKind
+  SelectsWithEdgeKind
+  RunsHandlerEdgeKind
+  DeliveredByEdgeKind
+```
+
+The hard kernel stays small:
+
+```txt
+Node
+Edge
+Type
+Expr
+Trait
+Protocol
+Graph
+Pass
+```
+
+But `Effect`, `Trigger`, `Dispatch`, `Delivery`, and `Idempotency` become core/stdlib dialect concepts.
+
+# Events in the new model
+
+An event should be a node with a payload type.
+
+```txt
+EventNode
+  name
+  payload type
+  traits:
+    Triggerable
+    Serializable
+    MaybeDurable
+```
+
+Event emission is an edge from an action/operation to the event:
+
+```txt
+Action emits Event
+Action produces EventPayload Expr
+Event has PayloadType
+```
+
+Current `EventEmission` already records action → event plus optional payload expression, and events track emitting actions.  In the new graph, the back-reference array should disappear. It should become an edge:
+
+```txt
+Edge(EmitsEvent)
+  emitter: ActionNode
+  event: EventNode
+  payloadExpr?: Expr
+```
+
+Then subscriptions are dispatches:
+
+```txt
+EventNode --triggers--> DispatchNode
+DispatchNode --runs--> HandlerFunction
+```
+
+# Reactions in the new model
+
+A reaction is not a separate primitive from dispatch. It is a dispatch with a rule trigger.
+
+```txt
+Reaction frontend:
+  when Rule
+  select ExprFunction?
+  run ActionFunction
+  mode
+  idempotency
+  delivery
+  outbox
+
+Canonical graph:
+  DispatchNode
+  RuleTriggerNode or Edge(triggeredBy: Rule)
+  RunsHandlerEdge -> ActionNode
+  SelectsWithEdge -> ExprFunctionNode
+  DeliveryPlanNode
+  IdempotencyPlanNode
+```
+
+The important invariant remains:
+
+```txt
+Rule is pure.
+Reaction/Dispatch owns effects.
+```
+
+That is one of the most important design boundaries in the library. Do not let rules send emails, enqueue jobs, or write state.
+
+# Reducers and combiners
+
+Current events have `MonoidOp` and `Reducer`, with associativity/commutativity/idempotence flags.  In the revised kernel, this should move to operation/law traits.
+
+Old:
+
+```txt
+MonoidOp {
+  associative: boolean
+  commutative: boolean
+  idempotent: boolean
+}
+```
+
+New:
+
+```txt
+CombinerOperationNode
+  traits:
+    LawAssociative
+    LawCommutative
+    LawIdempotent
+    LawIdentity { identity: Expr }
+```
+
+Reducer becomes a dispatch handler shape:
+
+```txt
+Event trigger
+  -> Reducer/Combiner operation
+  -> writes target field/state
+```
+
+Graph:
+
+```txt
+EventNode --triggers--> DispatchNode
+DispatchNode --runs--> ReducerNode
+ReducerNode --usesOperation--> CombinerOperationNode
+ReducerNode --writes--> TargetField
+CombinerOperationNode --hasTrait--> LawAssociative
+```
+
+This makes reducers useful for:
+
+```txt
+event replay
+offline merge
+optimistic patches
+IVM
+materialized aggregates
+```
+
+Because all of those consume the same operation/law system.
+
+# Delivery and outbox
+
+Delivery should be graph-native too.
+
+Current reaction delivery supports `outbox`, `job_queue`, `webhook`, and `inline`; outbox includes delivery guarantee, retries, retry delay, and record schema. 
+
+In the revised model:
+
+```txt
+DeliveryPlanNode
+  kind: inline | outbox | job_queue | webhook | target_decides
+
+OutboxPlanNode
+  storage location
+  payload type
+  retry policy
+  delivery guarantee
+  dead-letter policy
+
+Edges:
+  DispatchDeliveredBy -> DeliveryPlan
+  DeliveryUsesOutbox -> OutboxPlan
+  OutboxStoredIn -> StorageLocation
+```
+
+This lets passes check:
+
+```txt
+Side-effect dispatch with inline delivery?
+  warn/error depending effect and runtime
+
+Outbox plan but delivery kind is not outbox?
+  diagnostic
+
+At-least-once delivery with non-idempotent handler?
+  diagnostic
+
+Retry enabled but handler lacks idempotency?
+  diagnostic
+
+Outbox stored in non-persistent location?
+  diagnostic
+```
+
+The current reaction checker already warns about missing idempotency, missing delivery plan, unsafe inline effect, and outbox mismatch.  Those checks become graph passes.
+
+# Idempotency
+
+Idempotency should be a plan node or trait application with payload.
+
+```txt
+IdempotencyPlanNode
+  strategy:
+    auto
+    input_hash
+    event_id
+    custom
+  dedupe window
+  key expression
+```
+
+Graph:
+
+```txt
+DispatchNode --usesIdempotency--> IdempotencyPlanNode
+ActionNode --hasTrait--> LawIdempotent
+OperationNode --hasTrait--> LawIdempotent
+```
+
+For some things, idempotency is a **law**:
+
+```txt
+This operation/action is idempotent.
+```
+
+For dispatch, idempotency is often a **delivery plan**:
+
+```txt
+This handler may not be inherently idempotent, but this dispatch has an idempotency key/dedupe plan.
+```
+
+So keep both:
+
+```txt
+LawIdempotent
+  semantic property of operation/action.
+
+IdempotencyPlan
+  runtime delivery safety mechanism.
+```
+
+# Effects and codegen
+
+Effects are crucial for codegen.
+
+A server target can ask:
+
+```txt
+Which callable nodes have effects?
+Which effects are supported by this runtime?
+Which effects require server-only placement?
+Which dispatches need outbox tables?
+Which handlers need retry wrappers?
+Which actions need transaction boundaries?
+```
+
+A client target can ask:
+
+```txt
+Which effects are forbidden on client?
+Which dispatches can be represented as local subscriptions?
+Which mutations can invalidate client keys?
+Which optimistic updates are safe?
+```
+
+A database target can ask:
+
+```txt
+Which dispatches lower to triggers?
+Which rules lower to trigger predicates?
+Which outbox writes need a table?
+Which reducers become materialized aggregate maintenance?
+```
+
+So effects should not live only as arrays on functions. They should be graph facts:
+
+```txt
+Node --hasEffect--> EffectDef
+EffectDef --requiresCapability--> Capability
+EffectDef --requiresPlacement--> ServerOnly
+EffectDef --conflictsWith--> ClientRuntime
+```
+
+# Manual vs derived dispatch
+
+Same principle as reactivity: keep manual, derive when possible.
+
+## Manual dispatch remains necessary
+
+You still need to let users say:
+
+```ts
+gen.reaction({
+  when: invoiceBecameOverdue,
+  run: sendReminderEmail,
+  delivery: outbox(...),
+  idempotency: inputHash(),
+});
+```
+
+or:
+
+```ts
+gen.events.subscribe(UserCreated, sendWelcomeEmail);
+```
+
+Because external effects and business workflows are intentional.
+
+## Derive dispatch when possible
+
+The compiler can derive some dispatch-like things:
+
+```txt
+Action emits event based on operation
+Event has reducer
+Rule becomes true based on changed fields
+Derived view needs maintenance
+Query invalidated by action
+```
+
+But derived dispatch should be explicit in provenance:
+
+```txt
+explicit
+derived
+conservative
+target-generated
+```
+
+Generated effects should be explainable.
+
+# How this replaces the old “unify reactions/effects” phase
+
+The old direction probably wanted:
+
+```txt
+Events + Reactions -> Dispatch
+EffectKind + CapabilityKind -> Execution footprint unification
+MergeStrategy + MonoidOp -> Combiner
+```
+
+In the revised kernel, I’d restate it as:
+
+```txt
+Event, Reaction, Subscription, Reducer
+  become frontends over Dispatch graph pattern.
+
+EffectKind
+  becomes EffectDef nodes + HasEffect edges.
+
+CapabilityKind
+  becomes Capability traits/nodes on targets/runtimes/locations.
+
+MonoidOp / Combiner
+  become OperationDef nodes with law traits.
+
+Outbox / Delivery / Idempotency
+  become dispatch-support nodes connected by edges.
+```
+
+So yes, the unification still happens, but it is not a single giant primitive. It is a dialect.
+
+# Proposed canonical graph patterns
+
+## Reaction
+
+```txt
+Node: Dispatch(sendReminderWhenOverdue)
+Edge: triggeredBy -> Rule(invoiceBecameOverdue)
+Edge: selectsWith -> ExprFunction(projectInvoiceToEmailInput)
+Edge: runs -> Action(sendReminderEmail)
+Edge: deliveredBy -> Delivery(outbox)
+Edge: usesIdempotency -> Idempotency(input_hash)
+Edge: hasEffect -> SendEmail
+```
+
+## Event subscription
+
+```txt
+Node: Event(UserCreated)
+Node: Dispatch(sendWelcomeOnUserCreated)
+Edge: triggeredBy -> Event(UserCreated)
+Edge: runs -> Action(sendWelcomeEmail)
+Edge: deliveredBy -> Delivery(job_queue)
+Edge: usesIdempotency -> Idempotency(event_id)
+```
+
+## Reducer
+
+```txt
+Node: Event(InvoicePaid)
+Node: Operation(sumPaidAmount)
+Trait: LawAssociative
+Trait: LawCommutative
+Trait: LawIdentity { identity: 0 }
+Node: Dispatch(maintainCustomerPaidTotal)
+Edge: triggeredBy -> Event(InvoicePaid)
+Edge: runs -> ReducerNode
+Edge: usesOperation -> sumPaidAmount
+Edge: writes -> Customer.totalPaid
+```
+
+## Outbox
+
+```txt
+Node: OutboxPlan(DefaultOutbox)
+Edge: storedIn -> PostgresOutboxTable
+Edge: serializesPayloadWith -> JsonTransform
+Edge: deliveryGuarantee -> AtLeastOnce
+Edge: retryPolicy -> ExponentialBackoff
+```
+
+# Diagnostics
+
+I’d keep and expand the current reaction/event diagnostics as graph diagnostics:
+
+```txt
+dispatch:missing-trigger
+dispatch:missing-handler
+dispatch:select-output-mismatch
+dispatch:handler-input-mismatch
+dispatch:missing-idempotency
+dispatch:side-effect-without-delivery
+dispatch:inline-side-effect-unsafe
+dispatch:delivery-capability-missing
+dispatch:outbox-delivery-mismatch
+dispatch:outbox-storage-not-persistent
+dispatch:retry-requires-idempotency
+dispatch:at-least-once-non-idempotent-handler
+
+effect:unsupported-by-runtime
+effect:client-forbidden
+effect:requires-server-placement
+effect:requires-transaction
+effect:undeclared-effect
+
+event:payload-type-mismatch
+event:duplicate-payload-field
+event:emission-payload-mismatch
+event:subscription-input-mismatch
+
+reducer:missing-identity
+reducer:non-associative
+reducer:non-commutative-replay
+reducer:type-mismatch
+```
+
+# Final recommendation
+
+Do **not** create one monolithic `EffectfulThing` primitive.
+
+Use this:
+
+```txt
+EffectDefNode
+  defines effect footprint.
+
+EventNode
+  defines typed trigger payload.
+
+DispatchNode
+  connects trigger to handler.
+
+DeliveryPlanNode
+  defines how it runs.
+
+IdempotencyPlanNode
+  defines dedupe/retry safety.
+
+OutboxPlanNode
+  defines reliable persistence/delivery.
+
+Combiner/Reducer
+  operation nodes with laws, used by dispatch handlers.
+```
+
+And keep the essential invariant:
+
+```txt
+Rules are pure.
+Expressions are inspectable.
+Functions/actions own executable behavior.
+Dispatch owns trigger-to-handler effectful execution.
+Effects describe footprints/capabilities.
+Delivery/idempotency/outbox describe runtime safety.
+```
+
+That gives you the old phase-plan unification, but rebased correctly on the revised kernel:
+
+```txt
+Everything is nodes, edges, traits, protocols, operations, expressions, and passes.
+Events/reactions/effects become graph-native dialects, not separate registries.
+```

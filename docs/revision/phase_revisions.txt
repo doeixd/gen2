@@ -1,0 +1,794 @@
+Yes. From old **Phase 6**, keep the *intent*, but not the implementation style.
+
+I did not find a Phase 7 guide in the repo search. I did find Phase 5 and Phase 6, and Phase 5 contains several “next unification” milestones that probably overlap with what Phase 7 would have become: dispatch, callable base, workflow/plan views, stored values, combiners, effect/capability unification. 
+
+## What to keep from old Phase 6
+
+### 1. Checker registry → keep, but rename as pass pipeline
+
+Old Phase 6 wanted a `Checker<T>` registry with dependency ordering and plugin registration. 
+
+Keep the idea, but rebase it:
+
+```txt
+Old:
+  CheckerRegistry
+
+New:
+  PassPipeline
+    verify
+    derive
+    canonicalize
+    legalize
+    lower
+    emit
+```
+
+So instead of:
+
+```txt
+Checker<Entity>
+Checker<ActionFunction>
+Checker<EntityView>
+```
+
+Use:
+
+```txt
+Pass<"verify"> over Graph
+Pass<"derive"> over Graph
+Pass<"canonicalize"> over Graph
+```
+
+Old checker dependency sorting is still useful. It just becomes pass dependency sorting.
+
+### 2. ArtifactEmitter → keep, but as emit/lowering passes
+
+Old Phase 6 wanted an `ArtifactEmitter<Input, Artifact>` framework. 
+
+Keep the idea, but do not create a separate emitter world.
+
+Use:
+
+```txt
+LoweringPass
+EmitPass
+ArtifactNode
+GeneratedFromEdge
+LowersToEdge
+```
+
+Target emitters should consume **legalized target dialect IR**, not arbitrary high-level objects.
+
+```txt
+domain.entity -> storage.record -> postgres.table -> sql artifact
+rule -> sql.predicate -> postgres.rls_policy -> sql artifact
+query -> server.route/client.resource -> generated code
+```
+
+### 3. EntityView unification → keep strongly
+
+Old Phase 6 wanted forms, editors, lists, and CRUD unified as `EntityView`. 
+
+Keep that. In the revised kernel:
+
+```txt
+EntityView = Node
+```
+
+with edges:
+
+```txt
+View displays Field
+View edits Field
+View submits Action
+View loads Query
+View enabledWhen Rule
+View hiddenWhen Rule
+View validatesWith Rule
+```
+
+This is still valuable. Just do not keep old parallel arrays like `forms`, `editors`, `lists`, `cruds` internally.
+
+### 4. Plugin registration → keep, but upgrade to dialect registration
+
+Old Phase 6 wanted plugins to register checkers and emitters. 
+
+New version:
+
+```txt
+Plugin contributes Dialect
+Dialect contributes:
+  node kinds
+  edge kinds
+  type kinds
+  traits
+  protocols
+  passes
+  lowerings
+  emitters
+```
+
+So plugin registration becomes more powerful and more typed.
+
+### 5. Graph integration and caching → keep
+
+Old Phase 6 wanted cached derived graphs and a `generation_id`. 
+
+Keep the concept, but make it graph-native:
+
+```txt
+GraphVersion
+PassCache
+DerivedEdgeCache
+ArtifactCache
+SemanticHash
+```
+
+Important cached things:
+
+```txt
+read/write edges
+rule dependency edges
+operation-use edges
+invalidation edges
+lowered target dialect graph
+artifact outputs
+```
+
+This will matter a lot once agents are editing the graph.
+
+---
+
+## What to reject from old Phase 6
+
+Old Phase 6 explicitly said not to remove old context arrays and to populate both old and new arrays for compatibility. 
+
+Given the new “no partial measures” direction, reject that.
+
+Do not keep this internally:
+
+```txt
+ctx.forms
+ctx.editors
+ctx.lists
+ctx.cruds
+ctx.events
+ctx.reactions
+ctx.state_resources
+ctx.offline_queues
+ctx.query_functions
+ctx.action_functions
+```
+
+At most, expose temporary public compatibility accessors that query the graph.
+
+```ts
+ctxView.forms()
+ctxView.actions()
+ctxView.reactions()
+```
+
+But the graph must be the only source of truth.
+
+---
+
+# What to keep from the implied Phase 7 work
+
+Since I did not find a Phase 7 file, I’d preserve the later Phase 5/6 themes that look like they were probably leading into Phase 7.
+
+## 1. Dispatch unification
+
+Keep this strongly.
+
+Old idea:
+
+```txt
+Events + Reactions -> Dispatch
+```
+
+New model:
+
+```txt
+DispatchNode
+  triggeredBy Event | Rule | Timer | Webhook | Mutation | ResourceInvalidation
+  selectsWith ExprFunction?
+  runs Action | Workflow | Reducer | Handler
+  deliveredBy DeliveryPlan
+  usesIdempotency IdempotencyPlan
+  writesOutbox OutboxPlan
+```
+
+This replaces separate event/reaction/subscription handling.
+
+## 2. Callable base
+
+Keep this strongly.
+
+Old idea:
+
+```txt
+Unified Callable base
+```
+
+New model:
+
+```txt
+FunctionNode = callable node
+```
+
+Specializations:
+
+```txt
+ExprFunction
+PredicateFunction
+Rule
+QueryFunction
+ActionFunction
+PatchFunction
+PlanFunction
+```
+
+All are nodes with `CallableProtocol`, plus traits like:
+
+```txt
+NodeReadable
+NodeWritable
+NodeEffectful
+NodePatchable
+NodeReactive
+NodeKeyed
+```
+
+This is essential for codegen.
+
+## 3. Workflow steps as plans/regions
+
+Keep, but rebase.
+
+Old idea:
+
+```txt
+Workflow steps as composable plan views
+```
+
+New model:
+
+```txt
+WorkflowNode
+  owns Region
+  contains StepNodes
+  edges express sequencing/parallel/fallback/retry
+```
+
+This should use graph `Region` eventually, but does not need to block the first kernel.
+
+## 4. StoredValue unification
+
+Keep, but make it a placement/state dialect concept.
+
+Old idea:
+
+```txt
+StateResource + OfflineQueuePlan -> StoredValue
+```
+
+New model:
+
+```txt
+StoredValueNode
+  has Type
+  placedIn StorageLocation
+  hydratedBy Provider?
+  readBy Scope/Query/View
+  writtenBy Action/Operation
+```
+
+This connects cleanly to placement, hydration, offline queues, and client state.
+
+## 5. Combiner unification
+
+Keep, but move into operation/law system.
+
+Old idea:
+
+```txt
+MergeStrategy + MonoidOp -> Combiner
+```
+
+New model:
+
+```txt
+CombinerOperationNode
+  traits:
+    LawAssociative
+    LawCommutative
+    LawIdempotent
+    LawIdentity { identity: Expr }
+```
+
+Reducers, IVM, offline merge, optimistic reconciliation, and materialized aggregates all consume this.
+
+## 6. Effect/capability unification
+
+Keep, but separate the concepts.
+
+```txt
+Effect
+  what execution does
+
+Capability
+  what a runtime/target/location supports
+
+Law
+  what behavior is guaranteed
+
+Delivery/Idempotency
+  how effectful execution is made safe
+```
+
+Do not collapse these into one vague primitive.
+
+Use:
+
+```txt
+EffectDefNode
+CapabilityTrait or CapabilityNode
+HasEffectEdge
+RequiresCapabilityEdge
+```
+
+---
+
+# New revised phase map
+
+I’d rewrite old Phase 6/7 as this:
+
+```txt
+Phase A — Kernel Cutover
+  Id, Ref, SymbolDef, Location, Trait, Protocol, Type, Expr, Node, Edge, Graph, Pass
+
+Phase B — Core Dialects
+  placement, context, provider/requirement, ownership, claims, capability, provenance
+
+Phase C — Operation + Expression + Rule Dialects
+  operation nodes, laws as traits, operation-call expressions, rule nodes
+
+Phase D — Callable Dialect
+  funcs, queries, actions, patches, plans, callable protocol
+
+Phase E — Reactivity Dialect
+  key families, resources, mutations, tracking scopes, manual + derived invalidation
+
+Phase F — Dispatch/Effect Dialect
+  events, reactions, subscriptions, reducers, effects, delivery, idempotency, outbox
+
+Phase G — UI Dialect
+  EntityView, forms, lists, editors, CRUD, rule-driven UI state
+
+Phase H — Target Dialects
+  postgres, react/solid, effect, openapi, docs/tests/devtools
+
+Phase I — Pass Pipelines + Caching
+  verify, derive, canonicalize, legalize, lower, emit, cache by graph version
+
+Phase J — Delete Legacy Registries
+  no old arrays, no old checker registry, no string-based kinds/traits
+```
+
+---
+
+# Biggest thing to add to `revised_phases.md`
+
+I would add a section called:
+
+```txt
+Legacy Phase 6/7 Translation Table
+```
+
+Example:
+
+```txt
+Old CheckerRegistry
+  -> Graph PassPipeline
+
+Old ArtifactEmitter
+  -> LoweringPass + EmitPass + ArtifactNode
+
+Old EntityView
+  -> UI dialect ViewNode
+
+Old Dispatch
+  -> DispatchNode + Trigger/Handler/Delivery edges
+
+Old Callable base
+  -> FunctionNode + CallableProtocol
+
+Old StoredValue
+  -> StoredValueNode in placement/state dialect
+
+Old Combiner
+  -> OperationDefNode with law traits
+
+Old EffectKind
+  -> EffectDefNode / HasEffectEdge
+
+Old CapabilityKind
+  -> Capability trait/node on target/runtime/location
+
+Old Graph caching
+  -> GraphVersion + PassCache + ArtifactCache
+```
+
+That would preserve the good work from the old roadmap while avoiding the old partial-unification approach.
+
+These uploads change the answer: **Phase 4.5, 5.5, and 7 contain several ideas that should become central to the revised kernel plan**, not just “old roadmap leftovers.”
+
+The biggest correction is: **expression/rule unification is not optional.** Phase 4.5 already identifies the key seam: `RuleExpr` and `Expr` should not be two ASTs. A rule should be a pure, effect-free predicate expression, with universal dependency tracking and typed traits for SQL-safety rather than magic strings. 
+
+## What to take from Phase 4.5
+
+Keep almost all of it, but rebase it on the new kernel.
+
+### Keep
+
+```txt
+RuleExpr deletion
+Universal Expr
+Rule = pure Predicate / boolean Expr
+Universal dependency tracking
+Logical implication
+Refinements
+isNull / isNotNull / in / notIn / startsWith / contains / forall
+Typed SQL-safe trait
+Graceful fallback when a rule is pure but not SQL-lowerable
+```
+
+### Revise
+
+Phase 4.5 says every `Expr` should expose `.dependencies`. That is right, but in the revised kernel the canonical form should be **edges**, not just a property:
+
+```txt
+Expr --usesOperation--> OperationDefNode
+Expr --readsField--> FieldNode
+Expr --readsContext--> ContextNode
+Expr --traversesRelation--> Edge/Relation
+Rule --hasBody--> Expr<boolean>
+```
+
+A `.dependencies` object can remain as a view over the graph.
+
+### Final interpretation
+
+```txt
+Expr
+  universal operation-backed AST
+
+Predicate
+  Expr<boolean>
+
+Rule
+  Node containing a pure Predicate
+
+SQL-safe
+  typed trait derived from operation/type/lowering facts
+
+Dependency tracking
+  derived edges, not rule-specific traversal
+```
+
+This should be an early phase, before callable/action/reactivity work.
+
+---
+
+## What to take from Phase 5.5
+
+Phase 5.5 is especially useful because it warns against over-unification. It says `StateResource` and `Provider` should not be fully collapsed, because state defines canonical shape/location/storage while a provider defines delivery. It also says `ProviderScope` and `TrackingScope` should not be fully collapsed because provider scope is about dependency identity, while tracking scope is about reactivity. 
+
+That maps perfectly to the revised kernel.
+
+### Keep the distinctions
+
+```txt
+State
+  what exists, where it lives, how it is stored
+
+Provider
+  how a requirement is satisfied
+
+ProviderScope
+  DI/lifetime identity
+
+TrackingScope
+  reactive invalidation/render/resource identity
+```
+
+Do not merge these into one vague “scope.”
+
+### But unify identity
+
+Phase 5.5’s “Unified Boundary Identity” is important. Route/component/tenant/transaction boundaries should not be ad hoc strings in multiple systems. 
+
+In the revised kernel:
+
+```txt
+BoundaryNode
+ScopeNode
+PlacementNode
+TrackingScopeNode
+ProviderScopeNode
+```
+
+with edges:
+
+```txt
+Provider --scopedTo--> Boundary
+TrackingScope --ownedBy--> Boundary
+Node --runsIn--> Boundary
+Value --placedIn--> StorageLocation
+Context --providedBy--> Provider
+```
+
+### Auto-providers survive too
+
+The `default_source` / `provides_context` idea should become a **derive pass**:
+
+```txt
+Context has default source
+  => derive Provider node
+
+StateResource provides context
+  => derive Provider node
+
+Provider inherits:
+  lifetime
+  sensitivity
+  storage/placement
+```
+
+That belongs in a `derive.providers` pass, not hardcoded constructor magic.
+
+---
+
+## What to take from Phase 7
+
+Phase 7 is very relevant. Its four unifications become dialects in the new architecture:
+
+```txt
+Boundary
+Requirement / Provider
+StorageContainer
+DesignSystem
+Graph shaking
+```
+
+Phase 7’s stated goal was to unify network boundaries, dependency injection, and physical storage as the remaining “edges of the system.”  That still holds, but these should not become new hard primitives. They should be graph dialects.
+
+## Revised Phase 7 translation
+
+### Boundary
+
+Keep the idea, revise the representation.
+
+Old:
+
+```ts
+Boundary {
+  payload: Callable | Dispatch
+  from_env
+  to_env
+  transport
+}
+```
+
+New:
+
+```txt
+BoundaryNode
+  represents cross-environment transition
+
+Edges:
+  Boundary carries Callable/Dispatch
+  Boundary from Environment
+  Boundary to Environment
+  Boundary uses Transport
+  Boundary serializes Type via Transform
+  Boundary requires Provider
+  Boundary guardedBy Rule
+```
+
+Routes, getters, mutators, server actions, RPC calls, route loaders, and app routes become views over `BoundaryNode`.
+
+### Requirement / Provider
+
+Keep the unification, but make it graph-native.
+
+```txt
+RequirementNode
+ProviderNode
+
+Edges:
+  Consumer requires Requirement
+  Provider provides Requirement
+  Provider dependsOn Requirement
+  Provider sourcedFrom Source
+  Provider placedIn StorageLocation
+  Provider scopedTo Boundary/Scope
+```
+
+This should be Effect-shaped, but not Effect-dependent.
+
+### StorageContainer
+
+Keep strongly.
+
+```txt
+StorageContainerNode
+StorageFieldNode
+
+Traits:
+  relational
+  document
+  kv
+  indexed
+  transactional
+  persistent
+
+Edges:
+  Entity storedIn StorageContainer
+  Field mapsTo StorageField
+  StorageField hasType Type
+  Index covers StorageField
+```
+
+Tables, collections, keyspaces become views over storage containers.
+
+### DesignSystem
+
+Keep, but make it a UI dialect node.
+
+```txt
+DesignSystemNode
+TokenNode
+StyleNode
+BehaviorNode
+ComponentNode
+
+Edges:
+  View uses DesignSystem
+  Component uses Token
+  Component hasBehavior Behavior
+  Style references Token
+```
+
+This should not block the kernel cutover, but it is the right direction for UI generation.
+
+### Graph shaking
+
+Keep strongly.
+
+In the revised kernel, graph shaking becomes a pass:
+
+```txt
+Pass: prune.reachableArtifacts
+
+Roots:
+  Boundary nodes
+  UI entrypoints
+  exported functions
+  forceEmit nodes
+  target roots
+
+Follow:
+  requires
+  reads
+  writes
+  guards
+  emits
+  lowersTo
+  generatedFrom
+  storedIn
+  usesType
+```
+
+The old Phase 7 plan wanted pruning from boundaries/UI entrypoints so unused entities do not generate artifacts.  That is exactly right, but it should operate over the canonical graph.
+
+---
+
+# Updated recommended phase order
+
+Given the uploaded files, I would reorder the new plan like this:
+
+```txt
+0. Kernel
+   Id / Ref, SymbolDef, Location, Metadata, Trait, Protocol,
+   Type, Node, Edge, Graph, Pass, Diagnostic, Artifact
+
+1. Operation + Expr
+   OperationDef as Node
+   Expr as operation-use AST
+   universal dependency edges
+   refinements and logic operators
+
+2. Rules
+   Rule = Node with pure Predicate body
+   delete RuleExpr
+   SQL-safe/client-safe/server-only traits
+   rule dependency edges
+
+3. Scope + Boundary Identity
+   Scope nodes
+   Boundary nodes
+   ProviderScope vs TrackingScope preserved
+   shared boundary identity refs
+
+4. Context / Requirement / Provider / State
+   RequirementNode
+   ProviderNode
+   StateResourceNode
+   derived auto-providers
+   sensitivity/lifetime/placement checks
+
+5. Callable Functions
+   ExprFunction
+   PredicateFunction
+   QueryFunction
+   ActionFunction
+   PatchFunction
+   PlanFunction
+   all as callable nodes
+
+6. Reactivity
+   KeyFamily nodes
+   Resource nodes
+   Mutation nodes
+   manual + derived invalidation edges
+   tracking scopes
+
+7. Dispatch / Effects / Events / Reactions
+   EffectDef nodes
+   Event nodes
+   Dispatch nodes
+   delivery/idempotency/outbox nodes
+   reactions/subscriptions/reducers as dispatch views
+
+8. Storage
+   StorageContainer
+   StorageField
+   Mapping edges
+   target storage dialects
+
+9. UI
+   EntityView
+   DesignSystem
+   rule-driven UI state
+
+10. Target Dialects + Codegen
+   postgres
+   react/solid
+   effect
+   openapi
+   docs/tests/devtools
+
+11. Shaking + Artifact Graph
+   reachability pruning
+   artifact source maps
+   generatedFrom/loweredTo tracing
+```
+
+## The big takeaways
+
+From Phase 4.5:
+
+> **Unify expressions and rules early.** Rules are pure predicates over universal expressions, not a separate AST.
+
+From Phase 5.5:
+
+> **Unify identities, not concepts that have different jobs.** Provider scope and tracking scope should share boundary refs, but remain distinct semantic roles.
+
+From Phase 7:
+
+> **Boundary, Requirement/Provider, StorageContainer, DesignSystem, and graph shaking all still matter.** They just become dialects over the new node/edge kernel, not standalone primitive families.
+
+My revised recommendation: update `revised_phases.md` to include these three old plans explicitly as “preserved and rebased” sections, because they contain some of the most important architectural decisions.
+

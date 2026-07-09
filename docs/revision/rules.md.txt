@@ -1,0 +1,803 @@
+Yes. Expressions and rules should become the **logic core** of the revised kernel. They should not be treated as just “some AST helpers.” They are what makes the graph *derivable*.
+
+The current repo already recognizes this: `rules.ts` says rules are typed, inspectable logical predicates used by authz, query planning, reactivity dependency extraction, and UI hint generation.  That is exactly the right framing. In the revised kernel, I’d make that idea more central.
+
+# The short model
+
+```txt id="vyquaz"
+OperationDef = Node
+  reusable semantic operation
+
+Expr = typed operation-use tree
+  pure/portable/inspectable computation
+
+CallableExpr = Expr with callable boundary semantics
+  may require context/services/effects depending on mode
+
+Rule = Node containing Expr<boolean>
+  named, pure, inspectable business truth
+
+Policy / UI / Reactivity / IVM / RLS
+  derived from Rule + Expr + operation/type/edge facts
+```
+
+The most important distinction:
+
+```txt id="j5uwwg"
+Expr is logic.
+Rule is named business meaning over logic.
+Callable is runtime boundary behavior.
+```
+
+They should share machinery, but not collapse into one vague concept.
+
+---
+
+# 1. Expressions should be operation applications
+
+An expression should not be a random AST with string operators. It should be a typed tree of **operation uses**.
+
+So instead of:
+
+```ts id="xc8aa4"
+{ kind: "eq", left, right }
+```
+
+the revised kernel expression should be closer to:
+
+```ts id="48id0v"
+expr.call(EqOperation, [left, right])
+```
+
+Where `EqOperation` is an operation-definition node.
+
+That means the compiler can ask:
+
+```txt id="iotouw"
+What operation is used?
+What types does it accept?
+What type does it return?
+Is it pure?
+Is it SQL-lowerable?
+Is it deterministic?
+Is it client-safe?
+Does it read fields?
+Does it affect predicates?
+Can it be incrementally maintained?
+```
+
+This matters because rule analysis, SQL lowering, UI hints, IVM, and optimistic updates all need the same semantic facts.
+
+## Suggested shape
+
+```ts id="6hdtwn"
+export interface Expr<
+  Out,
+  Req = never,
+  Eff = never,
+  Traits extends TraitSet = EmptyTraits,
+  Refs = never
+> {
+  readonly kind: ExprKindDef;
+  readonly id?: ExprId;
+
+  readonly output: TypeRef<Out>;
+  readonly traits: readonly TraitDef[];
+  readonly requirements: readonly RequirementRef[];
+  readonly effects: readonly EffectRef[];
+  readonly refs: readonly Ref[];
+
+  readonly loc?: Location;
+  readonly metadata?: Metadata;
+
+  readonly _out?: Out;
+  readonly _requirements?: Req;
+  readonly _effects?: Eff;
+  readonly _traits?: Traits;
+  readonly _refs?: Refs;
+}
+```
+
+Then specialized expression node kinds:
+
+```txt id="iwnhwj"
+LiteralExprKind
+VarExprKind
+RefExprKind
+FieldAccessExprKind
+OperationCallExprKind
+LetExprKind
+IfExprKind
+ExistsExprKind
+ForAllExprKind
+ProjectionExprKind
+OpaqueExprKind
+```
+
+The key one is:
+
+```ts id="dpgpvf"
+export interface OperationCallExpr<
+  Op extends OperationDefNode,
+  Args extends readonly Expr[]
+> extends Expr<
+  InferOperationOutput<Op, Args>,
+  InferOperationRequirements<Op, Args>,
+  InferOperationEffects<Op, Args>,
+  InferOperationTraits<Op, Args>,
+  InferOperationRefs<Op, Args>
+> {
+  readonly kind: typeof OperationCallExprKind;
+  readonly operation: NodeRef<typeof OperationDefNodeKind>;
+  readonly args: Args;
+}
+```
+
+This gives you “bubble up” inference from operation definitions into expressions.
+
+---
+
+# 2. Expression traits should be derived, not mostly hand-authored
+
+An expression’s properties should derive from the operations and refs inside it.
+
+Examples:
+
+```txt id="aupp2c"
+expr.eq(user.role, "admin")
+  derives:
+    ExprPure
+    ExprDeterministic
+    ExprSqlLowerable if EqOperation and operands are SQL-lowerable
+    ExprClientSafe if all refs are client-safe
+    reads User.role
+
+expr.opaque(...)
+  derives:
+    ExprOpaque
+    maybe ExprServerOnly
+    not ExprSqlLowerable unless explicitly implemented
+```
+
+Expression traits:
+
+```txt id="4iwqnw"
+ExprPure
+ExprDeterministic
+ExprPortable
+ExprOpaque
+ExprSqlLowerable
+ExprClientSafe
+ExprServerOnly
+ExprPredicate
+ExprAggregate
+ExprIncrementalizable
+```
+
+Expression edges:
+
+```txt id="8tddbo"
+ExprUsesOperation
+ExprReadsField
+ExprReadsContext
+ExprTraversesRelation
+ExprRequiresProvider
+ExprLoweredTo
+ExprDependsOn
+```
+
+This is how rules get dependency extraction “for free.”
+
+The current rules implementation manually extracts fields, entities, relations, and variables from `RuleExpr`.  In the new kernel, that becomes a general pass over expression edges.
+
+---
+
+# 3. Callable expressions should exist, but be split by purity/effects
+
+“Callable expression” can mean two different things:
+
+```txt id="5w6hq9"
+A pure expression that can be called like a function.
+A runtime callable that may read/write/effect.
+```
+
+I’d model both, but separate them.
+
+## Pure callable expression
+
+This is like a lambda / reusable expression function:
+
+```txt id="xv0bmk"
+ExprFunction
+PredicateFunction
+ProjectionFunction
+```
+
+These are pure and inspectable.
+
+```ts id="vld2td"
+const canEdit = defineExprFunction({
+  input: { actor: User, project: Project },
+  output: BooleanType,
+  body: ({ actor, project }) =>
+    and(
+      eq(actor.tenantId, project.tenantId),
+      or(eq(actor.role, AdminRole), eq(project.ownerId, actor.id))
+    ),
+});
+```
+
+Internally:
+
+```txt id="tw7hsp"
+Node(FunctionDefNodeKind)
+Trait(NodeCallable)
+Trait(FunctionPure)
+Trait(ExprBacked)
+Edge(FunctionBody): function -> expr
+Edge(Reads): function -> fields read by body
+```
+
+This is still expression land.
+
+## Runtime callable
+
+This is query/action/workflow:
+
+```txt id="5cmqez"
+Query
+Action
+Workflow
+Provider method
+Route loader
+Mutation
+```
+
+These are nodes with callable protocol. They may contain expressions, but they are not themselves just expressions.
+
+```txt id="65os2t"
+QueryNode
+  callable + readable
+  body may be QueryExpr
+
+ActionNode
+  callable + writable + effectful
+  body may be Plan/Region/Expr
+```
+
+So:
+
+```txt id="msuym2"
+CallableExpr should be pure/function-like.
+
+CallableNode should be runtime/app behavior.
+```
+
+This split prevents rules from accidentally becoming effectful runtime callbacks.
+
+---
+
+# 4. Rules should be nodes containing boolean expressions
+
+A rule should be:
+
+```txt id="ippuyv"
+Rule = named, pure, boolean Expr with business meaning
+```
+
+Not:
+
+```txt id="nfsvh5"
+Rule = arbitrary callback
+Rule = trait
+Rule = action
+Rule = policy
+```
+
+Shape:
+
+```ts id="q7hdvy"
+export type RuleNode<
+  Vars,
+  Traits extends TraitSet = EmptyTraits
+> = Node<
+  typeof RuleNodeKind,
+  Vars,
+  boolean,
+  never,
+  never,
+  never,
+  Traits<
+    Has<typeof NodeRule>,
+    Has<typeof NodeCallable>,
+    Has<typeof ExprPure>,
+    Has<typeof ExprPredicate>,
+    Traits
+  >
+>;
+```
+
+Edges:
+
+```txt id="b15i8q"
+RuleHasBody: Rule -> Expr<boolean>
+RuleReadsField: Rule -> Field
+RuleReadsContext: Rule -> Context
+RuleTraversesRelation: Rule -> Relation/Edge
+RuleGuards: Rule -> Action/Query/View/Route
+RuleLowersTo: Rule -> SQLPredicate/RLSPolicy/ClientHint
+RuleDerives: Rule -> UIState/Reactivity/DerivedView
+```
+
+This keeps rules graph-native.
+
+## Rule traits
+
+```txt id="1zzahi"
+RulePure
+RulePredicate
+RuleSqlLowerable
+RuleClientSafe
+RuleServerOnly
+RuleAuthoritative
+RuleHintOnly
+RuleIncrementalizable
+RuleDependsOnBeforeState
+RuleDependsOnAfterState
+```
+
+Some of these are derived:
+
+```txt id="7e7np7"
+RuleSqlLowerable
+  if body expr is SQL-lowerable and all refs can be bound in SQL target.
+
+RuleClientSafe
+  if no server-only fields/contexts are read.
+
+RuleIncrementalizable
+  if dependency + operation/law analysis can maintain it incrementally.
+```
+
+---
+
+# 5. Rules are more powerful than policies
+
+Policies should be **interpretations of rules**, not their own logic silo.
+
+Current `authz.ts` has separate auth conditions like `AllowAuthenticated`, `AllowPublic`, `AllowRole`, `AllowOwner`, `AllowRelation`, and `OrCondition`, while also allowing rule-backed policies.  In the revised model, those helpers should create rule/claim expressions.
+
+Example:
+
+```ts id="bzjx37"
+allowRole(AdminRole)
+```
+
+should lower to:
+
+```txt id="bj6jk1"
+Rule body:
+  actor.role == AdminRole
+
+Edges:
+  RuleReadsField actor.role
+  RuleGuards action/policy
+```
+
+`allowOwner(field)` lowers to:
+
+```txt id="9r62i9"
+Rule body:
+  actor.id == resource.ownerId
+
+Edges:
+  RuleReadsField resource.ownerId
+  RuleReadsContext actor.id
+```
+
+`allowRelation(relation)` lowers to:
+
+```txt id="e6s7jb"
+exists relation where relation.actorId == actor.id ...
+```
+
+That way auth, UI hints, SQL/RLS, tests, and docs all consume the same rule machinery.
+
+---
+
+# 6. Rules should drive UI state
+
+Rules are perfect for UI because they are pure and inspectable.
+
+Examples:
+
+```txt id="58gbqx"
+canEditField(actor, invoice, field)
+isVisible(actor, resource)
+canSubmit(formState)
+isTransitionAllowed(order, "shipped")
+```
+
+Graph:
+
+```txt id="vrcc2w"
+Edge(Enables): Rule -> Button
+Edge(Disables): Rule -> ActionControl
+Edge(Hides): Rule -> FieldView
+Edge(Validates): Rule -> Field/Form
+```
+
+Then UI generation can derive:
+
+```txt id="2wq55z"
+button disabled
+field read-only
+field hidden
+validation message
+submit precondition
+client hint
+server enforcement fallback
+```
+
+But the rule must carry placement:
+
+```txt id="5e6s07"
+client-safe rule -> emit client UI hint
+server-only rule -> server guard only; UI gets degraded hint/pending state
+SQL-lowerable rule -> RLS/query predicate
+```
+
+This is much better than separate “form rules.”
+
+---
+
+# 7. Rules should drive reactivity and IVM
+
+Rules are a dependency surface.
+
+The current rule system already extracts dependencies: entities, fields, relations, variables.  That is exactly what reactivity needs.
+
+In revised graph form:
+
+```txt id="3lspxk"
+Rule reads User.role
+Rule reads Project.ownerId
+Action writes Project.ownerId
+Query uses Rule
+View depends on Query
+
+=> action may invalidate query/view
+```
+
+For IVM, add operation semantics:
+
+```txt id="0daeqd"
+Rule predicate:
+  Project.status == "active"
+
+Operation:
+  SetField(Project.status, "archived")
+
+Operation properties:
+  patchable
+  deterministic
+  has before/after state
+
+Predicate affect analysis:
+  active -> archived means row leaves active-projects view
+
+=> emit incremental remove patch instead of refetch
+```
+
+So the IVM pass needs:
+
+```txt id="b7a6wr"
+Rule expression dependency graph
+Operation used by action
+Operation laws/properties
+Before/after availability
+Query/view materialization shape
+```
+
+Rules are the “what changes matter?” layer.
+
+---
+
+# 8. Expression dialects
+
+I’d organize expression support into dialects, MLIR-style:
+
+```txt id="h1pvbj"
+expr.core
+  literal, var, ref, field, call, let, if
+
+expr.logic
+  and, or, not, implies, eq, compare
+
+expr.relational
+  exists, forall, join traversal, relation field
+
+expr.aggregate
+  count, sum, min, max, group
+
+expr.patch
+  set field, append, remove, increment, transition
+
+expr.opaque
+  controlled escape hatches
+```
+
+But all are operation-backed where possible.
+
+For example:
+
+```txt id="8v1adj"
+eq
+  operation node: EqOperation
+  expr node: OperationCallExpr
+
+and
+  operation node: AndOperation
+  laws: associative, commutative, identity true
+  expr node: OperationCallExpr
+
+sum
+  operation node: SumReducer
+  laws: associative, commutative, identity 0
+```
+
+This lets expression simplification/canonicalization work:
+
+```txt id="2jdkq3"
+and(true, x) -> x
+and(x, x) -> x if idempotent
+or(false, x) -> x
+not(not(x)) -> x
+```
+
+Those are law-driven rewrites.
+
+---
+
+# 9. Rule builder ergonomics
+
+Public APIs should remain nice.
+
+Something like:
+
+```ts id="s1360c"
+const canEditProject = gen.rule("canEditProject", {
+  vars: {
+    actor: User,
+    project: Project,
+  },
+  when: ({ actor, project }) =>
+    actor.tenantId.eq(project.tenantId).and(
+      actor.role.eq(Role.Admin).or(
+        project.ownerId.eq(actor.id)
+      )
+    ),
+});
+```
+
+This should emit:
+
+```txt id="cgmzje"
+Node(RuleNodeKind): canEditProject
+Expr graph: and(eq(...), or(...))
+Edges:
+  RuleHasBody
+  RuleReadsField actor.tenantId
+  RuleReadsField project.tenantId
+  RuleReadsField actor.role
+  RuleReadsField project.ownerId
+  RuleReadsField actor.id
+Traits:
+  RulePure
+  RulePredicate
+  maybe RuleSqlLowerable
+  maybe RuleClientSafe
+```
+
+For SQL-only rules:
+
+```ts id="c0hl1o"
+gen.rule.sql("activeProject", { project: Project }, ({ project }) =>
+  project.status.eq(ProjectStatus.Active)
+);
+```
+
+This should restrict builder operations to SQL-lowerable ones.
+
+For server-only rules:
+
+```ts id="zf5c4j"
+gen.rule.server("riskCheck", { actor: User }, ({ actor }) =>
+  expr.opaque(ServerRiskCheck, { actorId: actor.id })
+);
+```
+
+This should be allowed, but explicitly lose SQL/client/IVM capabilities.
+
+---
+
+# 10. Callable expressions and rules relationship
+
+I’d define:
+
+```txt id="5tmlj5"
+Expr
+  anonymous typed logic
+
+ExprFunction
+  named reusable pure expression
+
+Rule
+  named reusable boolean ExprFunction with business semantics
+
+Query
+  runtime callable read node
+
+Action
+  runtime callable write/effect node
+```
+
+So:
+
+```txt id="nnn1pr"
+Rule is a special ExprFunction.
+Query/Action may be guarded by Rule.
+Query/Action may contain Exprs.
+Action applies Operations.
+Rule observes Operations indirectly through fields/queries.
+```
+
+Graph:
+
+```txt id="1t83er"
+RuleNode --hasBody--> Expr
+ActionNode --guardedBy--> RuleNode
+ActionNode --appliesOperation--> OperationDefNode
+QueryNode --filtersBy--> RuleNode
+ViewNode --enabledWhen--> RuleNode
+```
+
+This is compositional and traceable.
+
+---
+
+# 11. Opaque expressions must be explicit
+
+Opaque callbacks are unavoidable, but they should be typed and capability-losing.
+
+```ts id="axbwss"
+expr.opaque({
+  name: "serverRiskCheck",
+  input,
+  output: BooleanType,
+  placement: ServerOnly,
+  refs: [actor.id],
+  traits: [ExprPure, ExprServerOnly],
+});
+```
+
+Diagnostics should say:
+
+```txt id="pnayml"
+cannot lower to SQL
+cannot expose to client
+dependency extraction is conservative
+IVM unavailable
+reactivity falls back to invalidation/refetch
+```
+
+This gives escape hatches without destroying the compiler story.
+
+---
+
+# 12. Derived rule views
+
+The current rule system already has `DerivedRuleView`, with input vars, output type, body, projection, maintenance mode, and dependency extraction/checking.  In the revised kernel, I’d keep that idea, but express it as graph nodes:
+
+```txt id="w77jtx"
+DerivedRuleView = Node(DerivedViewNodeKind)
+  has body Rule/Expr
+  projects variables/fields
+  has maintenance trait:
+    incremental | rebuild | manual
+```
+
+Edges:
+
+```txt id="2rz3uo"
+DerivedViewUsesRule
+DerivedViewProjectsField
+DerivedViewDependsOnField
+DerivedViewMaintenancePlan
+```
+
+Then IVM becomes a lowering target:
+
+```txt id="w2pm9d"
+DerivedRuleView + Rule deps + operation semantics
+  -> IVM plan
+  -> SQL materialized view / trigger / app-side reactive resource
+```
+
+---
+
+# 13. Revised phase implications
+
+The old Phase 5 had “Rule Predicate Unification or Lowering.” That is still relevant, but it should be stronger now. Instead of only lowering `RuleExpr -> Predicate`, the new phase should be:
+
+```txt id="vqy3k8"
+Expression and Rule Kernel
+
+1. Define operation-backed Expr.
+2. Define RuleNode as named boolean Expr.
+3. Lower existing RuleExpr into kernel Expr.
+4. Replace rule-specific dependency extraction with expression edge derivation.
+5. Add rule placement analysis:
+   SQL-lowerable / server-only / client-safe / IVM-capable.
+6. Make auth/UI/reactivity consume RuleNode + Expr edges.
+```
+
+Old `RuleExpr` can remain as a compatibility frontend during migration, but the canonical IR should be kernel `Expr`.
+
+---
+
+# 14. Suggested diagnostics
+
+```txt id="v1gnan"
+expr:operation-arg-type-mismatch
+expr:operation-not-supported-for-type
+expr:effect-not-allowed-in-pure-expr
+expr:opaque-not-portable
+expr:sql-lowering-unsupported
+expr:client-unsafe-ref
+expr:unknown-variable
+expr:unbound-ref
+
+rule:body-not-boolean
+rule:unknown-variable
+rule:effect-not-allowed
+rule:server-only-client-exposure
+rule:not-sql-lowerable
+rule:unsafe-negation
+rule:dependency-extraction-conservative
+rule:ivm-not-incrementalizable
+rule:placement-conflict
+
+callable:missing-input-type
+callable:missing-output-type
+callable:guard-not-rule
+callable:body-effect-mismatch
+```
+
+---
+
+# Final recommendation
+
+I’d make expressions/rules one of the first dialects after the hard kernel:
+
+```txt id="jkdkp8"
+1. kernel symbols/traits/nodes/edges/types/operations
+2. expression dialect
+3. rule dialect
+4. callable dialect
+5. auth/reactivity/ui/storage consume rules
+```
+
+The compact model:
+
+```txt id="9qyuo3"
+Operations define what logic can do.
+Expressions apply operations to values.
+Rules name important boolean expressions.
+Callable nodes use rules and expressions at runtime boundaries.
+Edges expose reads/writes/guards/lowerings.
+Traits/laws classify what is pure, portable, SQL-lowerable, client-safe, reversible, incrementalizable.
+Passes derive auth, RLS, UI state, reactivity, IVM, optimistic behavior, docs, and tests.
+```
+
+That keeps rules as the most powerful part of the library — not because they are a special-case subsystem, but because they become the pure, named, inspectable business-logic layer that every other subsystem can safely consume.

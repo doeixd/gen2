@@ -1,0 +1,5385 @@
+/*
+ * Gen2 / Dirived Ultimate API Example v3
+ * ======================================
+ *
+ * This is a target-shape example, not current implementation code.
+ *
+ * It demonstrates the final intended authoring experience after integrating:
+ *
+ * - tiny semantic ontology: Node / Edge / Trait
+ * - app kits and feature modules
+ * - graph-native requirements/providers/placement
+ * - storage locations as placement nodes with traits
+ * - domain entities, relations, invariants, policies
+ * - semantic types, variants, operations, laws, merge strategies
+ * - queries, projections, resources, mutations, optimistic plans
+ * - rule-derived reactivity and IVM plans
+ * - forms and lists as UI recipes over actions/resources
+ * - boundary/transport plans
+ * - dispatch, queues, outbox, workers, reactions
+ * - semantic obligations for tests/docs/devtools
+ * - capability reports, explain/trace, imports, semantic diff
+ * - mandatory target legalization before emission
+ * - graph witness .d.ts generation
+ */
+
+import {
+  createGen,
+  dialects,
+  targets,
+  traits,
+  laws,
+  assurance,
+  expr,
+  merge,
+  invariant,
+  diagnostic,
+  delivery,
+  idempotency,
+  retry,
+  serialization,
+  sensitivity,
+  type InferDecoded,
+  type InferEntity,
+  type GraphWitnessOf,
+} from "@dirived/gen2";
+
+// =============================================================================
+// 0. Create Gen2 compiler instance
+// =============================================================================
+
+export const gen = createGen("opsdesk")
+  // Kernel-standard dialects.
+  .use(dialects.core)
+  .use(dialects.symbol)
+  .use(dialects.placement)
+  .use(dialects.requirement)
+  .use(dialects.provider)
+  .use(dialects.type)
+  .use(dialects.expr)
+  .use(dialects.operation)
+  .use(dialects.rule)
+  .use(dialects.law)
+  .use(dialects.merge)
+  .use(dialects.diagnostic)
+  .use(dialects.obligation)
+  .use(dialects.artifact)
+
+  // App semantics.
+  .use(dialects.domain)
+  .use(dialects.auth)
+  .use(dialects.callable)
+  .use(dialects.query)
+  .use(dialects.reactivity)
+  .use(dialects.resource)
+  .use(dialects.state)
+  .use(dialects.dataflow)
+  .use(dialects.dispatch)
+  .use(dialects.boundary)
+  .use(dialects.ui)
+  .use(dialects.storage)
+  .use(dialects.deployment)
+  .use(dialects.variant)
+  .use(dialects.invariant)
+
+  // Targets.
+  .use(targets.postgres)
+  .use(targets.effect)
+  .use(targets.react)
+  .use(targets.jsonRender)
+  .use(targets.openapi)
+  .use(targets.alchemy)
+  .use(targets.tests)
+  .use(targets.docs)
+  .use(targets.graph)
+  .use(targets.typescript);
+
+const t = gen.type;
+const domain = gen.domain;
+const rule = gen.rule;
+const query = gen.query;
+const callable = gen.callable;
+const ui = gen.ui;
+const storage = gen.storage;
+const placement = gen.placement;
+const provider = gen.provider;
+const requirement = gen.requirement;
+const boundary = gen.boundary;
+const dispatch = gen.dispatch;
+const dataflow = gen.dataflow;
+const deploy = gen.deployment;
+const obligation = gen.obligation;
+
+// =============================================================================
+// 1. App kit: SaaS defaults and graph conventions
+// =============================================================================
+
+export const app = gen.kit.saas("OpsDesk", {
+  tenantModel: "organization",
+  auth: "session-cookie",
+  database: targets.postgres,
+  server: targets.effect,
+  web: targets.react,
+  deployment: targets.alchemy,
+
+  defaults: {
+    timestamps: true,
+    audit: true,
+    optimisticMutations: true,
+    jsonRender: true,
+    generatedTests: true,
+    generatedDocs: true,
+    strictDiagnostics: true,
+    graphWitness: true,
+  },
+
+  naming: {
+    database: storage.naming.snakeCase(),
+    artifacts: gen.artifacts.naming.byModule(),
+  },
+});
+
+// Kit-generated runtime boundaries are graph nodes.
+export const {
+  ClientBoundary,
+  ServerBoundary,
+  WorkerBoundary,
+  QueueBoundary,
+  DatabaseBoundary,
+  EdgeBoundary,
+} = app.boundaries;
+
+// =============================================================================
+// 2. Placement and storage locations
+// =============================================================================
+
+export const ServerMemory = placement.storage("ServerMemory", {
+  kind: "server.memory",
+  traits: [
+    placement.traits.ephemeral,
+    placement.traits.sensitiveSafe,
+    placement.traits.serverReadable,
+    placement.traits.serverWritable,
+  ],
+});
+
+export const RequestStorage = placement.storage("RequestStorage", {
+  kind: "server.request",
+  traits: [
+    placement.traits.ephemeral,
+    placement.traits.sensitiveSafe,
+    placement.traits.serverReadable,
+    placement.traits.serverWritable,
+  ],
+});
+
+export const SessionCookieStorage = placement.storage("SessionCookieStorage", {
+  kind: "cookie.session",
+  ttl: "7d",
+  traits: [
+    placement.traits.persistent,
+    placement.traits.clientReadable,
+    placement.traits.serverReadable,
+  ],
+});
+
+export const ClientSessionStorage = placement.storage("ClientSessionStorage", {
+  kind: "client.sessionStorage",
+  traits: [
+    placement.traits.ephemeral,
+    placement.traits.clientReadable,
+    placement.traits.clientWritable,
+  ],
+});
+
+export const ClientQueryCache = placement.storage("ClientQueryCache", {
+  kind: "client.queryCache",
+  traits: [
+    placement.traits.ephemeral,
+    placement.traits.clientReadable,
+    placement.traits.clientWritable,
+  ],
+});
+
+export const DurableQueueStorage = placement.storage("DurableQueueStorage", {
+  kind: "server.durableQueue",
+  traits: [
+    placement.traits.persistent,
+    placement.traits.sensitiveSafe,
+    placement.traits.serverReadable,
+    placement.traits.serverWritable,
+  ],
+});
+
+// =============================================================================
+// 3. Requirements, providers, sensitivity, and lifetimes
+// =============================================================================
+
+export const OrgRole = t.enum("OrgRole", [
+  "owner",
+  "admin",
+  "responder",
+  "viewer",
+] as const);
+
+export const AuthSessionType = t.object("AuthSession", {
+  userId: t.uuid,
+  organizationId: t.uuid,
+  role: OrgRole,
+  teamIds: t.array(t.uuid),
+});
+
+export const RequestClockType = t.object("RequestClock", {
+  now: t.datetime,
+});
+
+export const AuthSession = requirement.define("AuthSession", {
+  type: AuthSessionType,
+  sensitivity: sensitivity.auth(),
+});
+
+export const RequestClock = requirement.define("RequestClock", {
+  type: RequestClockType,
+  sensitivity: sensitivity.serverOnly(),
+});
+
+export const EmailApiKey = requirement.define("EmailApiKey", {
+  type: t.string,
+  sensitivity: sensitivity.secret(),
+});
+
+export const SlackWebhookUrl = requirement.define("SlackWebhookUrl", {
+  type: t.url,
+  sensitivity: sensitivity.secret(),
+});
+
+export const ClientAuthSessionProjection = app.projection("ClientAuthSession", {
+  from: AuthSession,
+  placement: ClientBoundary,
+  sensitivity: sensitivity.user(),
+  fields: {
+    userId: AuthSessionType.fields.userId,
+    organizationId: AuthSessionType.fields.organizationId,
+    role: AuthSessionType.fields.role,
+    teamIds: AuthSessionType.fields.teamIds,
+  },
+});
+
+export const AuthSessionProvider = provider.define("AuthSessionProvider", {
+  provides: AuthSession,
+  source: provider.source.cookie("opsdesk_session", {
+    type: AuthSessionType,
+    storage: SessionCookieStorage,
+  }),
+  placement: ServerBoundary,
+  storage: RequestStorage,
+  lifetime: "request",
+  sensitivity: sensitivity.auth(),
+  clientProjection: ClientAuthSessionProjection,
+});
+
+export const ClockProvider = provider.define("ClockProvider", {
+  provides: RequestClock,
+  source: provider.source.runtime("clock", { type: RequestClockType }),
+  placement: ServerBoundary,
+  lifetime: "request",
+  sensitivity: sensitivity.serverOnly(),
+});
+
+export const EmailProvider = provider.define("EmailProvider", {
+  provides: EmailApiKey,
+  source: provider.source.envVar("EMAIL_API_KEY", { type: t.string }),
+  placement: WorkerBoundary,
+  lifetime: "app",
+  sensitivity: sensitivity.secret(),
+});
+
+export const SlackProvider = provider.define("SlackProvider", {
+  provides: SlackWebhookUrl,
+  source: provider.source.envVar("SLACK_WEBHOOK_URL", { type: t.url }),
+  placement: WorkerBoundary,
+  lifetime: "app",
+  sensitivity: sensitivity.secret(),
+});
+
+export const ProviderModule = app.module("providers").pipe(
+  ServerMemory,
+  RequestStorage,
+  SessionCookieStorage,
+  ClientSessionStorage,
+  ClientQueryCache,
+  DurableQueueStorage,
+  AuthSession,
+  RequestClock,
+  EmailApiKey,
+  SlackWebhookUrl,
+  ClientAuthSessionProjection,
+  AuthSessionProvider,
+  ClockProvider,
+  EmailProvider,
+  SlackProvider,
+);
+
+// =============================================================================
+// 4. Domain: organizations, users, teams, projects
+// =============================================================================
+
+export class Organization extends domain.entity.class("Organization", {
+  traits: [traits.tenantRoot],
+
+  fields: {
+    id: domain.field(t.uuid).primary(),
+    slug: domain.field(t.string).unique(),
+    name: domain.field(t.string),
+    plan: domain.field(t.enum("Plan", ["free", "team", "enterprise"] as const)),
+    createdAt: domain.field(t.datetime),
+  },
+
+  invariants: [
+    invariant.unique("organization.slug", {
+      field: "slug",
+      diagnostic: diagnostic.define("org.slug.not_unique", {
+        severity: "error",
+        message: "Organization slug must be unique.",
+        remediation: {
+          kind: "suggest_value",
+          field: "slug",
+        },
+      }),
+    }),
+  ],
+}) {}
+
+export class User extends domain.entity.class("User", {
+  fields: {
+    id: domain.field(t.uuid).primary(),
+    organizationId: domain.field(Organization.fields.id.type).indexed(),
+    email: domain.field(t.email).unique(),
+    displayName: domain.field(t.string),
+    role: domain.field(OrgRole),
+    createdAt: domain.field(t.datetime),
+    disabledAt: domain.field(t.optional(t.datetime)),
+  },
+
+  indexes: [
+    domain.index("user_by_org_email", {
+      fields: ["organizationId", "email"],
+      unique: true,
+    }),
+  ],
+}) {}
+
+export class Team extends domain.entity.class("Team", {
+  fields: {
+    id: domain.field(t.uuid).primary(),
+    organizationId: domain.field(Organization.fields.id.type).indexed(),
+    name: domain.field(t.string),
+    createdAt: domain.field(t.datetime),
+  },
+}) {}
+
+export class Project extends domain.entity.class("Project", {
+  fields: {
+    id: domain.field(t.uuid).primary(),
+    organizationId: domain.field(Organization.fields.id.type).indexed(),
+    owningTeamId: domain.field(Team.fields.id.type).indexed(),
+    name: domain.field(t.string),
+    slug: domain.field(t.string),
+    createdAt: domain.field(t.datetime),
+    archivedAt: domain.field(t.optional(t.datetime)),
+  },
+
+  indexes: [
+    domain.index("project_by_org_slug", {
+      fields: ["organizationId", "slug"],
+      unique: true,
+    }),
+  ],
+}) {}
+
+export const CoreDomainModule = app.module("core-domain").pipe(
+  Organization,
+  User,
+  Team,
+  Project,
+
+  domain.relation("OrganizationUsers", {
+    from: Organization,
+    to: User,
+    kind: "one_to_many",
+    fromField: Organization.fields.id,
+    toField: User.fields.organizationId,
+    integrity: domain.integrity.databaseForeignKey({ onDelete: "restrict" }),
+  }),
+
+  domain.relation("OrganizationProjects", {
+    from: Organization,
+    to: Project,
+    kind: "one_to_many",
+    fromField: Organization.fields.id,
+    toField: Project.fields.organizationId,
+  }),
+
+  domain.relation("TeamProjects", {
+    from: Team,
+    to: Project,
+    kind: "one_to_many",
+    fromField: Team.fields.id,
+    toField: Project.fields.owningTeamId,
+  }),
+);
+
+// =============================================================================
+// 5. Incident domain, lifecycle, merge, and invariants
+// =============================================================================
+
+export const Severity = t.enum("IncidentSeverity", [
+  "sev1",
+  "sev2",
+  "sev3",
+  "sev4",
+] as const);
+
+export const NotificationChannel = t.enum("NotificationChannel", [
+  "email",
+  "slack",
+  "sms",
+] as const);
+
+export const IncidentStatus = gen.variant.stateMachine("IncidentStatus", {
+  states: ["open", "acknowledged", "mitigated", "resolved", "cancelled"] as const,
+  transitions: {
+    open: ["acknowledged", "cancelled"],
+    acknowledged: ["mitigated", "resolved", "cancelled"],
+    mitigated: ["resolved"],
+    resolved: [],
+    cancelled: [],
+  },
+  terminal: ["resolved", "cancelled"] as const,
+});
+
+export class Incident extends domain.entity.class("Incident", {
+  traits: [traits.audited, traits.syncable],
+
+  merge: merge.entityPolicy("IncidentMergePolicy", {
+    default: merge.fieldWise({ conflict: "may_conflict" }),
+
+    fields: {
+      status: merge.stateMachine({
+        machine: IncidentStatus,
+        conflict: merge.manual({
+          surface: "IncidentConflictResolutionView",
+        }),
+        laws: [
+          laws.validStateTransition({ assurance: assurance.byConstruction() }),
+        ],
+      }),
+
+      severity: merge.lastWriteWins({ clock: "server" }),
+      summary: merge.lastWriteWins({ clock: "server" }),
+      updatedAt: merge.max({ assurance: assurance.byConstruction() }),
+    },
+  }),
+
+  fields: {
+    id: domain.field(t.uuid).primary(),
+    organizationId: domain.field(Organization.fields.id.type).indexed(),
+    projectId: domain.field(Project.fields.id.type).indexed(),
+    title: domain.field(t.string),
+    summary: domain.field(t.optional(t.string)),
+    severity: domain.field(Severity),
+    status: domain.field(IncidentStatus.type),
+    createdByUserId: domain.field(User.fields.id.type),
+    assignedTeamId: domain.field(t.optional(Team.fields.id.type)),
+    acknowledgedByUserId: domain.field(t.optional(User.fields.id.type)),
+    acknowledgedAt: domain.field(t.optional(t.datetime)),
+    mitigatedAt: domain.field(t.optional(t.datetime)),
+    resolvedAt: domain.field(t.optional(t.datetime)),
+    cancelledAt: domain.field(t.optional(t.datetime)),
+    createdAt: domain.field(t.datetime),
+    updatedAt: domain.field(t.datetime),
+  },
+
+  invariants: [
+    invariant.required("incident.title", {
+      field: "title",
+      diagnostic: diagnostic.define("incident.title.required", {
+        severity: "error",
+        message: "Incident title is required.",
+      }),
+    }),
+
+    invariant.custom("sev1_requires_assigned_team", {
+      subject: "Incident",
+      when: ({ incident }) => expr.eq(incident.severity, "sev1"),
+      must: ({ incident }) => expr.isNotNull(incident.assignedTeamId),
+      diagnostic: diagnostic.define("incident.sev1.requires_team", {
+        severity: "error",
+        audience: ["developer", "ai_agent", "user"],
+        message: "SEV1 incidents must have an assigned team.",
+        remediation: {
+          kind: "set_field",
+          field: "assignedTeamId",
+        },
+      }),
+    }),
+  ],
+}) {}
+
+export class IncidentUpdate extends domain.entity.class("IncidentUpdate", {
+  traits: [traits.appendOnly],
+
+  fields: {
+    id: domain.field(t.uuid).primary(),
+    organizationId: domain.field(Organization.fields.id.type).indexed(),
+    incidentId: domain.field(Incident.fields.id.type).indexed(),
+    authorUserId: domain.field(User.fields.id.type),
+    body: domain.field(t.string),
+    createdAt: domain.field(t.datetime),
+  },
+}) {}
+
+export class AuditLog extends domain.entity.class("AuditLog", {
+  traits: [traits.appendOnly, traits.serverOnly],
+
+  fields: {
+    id: domain.field(t.uuid).primary(),
+    organizationId: domain.field(Organization.fields.id.type).indexed(),
+    actorType: domain.field(t.enum("AuditActorType", ["user", "system", "worker"] as const)),
+    actorUserId: domain.field(t.optional(User.fields.id.type)),
+    action: domain.field(t.string),
+    entityRef: domain.field(t.string),
+    payload: domain.field(t.json),
+    createdAt: domain.field(t.datetime),
+  },
+}) {}
+
+export class NotificationPreference extends domain.entity.class("NotificationPreference", {
+  fields: {
+    id: domain.field(t.uuid).primary(),
+    organizationId: domain.field(Organization.fields.id.type).indexed(),
+    userId: domain.field(User.fields.id.type).indexed(),
+    channel: domain.field(NotificationChannel),
+    enabled: domain.field(t.boolean),
+    minimumSeverity: domain.field(Severity),
+  },
+}) {}
+
+export const IncidentDomainModule = app.module("incident-domain").pipe(
+  Severity,
+  NotificationChannel,
+  IncidentStatus,
+  Incident,
+  IncidentUpdate,
+  AuditLog,
+  NotificationPreference,
+
+  domain.relation("ProjectIncidents", {
+    from: Project,
+    to: Incident,
+    kind: "one_to_many",
+    fromField: Project.fields.id,
+    toField: Incident.fields.projectId,
+    integrity: domain.integrity.databaseForeignKey({ onDelete: "cascade" }),
+  }),
+
+  domain.relation("IncidentUpdates", {
+    from: Incident,
+    to: IncidentUpdate,
+    kind: "one_to_many",
+    fromField: Incident.fields.id,
+    toField: IncidentUpdate.fields.incidentId,
+    integrity: domain.integrity.databaseForeignKey({ onDelete: "cascade" }),
+  }),
+);
+
+// =============================================================================
+// 6. Client-safe projections
+// =============================================================================
+
+export const IncidentCard = app.projection("IncidentCard", {
+  from: Incident,
+  placement: ClientBoundary,
+  sensitivity: sensitivity.user(),
+
+  fields: {
+    id: Incident.fields.id,
+    organizationId: Incident.fields.organizationId,
+    projectId: Incident.fields.projectId,
+    title: Incident.fields.title,
+    severity: Incident.fields.severity,
+    status: Incident.fields.status,
+    assignedTeamId: Incident.fields.assignedTeamId,
+    updatedAt: Incident.fields.updatedAt,
+  },
+});
+
+export const IncidentDetail = app.projection("IncidentDetail", {
+  from: Incident,
+  placement: ClientBoundary,
+  sensitivity: sensitivity.user(),
+
+  fields: {
+    id: Incident.fields.id,
+    organizationId: Incident.fields.organizationId,
+    projectId: Incident.fields.projectId,
+    title: Incident.fields.title,
+    summary: Incident.fields.summary,
+    severity: Incident.fields.severity,
+    status: Incident.fields.status,
+    assignedTeamId: Incident.fields.assignedTeamId,
+    acknowledgedByUserId: Incident.fields.acknowledgedByUserId,
+    acknowledgedAt: Incident.fields.acknowledgedAt,
+    mitigatedAt: Incident.fields.mitigatedAt,
+    resolvedAt: Incident.fields.resolvedAt,
+    createdAt: Incident.fields.createdAt,
+    updatedAt: Incident.fields.updatedAt,
+  },
+});
+
+// =============================================================================
+// 7. Rules and policy
+// =============================================================================
+
+export const canViewIncident = rule.define("canViewIncident")((ctx, r) =>
+  r
+    .vars({
+      session: AuthSession,
+      incident: Incident,
+    })
+    .when(({ session, incident }) =>
+      expr.eq(session.organizationId, incident.organizationId),
+    )
+    .traits([traits.sqlLowerable]),
+);
+
+export const canManageIncident = rule.define("canManageIncident")((ctx, r) =>
+  r
+    .vars({
+      session: AuthSession,
+      incident: Incident,
+    })
+    .when(({ session, incident }) =>
+      expr.and(
+        expr.eq(session.organizationId, incident.organizationId),
+        expr.or(
+          expr.eq(session.role, "owner"),
+          expr.eq(session.role, "admin"),
+          expr.and(
+            expr.eq(session.role, "responder"),
+            expr.includes(session.teamIds, incident.assignedTeamId),
+          ),
+        ),
+      ),
+    )
+    .traits([traits.sqlLowerable]),
+);
+
+export const canAcknowledgeIncident = rule.define("canAcknowledgeIncident")((ctx, r) =>
+  r
+    .vars({
+      session: AuthSession,
+      incident: Incident,
+    })
+    .when(({ session, incident }) =>
+      expr.and(
+        canManageIncident.call({ session, incident }),
+        expr.eq(incident.status, "open"),
+      ),
+    ),
+);
+
+export const canResolveIncident = rule.define("canResolveIncident")((ctx, r) =>
+  r
+    .vars({
+      session: AuthSession,
+      incident: Incident,
+    })
+    .when(({ session, incident }) =>
+      expr.and(
+        canManageIncident.call({ session, incident }),
+        expr.or(
+          expr.eq(incident.status, "acknowledged"),
+          expr.eq(incident.status, "mitigated"),
+        ),
+      ),
+    ),
+);
+
+export const IncidentPolicy = app.auth.tenantPolicy("IncidentPolicy", {
+  tenant: Organization,
+  entity: Incident,
+
+  rules: {
+    read: canViewIncident,
+    update: canManageIncident,
+  },
+
+  enforce: {
+    read: ["server", "database"],
+    update: ["server"],
+  },
+
+  exposeClientHints: true,
+});
+
+export const AuthModule = app.module("authz").pipe(
+  canViewIncident,
+  canManageIncident,
+  canAcknowledgeIncident,
+  canResolveIncident,
+  IncidentPolicy,
+);
+
+// =============================================================================
+// 8. Operations, actions, lifecycle recipes, and events
+// =============================================================================
+
+export const SetField = gen.operation.define("SetField", {
+  input: t.object("SetFieldInput", {
+    field: t.ref("FieldRef"),
+    value: t.unknown,
+  }),
+
+  output: t.object("SetFieldOutput", {
+    previousValue: t.unknown,
+    nextValue: t.unknown,
+  }),
+
+  traits: [traits.deterministic, traits.patchable, traits.invertible],
+
+  laws: [
+    laws.rollbackSafe({ assurance: assurance.byConstruction() }),
+  ],
+
+  protocols: {
+    patch: gen.operation.patchProtocol({
+      producePatch: ({ input }) => gen.patch.setField(input.field, input.value),
+      invertPatch: ({ output }) => gen.patch.setField(output.field, output.previousValue),
+    }),
+  },
+});
+
+export const AppendIncidentUpdate = gen.operation.define("AppendIncidentUpdate", {
+  input: t.object("AppendIncidentUpdateInput", {
+    incidentId: Incident.fields.id.type,
+    updateId: IncidentUpdate.fields.id.type,
+  }),
+
+  output: t.void,
+
+  traits: [traits.deterministic, traits.appendOnly, traits.offlineReplaySafe],
+
+  laws: [
+    laws.idempotent({
+      key: ({ input }) => input.updateId,
+      assurance: assurance.byConstruction(),
+    }),
+  ],
+});
+
+export const IncidentLifecycle = app.recipes.stateMachineFeature("IncidentLifecycle", {
+  entity: Incident,
+  state: Incident.fields.status,
+  machine: IncidentStatus,
+  timestampField: Incident.fields.updatedAt,
+
+  audit: {
+    entity: AuditLog,
+    actorContext: AuthSession,
+  },
+
+  transitionOperation: {
+    traits: [traits.deterministic, traits.patchable, traits.serverOnly],
+    laws: [
+      laws.validStateTransition({ machine: IncidentStatus, assurance: assurance.byConstruction() }),
+      laws.rollbackSafe({ assurance: assurance.byConstruction() }),
+    ],
+  },
+
+  transitions: {
+    acknowledge: {
+      name: "acknowledgeIncident",
+      from: "open",
+      to: "acknowledged",
+
+      input: {
+        incidentId: Incident.fields.id.type,
+      },
+
+      requires: [AuthSession, RequestClock],
+      guard: canAcknowledgeIncident,
+
+      set: ({ session, clock }) => ({
+        acknowledgedByUserId: session.userId,
+        acknowledgedAt: clock.now,
+        updatedAt: clock.now,
+      }),
+
+      event: {
+        name: "IncidentAcknowledged",
+        payload: ({ input, session, clock, incident }) => ({
+          eventId: app.uuid(),
+          organizationId: incident.organizationId,
+          incidentId: input.incidentId,
+          acknowledgedByUserId: session.userId,
+          occurredAt: clock.now,
+        }),
+      },
+
+      optimistic: "derive",
+      offline: true,
+    },
+
+    resolve: {
+      name: "resolveIncident",
+      from: ["acknowledged", "mitigated"],
+      to: "resolved",
+
+      input: {
+        incidentId: Incident.fields.id.type,
+        resolutionSummary: t.string,
+      },
+
+      requires: [AuthSession, RequestClock],
+      guard: canResolveIncident,
+
+      append: {
+        entity: IncidentUpdate,
+        operation: AppendIncidentUpdate,
+        values: ({ input, session, clock, incident }) => ({
+          id: app.uuid(),
+          organizationId: incident.organizationId,
+          incidentId: input.incidentId,
+          authorUserId: session.userId,
+          body: input.resolutionSummary,
+          createdAt: clock.now,
+        }),
+      },
+
+      set: ({ clock }) => ({
+        resolvedAt: clock.now,
+        updatedAt: clock.now,
+      }),
+
+      event: {
+        name: "IncidentResolved",
+        payload: ({ input, session, clock, incident }) => ({
+          eventId: app.uuid(),
+          organizationId: incident.organizationId,
+          incidentId: input.incidentId,
+          resolvedByUserId: session.userId,
+          occurredAt: clock.now,
+        }),
+      },
+
+      optimistic: "derive",
+      offline: false,
+    },
+  },
+});
+
+export const acknowledgeIncident = IncidentLifecycle.actions.acknowledge;
+export const resolveIncident = IncidentLifecycle.actions.resolve;
+export const IncidentAcknowledged = IncidentLifecycle.events.acknowledge;
+export const IncidentResolved = IncidentLifecycle.events.resolve;
+export const AcknowledgeIncidentMutation = IncidentLifecycle.mutations.acknowledge;
+export const ResolveIncidentMutation = IncidentLifecycle.mutations.resolve;
+
+export const declareIncident = callable.action("declareIncident")((ctx, action) =>
+  action
+    .input({
+      organizationId: Organization.fields.id.type,
+      projectId: Project.fields.id.type,
+      title: t.string,
+      summary: t.optional(t.string),
+      severity: Severity,
+      assignedTeamId: t.optional(Team.fields.id.type),
+    })
+    .requires(AuthSession)
+    .requires(RequestClock)
+    .runsIn(ServerBoundary)
+    .writes([Incident, AuditLog])
+    .applies([SetField])
+    .body(({ input, session, clock }) => {
+      const incident = Incident.insert({
+        id: app.uuid(),
+        organizationId: input.organizationId,
+        projectId: input.projectId,
+        title: input.title,
+        summary: input.summary,
+        severity: input.severity,
+        status: "open",
+        assignedTeamId: input.assignedTeamId,
+        createdByUserId: session.userId,
+        createdAt: clock.now,
+        updatedAt: clock.now,
+      });
+
+      AuditLog.insert({
+        id: app.uuid(),
+        organizationId: input.organizationId,
+        actorType: "user",
+        actorUserId: session.userId,
+        action: "incident.declared",
+        entityRef: incident.ref.id,
+        payload: { severity: input.severity },
+        createdAt: clock.now,
+      });
+
+      return { incident };
+    })
+    .event("IncidentDeclared", ({ input, result, clock }) => ({
+      eventId: app.uuid(),
+      organizationId: input.organizationId,
+      incidentId: result.incident.id,
+      projectId: input.projectId,
+      severity: input.severity,
+      title: input.title,
+      occurredAt: clock.now,
+    })),
+);
+
+export const IncidentDeclared = declareIncident.events.IncidentDeclared;
+
+// =============================================================================
+// 9. Query resources, key families, sync, rule-derived reactivity
+// =============================================================================
+
+export const IncidentQueries = app.recipes.queryResourceSet("IncidentQueries", {
+  entity: Incident,
+
+  projection: {
+    list: IncidentCard,
+    detail: IncidentDetail,
+  },
+
+  queries: {
+    listOpen: {
+      name: "listOpenIncidents",
+
+      input: {
+        organizationId: Organization.fields.id.type,
+        projectId: t.optional(Project.fields.id.type),
+      },
+
+      key: {
+        name: "openIncidents",
+        hierarchy: "collection",
+      },
+
+      requires: [AuthSession],
+
+      guard: ({ session, input }) =>
+        expr.eq(session.organizationId, input.organizationId),
+
+      where: ({ input, row }) =>
+        expr.and(
+          expr.eq(row.organizationId, input.organizationId),
+          input.projectId ? expr.eq(row.projectId, input.projectId) : expr.true(),
+          expr.not(expr.includes(["resolved", "cancelled"], row.status)),
+        ),
+
+      orderBy: ({ row }) => [row.severity.desc(), row.updatedAt.desc()],
+
+      targetStores: [storage.store.postgres("opsdesk")],
+    },
+
+    detail: {
+      name: "getIncidentDetail",
+
+      input: {
+        incidentId: Incident.fields.id.type,
+      },
+
+      key: {
+        name: "incidentDetail",
+        hierarchy: "entity",
+      },
+
+      requires: [AuthSession],
+
+      whereUnique: ({ input }) => ({ id: input.incidentId }),
+
+      guardResult: ({ session, result }) =>
+        canViewIncident.call({ session, incident: result }),
+    },
+  },
+});
+
+export const listOpenIncidents = IncidentQueries.queries.listOpen;
+export const getIncidentDetail = IncidentQueries.queries.detail;
+export const OpenIncidentsKey = IncidentQueries.keys.listOpen;
+export const IncidentDetailKey = IncidentQueries.keys.detail;
+export const OpenIncidentsResource = IncidentQueries.resources.listOpen;
+export const IncidentDetailResource = IncidentQueries.resources.detail;
+
+export const IncidentTimeline = app.recipes.queryResource("IncidentTimeline", {
+  entity: IncidentUpdate,
+  projection: IncidentUpdate,
+
+  query: {
+    name: "getIncidentTimeline",
+
+    input: {
+      incidentId: Incident.fields.id.type,
+    },
+
+    key: {
+      name: "incidentTimeline",
+      hierarchy: "collection",
+    },
+
+    requires: [AuthSession],
+
+    where: ({ input, row }) => expr.eq(row.incidentId, input.incidentId),
+    orderBy: ({ row }) => [row.createdAt.asc()],
+  },
+});
+
+export const getIncidentTimeline = IncidentTimeline.query;
+export const IncidentTimelineKey = IncidentTimeline.key;
+export const IncidentTimelineResource = IncidentTimeline.resource;
+
+// Local draft state is graph-native state/resource IR.
+export const DeclareIncidentDraftKey = app.key.family("DeclareIncidentDraftKey", {
+  input: t.object({ organizationId: Organization.fields.id.type }),
+  hierarchy: "custom",
+});
+
+export const DeclareIncidentDraft = app.state.resource("DeclareIncidentDraft", {
+  type: t.object("DeclareIncidentDraft", {
+    title: t.string,
+    summary: t.optional(t.string),
+    severity: Severity,
+    assignedTeamId: t.optional(Team.fields.id.type),
+  }),
+  key: DeclareIncidentDraftKey,
+  storage: ClientSessionStorage,
+  readableBy: [ClientBoundary],
+  writableBy: [ClientBoundary],
+  sensitivity: sensitivity.user(),
+  hydrate: false,
+  reactive: true,
+});
+
+export const IncidentSyncPlan = app.sync.semantic("IncidentSyncPlan", {
+  resources: [
+    OpenIncidentsResource,
+    IncidentDetailResource,
+    IncidentTimelineResource,
+  ],
+
+  mutations: [
+    AcknowledgeIncidentMutation,
+    ResolveIncidentMutation,
+  ],
+
+  derive: {
+    ruleInvalidation: true,
+    queryReadEdges: true,
+    actionWriteEdges: true,
+    optimisticPatches: true,
+    rollback: true,
+    ivm: {
+      enabled: true,
+      fallbackForNonMonotonicRules: "broad_invalidation",
+    },
+  },
+
+  fallback: {
+    opaque: "broad_invalidation",
+    unprovablePatch: "invalidate",
+    crossStore: "server_composition",
+  },
+
+  offline: {
+    allow: [acknowledgeIncident],
+
+    queue: app.recipes.offlineCommandQueue("OfflineIncidentCommands", {
+      storage: storage.indexedDb("opsdesk_offline_commands"),
+      encryption: "required",
+      idempotency: idempotency.inputHash(),
+      drainWhen: "online",
+      mergePolicy: Incident.merge,
+    }),
+  },
+});
+
+// =============================================================================
+// 10. Forms: action contracts -> UI form graph facts
+// =============================================================================
+
+export const DeclareIncidentForm = app.form.fromAction("DeclareIncidentForm", {
+  action: declareIncident,
+  mutation: app.mutation("DeclareIncidentMutation", {
+    action: declareIncident,
+    invalidates: [OpenIncidentsKey.any()],
+    optimistic: "invalidate",
+  }),
+
+  draft: DeclareIncidentDraft,
+
+  fields: {
+    title: {
+      label: "Title",
+      widget: ui.widget.textInput(),
+      bind: DeclareIncidentDraft.fields.title,
+    },
+
+    summary: {
+      label: "Summary",
+      widget: ui.widget.textArea(),
+      bind: DeclareIncidentDraft.fields.summary,
+    },
+
+    severity: {
+      label: "Severity",
+      widget: ui.widget.select({ options: Severity }),
+      bind: DeclareIncidentDraft.fields.severity,
+    },
+
+    assignedTeamId: {
+      label: "Assigned team",
+      widget: ui.widget.relationSelect({ entity: Team }),
+      bind: DeclareIncidentDraft.fields.assignedTeamId,
+      visibleWhen: ({ values }) => expr.eq(values.severity, "sev1"),
+    },
+  },
+
+  errors: {
+    "incident.title.required": "title",
+    "incident.sev1.requires_team": "assignedTeamId",
+  },
+
+  slots: {
+    root: ui.slot([ui.traits.container]),
+    field: ui.slot([ui.traits.field]),
+    submit: ui.slot([ui.traits.interactive]),
+    error: ui.slot([ui.traits.text]),
+  },
+
+  target: {
+    jsonRender: true,
+    react: true,
+  },
+});
+
+// =============================================================================
+// 11. Lists: resource/projection -> table/list UI graph facts
+// =============================================================================
+
+export const IncidentList = app.ui.list("IncidentList", {
+  resource: OpenIncidentsResource,
+  projection: IncidentCard,
+
+  columns: {
+    title: ui.list.column(IncidentCard.fields.title, {
+      label: "Title",
+      searchable: true,
+      sortable: true,
+      size: "minmax(20rem, 1fr)",
+    }),
+
+    severity: ui.list.column(IncidentCard.fields.severity, {
+      label: "Severity",
+      sortable: true,
+      filterable: true,
+      filter: "select",
+      cell: ui.cell.badge({ variantBy: IncidentCard.fields.severity }),
+    }),
+
+    status: ui.list.column(IncidentCard.fields.status, {
+      label: "Status",
+      sortable: true,
+      filterable: true,
+      filter: "select",
+    }),
+
+    updatedAt: ui.list.column(IncidentCard.fields.updatedAt, {
+      label: "Updated",
+      sortable: true,
+    }),
+  },
+
+  pagination: ui.list.cursor({
+    cursor: IncidentCard.fields.id,
+    defaultLimit: 50,
+    maxLimit: 500,
+  }),
+
+  defaultSort: {
+    field: IncidentCard.fields.updatedAt,
+    direction: "desc",
+  },
+
+  rowActions: {
+    acknowledge: ui.list.rowAction({
+      label: "Acknowledge",
+      action: acknowledgeIncident,
+      input: ({ row }) => ({ incidentId: row.id }),
+      enabledWhen: ({ row, session }) =>
+        canAcknowledgeIncident.call({ session, incident: row }),
+      inline: true,
+    }),
+
+    resolve: ui.list.rowAction({
+      label: "Resolve",
+      action: resolveIncident,
+      input: ({ row }) => ({
+        incidentId: row.id,
+        resolutionSummary: "Resolved from list",
+      }),
+      enabledWhen: ({ row, session }) =>
+        canResolveIncident.call({ session, incident: row }),
+      inline: true,
+    }),
+  },
+
+  table: {
+    rowSelection: "multi",
+    columnFilters: true,
+    globalFilter: true,
+    sorting: true,
+    columnResize: true,
+    columnVisibility: true,
+    virtualization: true,
+    stickyHeader: true,
+    density: "normal",
+    carded: true,
+  },
+
+  states: {
+    empty: "No open incidents.",
+    loading: "Loading incidents…",
+    error: "Could not load incidents.",
+  },
+});
+
+// =============================================================================
+// 12. Dashboard UI: forms + lists + resources + mutations
+// =============================================================================
+
+export const IncidentDashboard = app.ui.page("IncidentDashboard", {
+  route: "/org/:organizationId/incidents",
+  placement: ClientBoundary,
+
+  requires: [AuthSession],
+
+  data: {
+    openIncidents: OpenIncidentsResource,
+  },
+
+  slots: {
+    root: ui.slot([ui.traits.container]),
+    toolbar: ui.slot([ui.traits.container]),
+    createForm: ui.slot([ui.traits.form]),
+    list: ui.slot([ui.traits.collection]),
+  },
+
+  structure: ({ slots }) =>
+    ui.tree(
+      ui.element("Stack", { slot: slots.root }, [
+        ui.element("Toolbar", { slot: slots.toolbar }, [
+          ui.text("Open incidents"),
+          ui.button("New incident", {
+            behavior: ui.behavior.openPanel(DeclareIncidentForm),
+          }),
+        ]),
+
+        ui.render(DeclareIncidentForm, { slot: slots.createForm }),
+        ui.render(IncidentList, { slot: slots.list }),
+      ]),
+    ),
+
+  jsonRender: {
+    aiEditable: true,
+    verifyOnImport: [
+      ui.verify.knownCatalogComponents,
+      ui.verify.slotCapabilityCompatibility,
+      ui.verify.actionInputCompatibility,
+      ui.verify.stateBindingCompatibility,
+    ],
+  },
+});
+
+// =============================================================================
+// 13. Dispatch, queues, outbox, workers, reactions
+// =============================================================================
+
+export const NotificationMessage = t.object("NotificationMessage", {
+  messageId: t.uuid,
+  organizationId: Organization.fields.id.type,
+  incidentId: Incident.fields.id.type,
+  channel: NotificationChannel,
+  recipientUserId: User.fields.id.type,
+  subject: t.string,
+  body: t.string,
+});
+
+export const NotificationPipeline = app.recipes.notificationPipeline("IncidentNotifications", {
+  trigger: IncidentDeclared,
+
+  channels: ["email", "slack"],
+
+  effects: {
+    email: app.effect("email.send", {
+      requires: [EmailApiKey],
+      placement: WorkerBoundary,
+    }),
+
+    slack: app.effect("slack.send", {
+      requires: [SlackWebhookUrl],
+      placement: WorkerBoundary,
+    }),
+  },
+
+  queue: {
+    name: "NotificationQueue",
+    message: NotificationMessage,
+    placement: WorkerBoundary,
+    storage: DurableQueueStorage,
+    delivery: delivery.atLeastOnce(),
+    retry: retry.exponential({
+      maxAttempts: 8,
+      initialDelayMs: 1_000,
+      maxDelayMs: 60_000,
+    }),
+    idempotency: idempotency.messageId(({ message }) => message.messageId),
+    deadLetter: true,
+  },
+
+  selectRecipients: ({ event }) =>
+    query.inline("selectIncidentNotificationRecipients", {
+      from: NotificationPreference,
+      where: (pref) =>
+        expr.and(
+          expr.eq(pref.organizationId, event.payload.organizationId),
+          expr.eq(pref.enabled, true),
+        ),
+    }),
+
+  message: ({ event, recipient }) => ({
+    messageId: event.payload.eventId,
+    organizationId: event.payload.organizationId,
+    incidentId: event.payload.incidentId,
+    channel: recipient.channel,
+    recipientUserId: recipient.userId,
+    subject: `New ${event.payload.severity.toUpperCase()} incident: ${event.payload.title}`,
+    body: `Incident ${event.payload.incidentId} was declared.`,
+  }),
+
+  deliveryPlan: delivery.outbox({
+    guarantee: "at_least_once",
+    storage: storage.postgresTable("incident_outbox"),
+  }),
+
+  idempotency: idempotency.eventId(({ event }) => event.payload.eventId),
+});
+
+export const NotificationQueue = NotificationPipeline.queue;
+export const notifyOnIncidentDeclared = NotificationPipeline.dispatch;
+export const NotificationWorkerAction = NotificationPipeline.workerAction;
+
+// Reaction is a convenience API. It lowers to dispatch facts.
+export const notifyWhenSev1Acknowledged = app.reaction("notifyWhenSev1Acknowledged", {
+  when: rule.define("incidentIsSev1AndAcknowledged")((ctx, r) =>
+    r
+      .vars({ incident: Incident })
+      .when(({ incident }) =>
+        expr.and(
+          expr.eq(incident.severity, "sev1"),
+          expr.eq(incident.status, "acknowledged"),
+        ),
+      ),
+  ),
+
+  run: NotificationWorkerAction,
+
+  delivery: delivery.outbox({
+    guarantee: "at_least_once",
+    storage: storage.postgresTable("incident_outbox"),
+  }),
+
+  idempotency: idempotency.ruleMatchId(),
+});
+
+// =============================================================================
+// 14. Boundary and transport plans
+// =============================================================================
+
+export const DeclareIncidentBoundaryCall = boundary.call("DeclareIncidentBoundaryCall", {
+  callable: declareIncident,
+  from: ClientBoundary,
+  to: ServerBoundary,
+  transport: boundary.transport.serverAction(),
+  auth: AuthSession,
+
+  serialization: {
+    input: serialization.strictJson(declareIncident.input),
+    output: serialization.strictJson(declareIncident.output),
+    error: serialization.taggedUnion(declareIncident.errors),
+  },
+
+  invalidates: [OpenIncidentsKey.any()],
+});
+
+export const AcknowledgeIncidentBoundaryCall = boundary.call("AcknowledgeIncidentBoundaryCall", {
+  callable: acknowledgeIncident,
+  from: ClientBoundary,
+  to: ServerBoundary,
+  transport: boundary.transport.serverAction(),
+  auth: AuthSession,
+
+  serialization: {
+    input: serialization.strictJson(acknowledgeIncident.input),
+    output: serialization.strictJson(acknowledgeIncident.output),
+    error: serialization.taggedUnion(acknowledgeIncident.errors),
+  },
+
+  invalidates: AcknowledgeIncidentMutation.invalidates,
+  optimistic: AcknowledgeIncidentMutation.optimistic,
+  offline: IncidentSyncPlan.offline.commands.acknowledgeIncident,
+});
+
+export const NotificationDeliveryBoundary = boundary.route("NotificationDeliveryBoundary", {
+  path: [ServerBoundary, QueueBoundary, WorkerBoundary, boundary.external("Slack")],
+
+  transports: [
+    boundary.transport.outbox({
+      idempotency: idempotency.eventId(),
+    }),
+
+    boundary.transport.queue({
+      serialization: serialization.strictJson(NotificationMessage),
+      retry: retry.exponential({ maxAttempts: 8 }),
+    }),
+
+    boundary.transport.http({
+      auth: SlackWebhookUrl,
+    }),
+  ],
+});
+
+// =============================================================================
+// 15. Semantic obligations for tests, docs, and devtools
+// =============================================================================
+
+export const PolicyTestObligations = obligation.derive("PolicyTestObligations", {
+  from: [IncidentPolicy],
+  produce: [
+    obligation.kind.policyTest({ priority: "required" }),
+    obligation.kind.accessMatrixDoc({ priority: "recommended" }),
+  ],
+});
+
+export const ReactivityTestObligations = obligation.derive("ReactivityTestObligations", {
+  from: [IncidentSyncPlan],
+  produce: [
+    obligation.kind.mutationInvalidationTest({ priority: "required" }),
+    obligation.kind.optimisticRollbackTest({ priority: "required" }),
+    obligation.kind.offlineReplayTest({ priority: "required", only: [acknowledgeIncident] }),
+  ],
+});
+
+export const UiTestObligations = obligation.derive("UiTestObligations", {
+  from: [DeclareIncidentForm, IncidentList, IncidentDashboard],
+  produce: [
+    obligation.kind.formValidationTest({ priority: "recommended" }),
+    obligation.kind.listInteractionTest({ priority: "recommended" }),
+    obligation.kind.clientBoundarySafetyTest({ priority: "required" }),
+  ],
+});
+
+export const DispatchTestObligations = obligation.derive("DispatchTestObligations", {
+  from: [notifyOnIncidentDeclared, NotificationQueue],
+  produce: [
+    obligation.kind.reactionDeliveryTest({ priority: "required" }),
+    obligation.kind.queueIdempotencyTest({ priority: "required" }),
+    obligation.kind.deadLetterTest({ priority: "recommended" }),
+  ],
+});
+
+// =============================================================================
+// 16. Custom invariant families with AI repair hints
+// =============================================================================
+
+export const AtLeastOnceRequiresIdempotency = invariant.family("AtLeastOnceRequiresIdempotency")({
+  subject: dispatch.nodes.dispatch,
+
+  when: ({ dispatchNode }) =>
+    expr.eq(dispatchNode.delivery.guarantee, "at_least_once"),
+
+  must: ({ dispatchNode }) =>
+    expr.existsEdge(dispatch.edges.usesIdempotency, {
+      dispatch: dispatchNode,
+    }),
+
+  diagnostic: diagnostic.define("dispatch.at_least_once.requires_idempotency", {
+    severity: "error",
+    audience: ["developer", "ai_agent"],
+    message: "Dispatch uses at-least-once delivery but has no idempotency plan.",
+    remediation: {
+      kind: "add_edge",
+      edgeKind: dispatch.edges.usesIdempotency,
+      suggestion: "Use idempotency.eventId(...), idempotency.inputHash(...), or idempotency.commandId(...).",
+    },
+  }),
+});
+
+export const ClientCannotReadServerOnlyFields = invariant.family("ClientCannotReadServerOnlyFields")({
+  subject: ui.nodes.component,
+
+  when: ({ component }) => expr.eq(component.boundary, ClientBoundary),
+
+  must: ({ component }) =>
+    expr.not(
+      expr.existsPath(component, {
+        via: [ui.edges.usesResource, callable.edges.queryReads],
+        toTrait: traits.serverOnly,
+      }),
+    ),
+
+  diagnostic: diagnostic.define("ui.client.server_only_field", {
+    severity: "error",
+    audience: ["developer", "ai_agent"],
+    message: "Client component reads a server-only field through a query/resource path.",
+    remediation: {
+      kind: "suggest_projection",
+      suggestion: "Use a client-safe projection or move the component to a server boundary.",
+    },
+  }),
+});
+
+export const OfflineWriteRequiresMergePolicy = invariant.family("OfflineWriteRequiresMergePolicy")({
+  subject: callable.nodes.action,
+
+  when: ({ action }) => expr.hasTrait(action, traits.offlineReplaySafe),
+
+  must: ({ action }) =>
+    expr.everyWrittenField(action, (field) =>
+      expr.existsEdge(merge.edges.fieldUsesMergeStrategy, { field }),
+    ),
+
+  diagnostic: diagnostic.define("offline.write.requires_merge_policy", {
+    severity: "error",
+    audience: ["developer", "ai_agent"],
+    message: "Offline action writes fields without merge strategies.",
+    remediation: {
+      kind: "add_merge_strategy",
+      suggestion: "Attach merge.stateMachine, merge.lastWriteWins, merge.setUnion, or a manual conflict policy.",
+    },
+  }),
+});
+
+export const InvariantModule = app.module("invariants").pipe(
+  AtLeastOnceRequiresIdempotency,
+  ClientCannotReadServerOnlyFields,
+  OfflineWriteRequiresMergePolicy,
+);
+
+// =============================================================================
+// 17. Storage and deployment
+// =============================================================================
+
+export const OpsDeskStorage = app.recipes.postgresStorage("OpsDeskStorage", {
+  databaseName: "opsdesk",
+
+  entities: [
+    Organization,
+    User,
+    Team,
+    Project,
+    Incident,
+    IncidentUpdate,
+    AuditLog,
+    NotificationPreference,
+  ],
+
+  naming: storage.naming.snakeCase(),
+
+  policies: [IncidentPolicy],
+
+  outbox: {
+    events: [IncidentDeclared, IncidentAcknowledged, IncidentResolved],
+    table: "outbox_events",
+  },
+});
+
+export const OpsDeskDeployment = app.recipes.alchemyStack("OpsDeskCloudflare", {
+  resources: [
+    OpsDeskStorage.database,
+    NotificationPipeline.worker,
+    deploy.secret("SlackWebhookUrl", { satisfies: SlackWebhookUrl }),
+    deploy.secret("EmailApiKey", { satisfies: EmailApiKey }),
+    deploy.bucket("IncidentAttachments"),
+  ],
+
+  boundaries: [
+    ClientBoundary,
+    ServerBoundary,
+    WorkerBoundary,
+    QueueBoundary,
+    DatabaseBoundary,
+  ],
+
+  capabilities: [
+    deploy.capabilities.sql,
+    deploy.capabilities.transactions,
+    deploy.capabilities.queue,
+    deploy.capabilities.email,
+    deploy.capabilities.network,
+    deploy.capabilities.secretStore,
+  ],
+});
+
+export const DeploymentModule = app.module("deployment").pipe(
+  OpsDeskStorage,
+  OpsDeskDeployment,
+);
+
+// =============================================================================
+// 18. Feature modules and graph composition
+// =============================================================================
+
+export const IncidentFeatureModule = app.module("incident-feature").pipe(
+  IncidentDomainModule,
+  AuthModule,
+  SetField,
+  AppendIncidentUpdate,
+  IncidentLifecycle,
+  declareIncident,
+  IncidentQueries,
+  IncidentTimeline,
+  DeclareIncidentDraft,
+  IncidentSyncPlan,
+  DeclareIncidentForm,
+  IncidentList,
+  IncidentDashboard,
+  NotificationPipeline,
+  notifyWhenSev1Acknowledged,
+  DeclareIncidentBoundaryCall,
+  AcknowledgeIncidentBoundaryCall,
+  NotificationDeliveryBoundary,
+  PolicyTestObligations,
+  ReactivityTestObligations,
+  UiTestObligations,
+  DispatchTestObligations,
+);
+
+export const appGraph = gen.graph.pipe(
+  ProviderModule,
+  CoreDomainModule,
+  IncidentFeatureModule,
+  InvariantModule,
+  DeploymentModule,
+);
+
+// TypeScript witness layer: erased runtime, strong local static checking.
+export type OpsDeskGraph = GraphWitnessOf<typeof appGraph>;
+export type IncidentValue = InferEntity<typeof Incident>;
+export type IncidentCardValue = InferDecoded<typeof IncidentCard.type>;
+export type DeclareIncidentInput = InferDecoded<typeof declareIncident.input>;
+export type IncidentDeclaredPayload = InferDecoded<typeof IncidentDeclared.payload>;
+
+// =============================================================================
+// 19. Graph views, traversal, explain, trace
+// =============================================================================
+
+export const fieldsWrittenByAcknowledge = appGraph.edges
+  .ofKind(callable.edges.actionWrites)
+  .whereEndpoint("action", acknowledgeIncident.ref)
+  .targets("field");
+
+export const queriesAffectedByIncidentStatus = appGraph
+  .view(gen.reactivity.views.readWriteIndex)
+  .queriesReadingField(Incident.fields.status);
+
+export const providerPlan = appGraph
+  .view(provider.views.satisfaction)
+  .planFor([AuthSession, RequestClock, EmailApiKey, SlackWebhookUrl]);
+
+export const boundaryPlan = appGraph
+  .view(boundary.views.transport)
+  .pathFor(AcknowledgeIncidentBoundaryCall);
+
+export const explainOpenIncidentsInvalidation = appGraph.explain(
+  gen.reactivity.edges.invalidatesKey,
+  {
+    action: acknowledgeIncident,
+    key: OpenIncidentsKey.any(),
+  },
+);
+
+export const explainAuthProvider = appGraph.explain(provider.edges.satisfies, {
+  provider: AuthSessionProvider,
+  requirement: AuthSession,
+});
+
+export const explainListAction = appGraph.explain(ui.edges.rowActionRunsAction, {
+  list: IncidentList,
+  action: acknowledgeIncident,
+});
+
+// =============================================================================
+// 20. Importers and semantic diff
+// =============================================================================
+
+export const importedDashboardCandidate = gen.import.jsonRenderSpec({
+  catalog: "generated/ui/catalog.json",
+  spec: "ai-output/incident-dashboard-candidate.json",
+  into: appGraph,
+  namespace: "ai.dashboard.candidate",
+  mode: "candidate",
+
+  verify: [
+    ui.verify.knownCatalogComponents,
+    ui.verify.slotCapabilityCompatibility,
+    ui.verify.actionInputCompatibility,
+    ui.verify.stateBindingCompatibility,
+    ClientCannotReadServerOnlyFields,
+  ],
+});
+
+export const reviewedGraph = importedDashboardCandidate.ok
+  ? appGraph.pipe(importedDashboardCandidate.acceptedFacts)
+  : appGraph;
+
+export const previousGraph = gen.import.previousGraph({
+  path: "generated/graphs/opsdesk.previous.graph.json",
+});
+
+export const semanticDiff = gen.graph.diff(previousGraph, reviewedGraph);
+
+semanticDiff.print({ format: "review" });
+
+// =============================================================================
+// 21. Capability report
+// =============================================================================
+
+export const capabilityReport = reviewedGraph.capabilities.report({
+  targets: [
+    targets.postgres,
+    targets.effect,
+    targets.react,
+    targets.jsonRender,
+    targets.openapi,
+    targets.alchemy,
+    targets.tests,
+    targets.docs,
+  ],
+
+  focus: [
+    IncidentDashboard,
+    IncidentList,
+    DeclareIncidentForm,
+    IncidentSyncPlan,
+    notifyOnIncidentDeclared,
+    NotificationPipeline.worker,
+    OpsDeskDeployment,
+  ],
+});
+
+capabilityReport.print();
+
+// =============================================================================
+// 22. Pipelines: check -> legalize -> lower -> emit
+// =============================================================================
+
+export const checkResult = reviewedGraph.run(
+  app.pipeline("opsdesk.check")
+    .verifySymbols()
+    .verifyDialects()
+    .verifyGraph()
+
+    // Derivation passes add graph facts, not side registries.
+    .deriveProviderSatisfaction()
+    .deriveQueryReads()
+    .deriveActionWrites()
+    .deriveRuleReads()
+    .deriveRuleInvalidation()
+    .deriveIvmPlans()
+    .deriveOptimisticPlans()
+    .deriveBoundaryPlans()
+    .deriveRequirementBubbling()
+    .deriveDeploymentRequirements()
+    .deriveObligations()
+
+    .canonicalize()
+
+    // Legalization checks source graph against target capabilities.
+    .legalizePlacement()
+    .legalizeProviders()
+    .legalizeQueries()
+    .legalizeBoundaryTransports()
+    .legalizeReactivity()
+    .legalizeMerge()
+    .legalizeUi()
+    .legalizeObligations()
+    .legalizeTargets({ report: capabilityReport })
+
+    .diagnostics({
+      audience: "developer",
+      failOn: "error",
+      includeRemediation: true,
+    }),
+);
+
+// Emission cannot consume source dialect IR directly.
+// It must consume legalized target dialect IR.
+export const legalized = checkResult.graph.legalize({
+  targets: [
+    targets.postgres,
+    targets.effect,
+    targets.react,
+    targets.jsonRender,
+    targets.openapi,
+    targets.alchemy,
+    targets.tests,
+    targets.docs,
+    targets.graph,
+    targets.typescript,
+  ],
+});
+
+export const buildResult = legalized.emit([
+  // Database/storage.
+  targets.postgres.artifacts.sqlMigration({
+    path: "generated/db/migrations/001_init.sql",
+  }),
+
+  targets.postgres.artifacts.rlsPolicies({
+    source: IncidentPolicy,
+    path: "generated/db/policies/incident.rls.sql",
+  }),
+
+  // Server/runtime.
+  targets.effect.artifacts.serverRuntime({
+    path: "generated/server/runtime.ts",
+  }),
+
+  targets.effect.artifacts.actionHandlers({
+    actions: [declareIncident, acknowledgeIncident, resolveIncident],
+    path: "generated/server/actions.ts",
+  }),
+
+  // React/web UI.
+  targets.react.artifacts.component({
+    source: IncidentDashboard,
+    path: "generated/web/components/IncidentDashboard.tsx",
+  }),
+
+  targets.react.artifacts.resourceHooks({
+    resources: [OpenIncidentsResource, IncidentDetailResource, IncidentTimelineResource],
+    path: "generated/web/resources.ts",
+  }),
+
+  targets.react.artifacts.mutationHooks({
+    mutations: [AcknowledgeIncidentMutation, ResolveIncidentMutation],
+    path: "generated/web/mutations.ts",
+  }),
+
+  // JSON-render for AI-editable UI.
+  targets.jsonRender.artifacts.catalog({
+    source: IncidentDashboard,
+    path: "generated/ui/catalog.json",
+  }),
+
+  targets.jsonRender.artifacts.spec({
+    source: IncidentDashboard,
+    path: "generated/ui/incident-dashboard.json",
+  }),
+
+  // API docs/contracts.
+  targets.openapi.artifacts.document({
+    path: "generated/openapi.json",
+  }),
+
+  // Deployment.
+  targets.alchemy.artifacts.stack({
+    source: OpsDeskDeployment,
+    path: "generated/deploy/opsdesk.ts",
+  }),
+
+  // Tests from obligations.
+  targets.tests.artifacts.policyTests({
+    obligations: PolicyTestObligations,
+    path: "generated/tests/policy/incident-policy.generated.test.ts",
+  }),
+
+  targets.tests.artifacts.reactivityTests({
+    obligations: ReactivityTestObligations,
+    path: "generated/tests/reactivity/incident-reactivity.generated.test.ts",
+  }),
+
+  targets.tests.artifacts.uiInteractionTests({
+    obligations: UiTestObligations,
+    path: "generated/tests/ui/incident-dashboard.generated.test.ts",
+  }),
+
+  targets.tests.artifacts.dispatchTests({
+    obligations: DispatchTestObligations,
+    path: "generated/tests/dispatch/incident-notifications.generated.test.ts",
+  }),
+
+  targets.tests.artifacts.propertyTests({
+    path: "generated/tests/opsdesk.property.generated.test.ts",
+    include: [
+      "state_machine_transitions",
+      "policy_matrix",
+      "operation_laws",
+      "merge_laws",
+      "optimistic_rollback",
+      "offline_replay",
+      "provider_satisfaction",
+      "boundary_transport_safety",
+      "invariant_preservation",
+    ],
+  }),
+
+  // Docs/devtools.
+  targets.docs.artifacts.markdown({
+    path: "generated/docs/opsdesk.md",
+  }),
+
+  targets.docs.artifacts.accessMatrix({
+    source: IncidentPolicy,
+    path: "generated/docs/access-matrix/incident-policy.md",
+  }),
+
+  // Graph artifacts.
+  targets.graph.artifacts.snapshot({
+    path: "generated/graphs/opsdesk.graph.json",
+  }),
+
+  targets.graph.artifacts.diffReport({
+    source: semanticDiff,
+    path: "generated/graphs/opsdesk.diff.md",
+  }),
+
+  targets.graph.artifacts.explainReport({
+    explains: [
+      explainOpenIncidentsInvalidation,
+      explainAuthProvider,
+      explainListAction,
+    ],
+    path: "generated/graphs/explain.md",
+  }),
+
+  // TypeScript witness.
+  targets.typescript.artifacts.graphWitness({
+    path: "generated/opsdesk.graph.d.ts",
+  }),
+]);
+
+// =============================================================================
+// 23. What this high-level API still emits into the one graph
+// =============================================================================
+
+/*
+ * Even though most authoring is recipe-based, the compiler graph remains simple.
+ * Examples of facts emitted by the code above:
+ *
+ * Node(Entity): Incident
+ * Node(Field): Incident.status
+ * Node(StateMachine): IncidentStatus
+ * Node(MergeStrategy): Incident.status.stateMachineMerge
+ * Node(Requirement): AuthSession
+ * Node(Provider): AuthSessionProvider
+ * Node(StorageLocation): SessionCookieStorage
+ * Node(Action): acknowledgeIncident
+ * Node(Event): IncidentAcknowledged
+ * Node(Query): listOpenIncidents
+ * Node(KeyFamily): OpenIncidentsKey
+ * Node(Resource): OpenIncidentsResource
+ * Node(Mutation): AcknowledgeIncidentMutation
+ * Node(StateResource): DeclareIncidentDraft
+ * Node(Form): DeclareIncidentForm
+ * Node(ListView): IncidentList
+ * Node(Component): IncidentDashboard
+ * Node(Dispatch): notifyOnIncidentDeclared
+ * Node(Queue): NotificationQueue
+ * Node(BoundaryCallPlan): AcknowledgeIncidentBoundaryCall
+ * Node(Obligation): policy-test-IncidentPolicy
+ * Node(DeploymentStack): OpsDeskCloudflare
+ *
+ * Edge(OwnsField): Incident -> Incident.status
+ * Edge(FieldUsesMergeStrategy): Incident.status -> stateMachineMerge
+ * Edge(ProviderSatisfies): AuthSessionProvider -> AuthSession
+ * Edge(ProviderSourcedFrom): AuthSessionProvider -> SessionCookieStorage
+ * Edge(ProviderPlacedIn): AuthSessionProvider -> ServerBoundary
+ * Edge(ActionWrites): acknowledgeIncident -> Incident.status
+ * Edge(ActionEmits): acknowledgeIncident -> IncidentAcknowledged
+ * Edge(QueryReads): listOpenIncidents -> Incident.status
+ * Edge(QueryHasKey): listOpenIncidents -> OpenIncidentsKey
+ * Edge(ResourceWrapsQuery): OpenIncidentsResource -> listOpenIncidents
+ * Edge(MutationWrapsAction): AcknowledgeIncidentMutation -> acknowledgeIncident
+ * Edge(MutationInvalidatesKey): AcknowledgeIncidentMutation -> OpenIncidentsKey
+ * Edge(FormSubmitsAction): DeclareIncidentForm -> declareIncident
+ * Edge(ListUsesResource): IncidentList -> OpenIncidentsResource
+ * Edge(RowActionRunsAction): acknowledgeRowAction -> acknowledgeIncident
+ * Edge(ComponentRendersList): IncidentDashboard -> IncidentList
+ * Edge(DispatchTriggeredBy): notifyOnIncidentDeclared -> IncidentDeclared
+ * Edge(DispatchUsesIdempotency): notifyOnIncidentDeclared -> eventId
+ * Edge(BoundaryCallUsesTransport): AcknowledgeIncidentBoundaryCall -> serverAction
+ * Edge(ObligationSource): policy-test-IncidentPolicy -> IncidentPolicy
+ * Edge(ObligationSatisfiedBy): policy-test-IncidentPolicy -> generated policy test artifact
+ *
+ * Trait(AuthSensitive): AuthSession
+ * Trait(SensitiveSafe): RequestStorage
+ * Trait(ClientReadable): SessionCookieStorage
+ * Trait(Patchable): transition operation
+ * Trait(OfflineReplaySafe): acknowledgeIncident
+ * Trait(Durable): NotificationQueue
+ * Trait(ClientRenderable): IncidentDashboard
+ */
+
+
+
+Below is a **full idealized API example** for a real-world multi-tenant incident-management SaaS app.
+
+It uses the whole intended surface:
+
+```txt
+dialects
+types
+entities
+relations
+variants/state machines
+contexts/providers/boundaries
+operations/laws
+rules
+queries
+actions
+events
+dispatch/outbox/idempotency
+queues/mailboxes/streams
+reactivity/sync
+UI slots/behaviors/styles/components
+JSON-render
+invariants/diagnostics
+deployment requirements
+target pipelines
+graph traversal
+TypeScript graph witness
+```
+
+This is not meant to be today’s exact implementation. It is what the **ultimate API design should feel like**.
+
+---
+
+```ts
+import {
+  createGen,
+  dialects,
+  targets,
+  traits,
+  laws,
+  delivery,
+  idempotency,
+  retry,
+  placement,
+  sensitivity,
+  invariant,
+  diagnostic,
+  expr,
+  op,
+  ref,
+  pass,
+  pipeline,
+  type InferEntity,
+  type InferDecoded,
+  type GraphWitnessOf,
+} from "@dirived/gen2";
+
+/**
+ * Real-world app:
+ *
+ * OpsDesk is a multi-tenant incident-management app.
+ *
+ * Users belong to organizations and teams.
+ * Incidents belong to projects.
+ * Incidents have lifecycle states.
+ * Incidents emit events.
+ * Events drive notifications, queues, mailboxes, streams, UI updates,
+ * optimistic patches, audit logs, and deployment resources.
+ */
+
+// ------------------------------------------------------------
+// 1. Create Gen instance and load dialects
+// ------------------------------------------------------------
+
+export const gen = createGen("opsdesk")
+  .use(dialects.core)
+  .use(dialects.type)
+  .use(dialects.domain)
+  .use(dialects.operation)
+  .use(dialects.logic)
+  .use(dialects.callable)
+  .use(dialects.dispatch)
+  .use(dialects.reactivity)
+  .use(dialects.dataflow)
+  .use(dialects.ui)
+  .use(dialects.storage)
+  .use(dialects.variant)
+  .use(dialects.invariant)
+  .use(dialects.diagnostic)
+  .use(dialects.deployment)
+  .use(targets.postgres)
+  .use(targets.effect)
+  .use(targets.react)
+  .use(targets.jsonRender)
+  .use(targets.openapi)
+  .use(targets.alchemy);
+
+// Convenience namespaces.
+const t = gen.type;
+const domain = gen.domain;
+const logic = gen.logic;
+const callable = gen.callable;
+const dispatch = gen.dispatch;
+const react = gen.react;
+const ui = gen.ui;
+const dataflow = gen.dataflow;
+const storage = gen.storage;
+const deploy = gen.deployment;
+
+// ------------------------------------------------------------
+// 2. Boundaries, placement, context, providers
+// ------------------------------------------------------------
+
+export const ClientBoundary = gen.core.boundary("client", {
+  kind: "browser",
+  traits: [traits.clientReadable],
+});
+
+export const ServerBoundary = gen.core.boundary("server", {
+  kind: "server",
+  traits: [traits.serverOnly],
+});
+
+export const WorkerBoundary = gen.core.boundary("worker", {
+  kind: "worker",
+  traits: [traits.serverOnly, traits.background],
+});
+
+export const DatabaseBoundary = gen.core.boundary("database", {
+  kind: "postgres",
+  traits: [traits.persistent, traits.transactional],
+});
+
+export const AuthSession = gen.core.context("AuthSession", {
+  type: t.object("AuthSession", {
+    userId: t.uuid,
+    organizationId: t.uuid,
+    role: t.enum("OrgRole", ["owner", "admin", "responder", "viewer"] as const),
+    teamIds: t.array(t.uuid),
+  }),
+  sensitivity: sensitivity.auth(),
+  placement: ServerBoundary,
+});
+
+export const RequestClock = gen.core.context("RequestClock", {
+  type: t.object("RequestClock", {
+    now: t.datetime,
+  }),
+  placement: ServerBoundary,
+});
+
+export const AuthSessionProvider = gen.core.provider("AuthSessionProvider", {
+  provides: AuthSession,
+  source: gen.core.providerSource.cookie("opsdesk_session"),
+  runsIn: ServerBoundary,
+});
+
+export const ClockProvider = gen.core.provider("ClockProvider", {
+  provides: RequestClock,
+  source: gen.core.providerSource.runtime(),
+  runsIn: ServerBoundary,
+});
+
+// ------------------------------------------------------------
+// 3. Types, variants, and state machines
+// ------------------------------------------------------------
+
+export const Severity = t.enum("IncidentSeverity", [
+  "sev1",
+  "sev2",
+  "sev3",
+  "sev4",
+] as const);
+
+export const IncidentStatus = gen.variant.stateMachine("IncidentStatus", {
+  states: ["open", "acknowledged", "mitigated", "resolved", "cancelled"] as const,
+
+  transitions: {
+    open: ["acknowledged", "cancelled"],
+    acknowledged: ["mitigated", "resolved", "cancelled"],
+    mitigated: ["resolved"],
+    resolved: [],
+    cancelled: [],
+  },
+
+  terminal: ["resolved", "cancelled"] as const,
+});
+
+export const NotificationChannel = t.enum("NotificationChannel", [
+  "email",
+  "slack",
+  "sms",
+] as const);
+
+export const AuditActorType = t.enum("AuditActorType", [
+  "user",
+  "system",
+  "worker",
+] as const);
+
+// ------------------------------------------------------------
+// 4. Domain entities
+// ------------------------------------------------------------
+
+export class Organization extends domain.entity.class("Organization", {
+  fields: {
+    id: domain.field(t.uuid).primary(),
+    slug: domain.field(t.string).unique(),
+    name: domain.field(t.string),
+    plan: domain.field(t.enum("Plan", ["free", "team", "enterprise"] as const)),
+    createdAt: domain.field(t.datetime),
+  },
+
+  traits: [traits.tenantRoot],
+
+  invariants: [
+    invariant.unique("organization.slug", {
+      field: "slug",
+      diagnostic: diagnostic.define("org.slug.not_unique", {
+        severity: "error",
+        message: "Organization slug must be unique.",
+        remediation: {
+          kind: "suggest_value",
+          field: "slug",
+        },
+      }),
+    }),
+  ],
+}) {}
+
+export class User extends domain.entity.class("User", {
+  fields: {
+    id: domain.field(t.uuid).primary(),
+    organizationId: domain.field(Organization.fields.id.type).indexed(),
+    email: domain.field(t.email).unique(),
+    displayName: domain.field(t.string),
+    role: domain.field(AuthSession.type.fields.role),
+    createdAt: domain.field(t.datetime),
+    disabledAt: domain.field(t.optional(t.datetime)),
+  },
+
+  indexes: [
+    domain.index("user_by_org_email", {
+      fields: ["organizationId", "email"],
+      unique: true,
+    }),
+  ],
+}) {}
+
+export class Team extends domain.entity.class("Team", {
+  fields: {
+    id: domain.field(t.uuid).primary(),
+    organizationId: domain.field(Organization.fields.id.type).indexed(),
+    name: domain.field(t.string),
+    createdAt: domain.field(t.datetime),
+  },
+}) {}
+
+export class Project extends domain.entity.class("Project", {
+  fields: {
+    id: domain.field(t.uuid).primary(),
+    organizationId: domain.field(Organization.fields.id.type).indexed(),
+    owningTeamId: domain.field(Team.fields.id.type).indexed(),
+    name: domain.field(t.string),
+    slug: domain.field(t.string),
+    createdAt: domain.field(t.datetime),
+    archivedAt: domain.field(t.optional(t.datetime)),
+  },
+
+  indexes: [
+    domain.index("project_by_org_slug", {
+      fields: ["organizationId", "slug"],
+      unique: true,
+    }),
+  ],
+}) {}
+
+export class Incident extends domain.entity.class("Incident", {
+  fields: {
+    id: domain.field(t.uuid).primary(),
+    organizationId: domain.field(Organization.fields.id.type).indexed(),
+    projectId: domain.field(Project.fields.id.type).indexed(),
+    title: domain.field(t.string),
+    summary: domain.field(t.optional(t.string)),
+    severity: domain.field(Severity),
+    status: domain.field(IncidentStatus.type),
+    createdByUserId: domain.field(User.fields.id.type),
+    assignedTeamId: domain.field(t.optional(Team.fields.id.type)),
+    acknowledgedByUserId: domain.field(t.optional(User.fields.id.type)),
+    acknowledgedAt: domain.field(t.optional(t.datetime)),
+    mitigatedAt: domain.field(t.optional(t.datetime)),
+    resolvedAt: domain.field(t.optional(t.datetime)),
+    cancelledAt: domain.field(t.optional(t.datetime)),
+    createdAt: domain.field(t.datetime),
+    updatedAt: domain.field(t.datetime),
+  },
+
+  traits: [traits.audited, traits.syncable],
+
+  invariants: [
+    invariant.required("incident.title", {
+      field: "title",
+      diagnostic: diagnostic.define("incident.title.required", {
+        severity: "error",
+        message: "Incident title is required.",
+      }),
+    }),
+
+    invariant.custom("sev1_requires_assigned_team", {
+      subject: "Incident",
+      when: ({ incident }) => expr.eq(incident.severity, "sev1"),
+      must: ({ incident }) => expr.isNotNull(incident.assignedTeamId),
+      diagnostic: diagnostic.define("incident.sev1.requires_team", {
+        severity: "error",
+        audience: ["developer", "ai_agent", "user"],
+        message: "SEV1 incidents must have an assigned team.",
+        remediation: {
+          kind: "set_field",
+          field: "assignedTeamId",
+        },
+      }),
+    }),
+  ],
+}) {}
+
+export class IncidentUpdate extends domain.entity.class("IncidentUpdate", {
+  fields: {
+    id: domain.field(t.uuid).primary(),
+    organizationId: domain.field(Organization.fields.id.type).indexed(),
+    incidentId: domain.field(Incident.fields.id.type).indexed(),
+    authorUserId: domain.field(User.fields.id.type),
+    body: domain.field(t.string),
+    createdAt: domain.field(t.datetime),
+  },
+
+  traits: [traits.appendOnly],
+}) {}
+
+export class AuditLog extends domain.entity.class("AuditLog", {
+  fields: {
+    id: domain.field(t.uuid).primary(),
+    organizationId: domain.field(Organization.fields.id.type).indexed(),
+    actorType: domain.field(AuditActorType),
+    actorUserId: domain.field(t.optional(User.fields.id.type)),
+    action: domain.field(t.string),
+    entityRef: domain.field(t.string),
+    payload: domain.field(t.json),
+    createdAt: domain.field(t.datetime),
+  },
+
+  traits: [traits.appendOnly, traits.serverOnly],
+}) {}
+
+export class NotificationPreference extends domain.entity.class(
+  "NotificationPreference",
+  {
+    fields: {
+      id: domain.field(t.uuid).primary(),
+      organizationId: domain.field(Organization.fields.id.type).indexed(),
+      userId: domain.field(User.fields.id.type).indexed(),
+      channel: domain.field(NotificationChannel),
+      enabled: domain.field(t.boolean),
+      minimumSeverity: domain.field(Severity),
+    },
+  },
+) {}
+
+// ------------------------------------------------------------
+// 5. Relations
+// ------------------------------------------------------------
+
+export const orgUsers = domain.relation("OrganizationUsers", {
+  from: Organization,
+  to: User,
+  kind: "one_to_many",
+  fromField: Organization.fields.id,
+  toField: User.fields.organizationId,
+  integrity: domain.integrity.databaseForeignKey({
+    onDelete: "restrict",
+  }),
+});
+
+export const orgProjects = domain.relation("OrganizationProjects", {
+  from: Organization,
+  to: Project,
+  kind: "one_to_many",
+  fromField: Organization.fields.id,
+  toField: Project.fields.organizationId,
+});
+
+export const projectIncidents = domain.relation("ProjectIncidents", {
+  from: Project,
+  to: Incident,
+  kind: "one_to_many",
+  fromField: Project.fields.id,
+  toField: Incident.fields.projectId,
+});
+
+export const incidentUpdates = domain.relation("IncidentUpdates", {
+  from: Incident,
+  to: IncidentUpdate,
+  kind: "one_to_many",
+  fromField: Incident.fields.id,
+  toField: IncidentUpdate.fields.incidentId,
+});
+
+// ------------------------------------------------------------
+// 6. Operations and laws
+// ------------------------------------------------------------
+
+export const SetField = gen.operation.define("SetField", {
+  input: t.object("SetFieldInput", {
+    field: t.ref("FieldRef"),
+    value: t.unknown,
+  }),
+
+  output: t.object("SetFieldOutput", {
+    previousValue: t.unknown,
+    nextValue: t.unknown,
+  }),
+
+  traits: [
+    traits.deterministic,
+    traits.patchable,
+    traits.invertible,
+    traits.offlineReplaySafe,
+  ],
+
+  laws: [
+    laws.rollbackSafe({
+      inverse: "restore_previous_value",
+    }),
+  ],
+
+  protocols: {
+    patch: gen.operation.patchProtocol({
+      producePatch: ({ input }) =>
+        op.patch.setField(input.field, input.value),
+
+      invertPatch: ({ output }) =>
+        op.patch.setField(output.field, output.previousValue),
+    }),
+  },
+});
+
+export const AppendIncidentUpdate = gen.operation.define("AppendIncidentUpdate", {
+  input: t.object("AppendIncidentUpdateInput", {
+    incidentId: Incident.fields.id.type,
+    updateId: IncidentUpdate.fields.id.type,
+  }),
+
+  output: t.void,
+
+  traits: [
+    traits.deterministic,
+    traits.appendOnly,
+    traits.offlineReplaySafe,
+    traits.auditRelevant,
+  ],
+
+  laws: [
+    laws.idempotent({
+      key: ({ input }) => input.updateId,
+    }),
+  ],
+});
+
+export const TransitionIncidentStatus = gen.operation.define(
+  "TransitionIncidentStatus",
+  {
+    input: t.object("TransitionIncidentStatusInput", {
+      incidentId: Incident.fields.id.type,
+      from: IncidentStatus.type,
+      to: IncidentStatus.type,
+    }),
+
+    output: t.object("TransitionIncidentStatusOutput", {
+      previousStatus: IncidentStatus.type,
+      nextStatus: IncidentStatus.type,
+    }),
+
+    traits: [
+      traits.deterministic,
+      traits.patchable,
+      traits.serverOnly,
+      traits.auditRelevant,
+    ],
+
+    laws: [
+      laws.validStateTransition({
+        machine: IncidentStatus,
+        from: ({ input }) => input.from,
+        to: ({ input }) => input.to,
+      }),
+    ],
+  },
+);
+
+// ------------------------------------------------------------
+// 7. Rules
+// ------------------------------------------------------------
+
+export const isOrgMember = logic.rule("isOrgMember")((ctx, rule) =>
+  rule
+    .vars({
+      session: AuthSession,
+      organization: Organization,
+    })
+    .when(({ session, organization }) =>
+      expr.eq(session.organizationId, organization.id),
+    )
+    .traits([traits.sqlLowerable, traits.clientSafe]),
+);
+
+export const canViewIncident = logic.rule("canViewIncident")((ctx, rule) =>
+  rule
+    .vars({
+      session: AuthSession,
+      incident: Incident,
+    })
+    .when(({ session, incident }) =>
+      expr.eq(session.organizationId, incident.organizationId),
+    )
+    .traits([traits.sqlLowerable]),
+);
+
+export const canManageIncident = logic.rule("canManageIncident")((ctx, rule) =>
+  rule
+    .vars({
+      session: AuthSession,
+      incident: Incident,
+    })
+    .when(({ session, incident }) =>
+      expr.and(
+        expr.eq(session.organizationId, incident.organizationId),
+        expr.or(
+          expr.eq(session.role, "owner"),
+          expr.eq(session.role, "admin"),
+          expr.and(
+            expr.eq(session.role, "responder"),
+            expr.includes(session.teamIds, incident.assignedTeamId),
+          ),
+        ),
+      ),
+    )
+    .traits([traits.sqlLowerable]),
+);
+
+export const canAcknowledgeIncident = logic.rule("canAcknowledgeIncident")(
+  (ctx, rule) =>
+    rule
+      .vars({
+        session: AuthSession,
+        incident: Incident,
+      })
+      .when(({ session, incident }) =>
+        expr.and(
+          canManageIncident.call({ session, incident }),
+          expr.eq(incident.status, "open"),
+        ),
+      ),
+);
+
+export const canResolveIncident = logic.rule("canResolveIncident")((ctx, rule) =>
+  rule
+    .vars({
+      session: AuthSession,
+      incident: Incident,
+    })
+    .when(({ session, incident }) =>
+      expr.and(
+        canManageIncident.call({ session, incident }),
+        expr.or(
+          expr.eq(incident.status, "acknowledged"),
+          expr.eq(incident.status, "mitigated"),
+        ),
+      ),
+    ),
+);
+
+// ------------------------------------------------------------
+// 8. Policies and claims
+// ------------------------------------------------------------
+
+export const incidentPolicy = gen.auth.policy("IncidentPolicy", {
+  target: Incident,
+
+  rules: [
+    gen.auth.allow("read", {
+      when: canViewIncident,
+      enforce: ["server", "database"],
+      exposeClientHint: true,
+    }),
+
+    gen.auth.allow("update", {
+      when: canManageIncident,
+      enforce: ["server"],
+      exposeClientHint: true,
+    }),
+  ],
+});
+
+// ------------------------------------------------------------
+// 9. Keys, resources, and queries
+// ------------------------------------------------------------
+
+export const OpenIncidentsKey = gen.reactivity.keyFamily("openIncidents", {
+  params: {
+    organizationId: Organization.fields.id.type,
+    projectId: t.optional(Project.fields.id.type),
+  },
+});
+
+export const IncidentDetailKey = gen.reactivity.keyFamily("incidentDetail", {
+  params: {
+    incidentId: Incident.fields.id.type,
+  },
+});
+
+export const IncidentTimelineKey = gen.reactivity.keyFamily("incidentTimeline", {
+  params: {
+    incidentId: Incident.fields.id.type,
+  },
+});
+
+export const listOpenIncidents = callable.query("listOpenIncidents")(
+  (ctx, query) =>
+    query
+      .input({
+        organizationId: Organization.fields.id.type,
+        projectId: t.optional(Project.fields.id.type),
+      })
+      .requires(AuthSession)
+      .guard(({ session, input }) =>
+        expr.eq(session.organizationId, input.organizationId),
+      )
+      .reads([
+        Incident.fields.organizationId,
+        Incident.fields.projectId,
+        Incident.fields.status,
+        Incident.fields.severity,
+        Incident.fields.updatedAt,
+      ])
+      .key(({ input }) =>
+        OpenIncidentsKey({
+          organizationId: input.organizationId,
+          projectId: input.projectId,
+        }),
+      )
+      .output(t.array(Incident.type))
+      .body(({ input }) =>
+        Incident.where((i) =>
+          expr.and(
+            expr.eq(i.organizationId, input.organizationId),
+            input.projectId
+              ? expr.eq(i.projectId, input.projectId)
+              : expr.true(),
+            expr.not(expr.includes(["resolved", "cancelled"], i.status)),
+          ),
+        ).orderBy((i) => [i.severity.desc(), i.updatedAt.desc()]),
+      ),
+);
+
+export const getIncidentDetail = callable.query("getIncidentDetail")(
+  (ctx, query) =>
+    query
+      .input({
+        incidentId: Incident.fields.id.type,
+      })
+      .requires(AuthSession)
+      .reads([Incident])
+      .guard(({ session, result }) =>
+        canViewIncident.call({
+          session,
+          incident: result,
+        }),
+      )
+      .key(({ input }) =>
+        IncidentDetailKey({
+          incidentId: input.incidentId,
+        }),
+      )
+      .output(Incident.type)
+      .body(({ input }) =>
+        Incident.findUnique({
+          id: input.incidentId,
+        }),
+      ),
+);
+
+export const getIncidentTimeline = callable.query("getIncidentTimeline")(
+  (ctx, query) =>
+    query
+      .input({
+        incidentId: Incident.fields.id.type,
+      })
+      .requires(AuthSession)
+      .reads([IncidentUpdate])
+      .key(({ input }) =>
+        IncidentTimelineKey({
+          incidentId: input.incidentId,
+        }),
+      )
+      .output(t.array(IncidentUpdate.type))
+      .body(({ input }) =>
+        IncidentUpdate.where((u) =>
+          expr.eq(u.incidentId, input.incidentId),
+        ).orderBy((u) => [u.createdAt.asc()]),
+      ),
+);
+
+// ------------------------------------------------------------
+// 10. Events
+// ------------------------------------------------------------
+
+export const IncidentDeclared = dispatch.event("IncidentDeclared", {
+  payload: t.object("IncidentDeclaredPayload", {
+    eventId: t.uuid,
+    organizationId: Organization.fields.id.type,
+    incidentId: Incident.fields.id.type,
+    projectId: Project.fields.id.type,
+    severity: Severity,
+    title: t.string,
+    occurredAt: t.datetime,
+  }),
+
+  traits: [traits.serializable, traits.durable],
+});
+
+export const IncidentAcknowledged = dispatch.event("IncidentAcknowledged", {
+  payload: t.object("IncidentAcknowledgedPayload", {
+    eventId: t.uuid,
+    organizationId: Organization.fields.id.type,
+    incidentId: Incident.fields.id.type,
+    acknowledgedByUserId: User.fields.id.type,
+    occurredAt: t.datetime,
+  }),
+
+  traits: [traits.serializable, traits.durable],
+});
+
+export const IncidentResolved = dispatch.event("IncidentResolved", {
+  payload: t.object("IncidentResolvedPayload", {
+    eventId: t.uuid,
+    organizationId: Organization.fields.id.type,
+    incidentId: Incident.fields.id.type,
+    resolvedByUserId: User.fields.id.type,
+    occurredAt: t.datetime,
+  }),
+
+  traits: [traits.serializable, traits.durable],
+});
+
+// ------------------------------------------------------------
+// 11. Actions
+// ------------------------------------------------------------
+
+export const declareIncident = callable.action("declareIncident")(
+  (ctx, action) =>
+    action
+      .input({
+        organizationId: Organization.fields.id.type,
+        projectId: Project.fields.id.type,
+        title: t.string,
+        summary: t.optional(t.string),
+        severity: Severity,
+        assignedTeamId: t.optional(Team.fields.id.type),
+      })
+      .requires(AuthSession)
+      .requires(RequestClock)
+      .runsIn(ServerBoundary)
+      .writes([
+        Incident,
+        AuditLog,
+      ])
+      .applies([
+        SetField,
+      ])
+      .emits(IncidentDeclared, ({ input, session, clock, result }) => ({
+        eventId: gen.uuid(),
+        organizationId: input.organizationId,
+        incidentId: result.incident.id,
+        projectId: input.projectId,
+        severity: input.severity,
+        title: input.title,
+        occurredAt: clock.now,
+      }))
+      .body(({ input, session, clock }) => {
+        const incident = Incident.insert({
+          id: gen.uuid(),
+          organizationId: input.organizationId,
+          projectId: input.projectId,
+          title: input.title,
+          summary: input.summary,
+          severity: input.severity,
+          status: "open",
+          createdByUserId: session.userId,
+          assignedTeamId: input.assignedTeamId,
+          acknowledgedByUserId: null,
+          acknowledgedAt: null,
+          mitigatedAt: null,
+          resolvedAt: null,
+          cancelledAt: null,
+          createdAt: clock.now,
+          updatedAt: clock.now,
+        });
+
+        const audit = AuditLog.insert({
+          id: gen.uuid(),
+          organizationId: input.organizationId,
+          actorType: "user",
+          actorUserId: session.userId,
+          action: "incident.declared",
+          entityRef: incident.ref.id,
+          payload: { severity: input.severity },
+          createdAt: clock.now,
+        });
+
+        return { incident, audit };
+      }),
+);
+
+export const acknowledgeIncident = callable.action("acknowledgeIncident")(
+  (ctx, action) =>
+    action
+      .input({
+        incidentId: Incident.fields.id.type,
+      })
+      .requires(AuthSession)
+      .requires(RequestClock)
+      .runsIn(ServerBoundary)
+      .load({
+        incident: getIncidentDetail,
+      })
+      .guard(({ session, incident }) =>
+        canAcknowledgeIncident.call({ session, incident }),
+      )
+      .applies([
+        TransitionIncidentStatus,
+        SetField,
+      ])
+      .writes([
+        Incident.fields.status,
+        Incident.fields.acknowledgedAt,
+        Incident.fields.acknowledgedByUserId,
+        Incident.fields.updatedAt,
+        AuditLog,
+      ])
+      .emits(IncidentAcknowledged, ({ input, session, clock, incident }) => ({
+        eventId: gen.uuid(),
+        organizationId: incident.organizationId,
+        incidentId: input.incidentId,
+        acknowledgedByUserId: session.userId,
+        occurredAt: clock.now,
+      }))
+      .optimistic({
+        strategy: "derive_from_operations",
+        fallback: "invalidate",
+      })
+      .body(({ input, session, clock, incident }) => {
+        Incident.update(input.incidentId, {
+          status: "acknowledged",
+          acknowledgedAt: clock.now,
+          acknowledgedByUserId: session.userId,
+          updatedAt: clock.now,
+        });
+
+        AuditLog.insert({
+          id: gen.uuid(),
+          organizationId: incident.organizationId,
+          actorType: "user",
+          actorUserId: session.userId,
+          action: "incident.acknowledged",
+          entityRef: Incident.ref(input.incidentId).id,
+          payload: {},
+          createdAt: clock.now,
+        });
+      }),
+);
+
+export const resolveIncident = callable.action("resolveIncident")(
+  (ctx, action) =>
+    action
+      .input({
+        incidentId: Incident.fields.id.type,
+        resolutionSummary: t.string,
+      })
+      .requires(AuthSession)
+      .requires(RequestClock)
+      .runsIn(ServerBoundary)
+      .load({
+        incident: getIncidentDetail,
+      })
+      .guard(({ session, incident }) =>
+        canResolveIncident.call({ session, incident }),
+      )
+      .applies([
+        TransitionIncidentStatus,
+        SetField,
+        AppendIncidentUpdate,
+      ])
+      .writes([
+        Incident.fields.status,
+        Incident.fields.resolvedAt,
+        Incident.fields.updatedAt,
+        IncidentUpdate,
+        AuditLog,
+      ])
+      .emits(IncidentResolved, ({ input, session, clock, incident }) => ({
+        eventId: gen.uuid(),
+        organizationId: incident.organizationId,
+        incidentId: input.incidentId,
+        resolvedByUserId: session.userId,
+        occurredAt: clock.now,
+      }))
+      .optimistic({
+        strategy: "derive_from_operations",
+        fallback: "invalidate",
+      })
+      .body(({ input, session, clock, incident }) => {
+        Incident.update(input.incidentId, {
+          status: "resolved",
+          resolvedAt: clock.now,
+          updatedAt: clock.now,
+        });
+
+        IncidentUpdate.insert({
+          id: gen.uuid(),
+          organizationId: incident.organizationId,
+          incidentId: input.incidentId,
+          authorUserId: session.userId,
+          body: input.resolutionSummary,
+          createdAt: clock.now,
+        });
+
+        AuditLog.insert({
+          id: gen.uuid(),
+          organizationId: incident.organizationId,
+          actorType: "user",
+          actorUserId: session.userId,
+          action: "incident.resolved",
+          entityRef: Incident.ref(input.incidentId).id,
+          payload: {
+            resolutionSummary: input.resolutionSummary,
+          },
+          createdAt: clock.now,
+        });
+      }),
+);
+
+// ------------------------------------------------------------
+// 12. Effects, queues, mailboxes, streams, dispatch
+// ------------------------------------------------------------
+
+export const SendEmail = gen.effect.define("email.send", {
+  requires: [deploy.capabilities.email],
+  placement: ServerBoundary,
+});
+
+export const SendSlackMessage = gen.effect.define("slack.send", {
+  requires: [deploy.capabilities.network],
+  placement: ServerBoundary,
+});
+
+export const NotificationMessage = t.object("NotificationMessage", {
+  messageId: t.uuid,
+  organizationId: Organization.fields.id.type,
+  incidentId: Incident.fields.id.type,
+  channel: NotificationChannel,
+  recipientUserId: User.fields.id.type,
+  subject: t.string,
+  body: t.string,
+});
+
+export const NotificationQueue = dataflow.queue("NotificationQueue", {
+  message: NotificationMessage,
+
+  placement: WorkerBoundary,
+
+  storage: storage.durableQueue({
+    name: "notification_queue",
+    encrypted: true,
+  }),
+
+  delivery: delivery.atLeastOnce(),
+
+  retry: retry.exponential({
+    maxAttempts: 8,
+    initialDelayMs: 1_000,
+    maxDelayMs: 60_000,
+  }),
+
+  deadLetter: dataflow.deadLetterQueue("NotificationDeadLetters"),
+
+  idempotency: idempotency.messageId(({ message }) => message.messageId),
+
+  traits: [
+    traits.durable,
+    traits.encrypted,
+    traits.replayable,
+  ],
+});
+
+export const TeamIncidentMailbox = dataflow.mailbox("TeamIncidentMailbox", {
+  message: IncidentDeclared.payload,
+  address: {
+    organizationId: Organization.fields.id.type,
+    teamId: Team.fields.id.type,
+  },
+  baseQueue: NotificationQueue,
+});
+
+export const IncidentEventStream = dataflow.stream("IncidentEventStream", {
+  emits: t.union("IncidentEventPayload", [
+    IncidentDeclared.payload,
+    IncidentAcknowledged.payload,
+    IncidentResolved.payload,
+  ]),
+
+  key: gen.reactivity.keyFamily("incident.events", {
+    organizationId: Organization.fields.id.type,
+  }),
+
+  source: dataflow.source.outbox({
+    events: [IncidentDeclared, IncidentAcknowledged, IncidentResolved],
+  }),
+
+  traits: [
+    traits.streamHot,
+    traits.streamOrdered,
+    traits.streamReplayable,
+    traits.serverOnly,
+  ],
+});
+
+export const enqueueIncidentNotifications = callable.action(
+  "enqueueIncidentNotifications",
+)((ctx, action) =>
+  action
+    .input(IncidentDeclared.payload)
+    .runsIn(WorkerBoundary)
+    .effects([SendEmail, SendSlackMessage])
+    .enqueues(NotificationQueue, ({ input }) => ({
+      messageId: input.eventId,
+      organizationId: input.organizationId,
+      incidentId: input.incidentId,
+      channel: "email",
+      recipientUserId: gen.placeholder("recipientUserId"),
+      subject: `New ${input.severity.toUpperCase()} incident: ${input.title}`,
+      body: `Incident ${input.incidentId} was declared.`,
+    }))
+    .body(({ input }) => {
+      // In target code this lowers to a worker action.
+      // Semantic details are captured by queue/effect/enqueue edges.
+      return gen.runtime.enqueue(NotificationQueue, input);
+    }),
+);
+
+export const notifyOnIncidentDeclared = dispatch.dispatch(
+  "notifyOnIncidentDeclared",
+)({
+  trigger: IncidentDeclared,
+
+  select: ({ event }) => event.payload,
+
+  run: enqueueIncidentNotifications,
+
+  delivery: delivery.outbox({
+    guarantee: "at_least_once",
+    storage: storage.postgresTable("incident_outbox"),
+  }),
+
+  idempotency: idempotency.eventId(({ event }) => event.payload.eventId),
+
+  retry: retry.exponential({
+    maxAttempts: 5,
+    initialDelayMs: 500,
+  }),
+
+  traits: [traits.background],
+});
+
+export const maintainTeamMailbox = dispatch.dispatch("maintainTeamMailbox")({
+  trigger: IncidentDeclared,
+
+  select: ({ event }) => ({
+    address: {
+      organizationId: event.payload.organizationId,
+      teamId: gen.lookup(Incident, event.payload.incidentId).assignedTeamId,
+    },
+    message: event.payload,
+  }),
+
+  run: dataflow.mailbox.enqueue(TeamIncidentMailbox),
+
+  delivery: delivery.inlineTransactional(),
+
+  idempotency: idempotency.eventId(({ event }) => event.payload.eventId),
+});
+
+// ------------------------------------------------------------
+// 13. Reactivity and sync
+// ------------------------------------------------------------
+
+export const OpenIncidentsResource = gen.reactivity.resource(
+  "OpenIncidentsResource",
+)({
+  query: listOpenIncidents,
+  key: OpenIncidentsKey,
+  state: gen.reactivity.resourceState(t.array(Incident.type), t.never),
+  hydration: gen.reactivity.hydration.client(),
+});
+
+export const IncidentDetailResource = gen.reactivity.resource(
+  "IncidentDetailResource",
+)({
+  query: getIncidentDetail,
+  key: IncidentDetailKey,
+  state: gen.reactivity.resourceState(Incident.type, t.never),
+});
+
+export const AcknowledgeIncidentMutation = gen.reactivity.mutation(
+  "AcknowledgeIncidentMutation",
+)({
+  action: acknowledgeIncident,
+
+  optimistic: gen.reactivity.optimistic.derive({
+    from: [TransitionIncidentStatus, SetField],
+    fallback: "invalidate",
+  }),
+
+  invalidates: [
+    IncidentDetailKey.match(({ actionInput }) => ({
+      incidentId: actionInput.incidentId,
+    })),
+    OpenIncidentsKey.any(),
+  ],
+});
+
+export const ResolveIncidentMutation = gen.reactivity.mutation(
+  "ResolveIncidentMutation",
+)({
+  action: resolveIncident,
+
+  optimistic: gen.reactivity.optimistic.derive({
+    from: [TransitionIncidentStatus, AppendIncidentUpdate],
+    fallback: "invalidate",
+  }),
+
+  invalidates: [
+    IncidentDetailKey.match(({ actionInput }) => ({
+      incidentId: actionInput.incidentId,
+    })),
+    IncidentTimelineKey.match(({ actionInput }) => ({
+      incidentId: actionInput.incidentId,
+    })),
+    OpenIncidentsKey.any(),
+  ],
+});
+
+export const IncidentSyncPlan = gen.reactivity.syncPlan("IncidentSyncPlan", {
+  resources: [OpenIncidentsResource, IncidentDetailResource],
+  streams: [IncidentEventStream],
+  mutations: [AcknowledgeIncidentMutation, ResolveIncidentMutation],
+
+  strategy: "semantic",
+  fallback: "broad_invalidation",
+
+  offline: {
+    allow: [acknowledgeIncident],
+    queue: dataflow.offlineQueue("OfflineIncidentCommands", {
+      storage: storage.indexedDb("opsdesk_offline_commands"),
+      encryption: "required",
+      idempotency: idempotency.inputHash(),
+      drainWhen: dataflow.drainTrigger.online(),
+    }),
+  },
+});
+
+// ------------------------------------------------------------
+// 14. UI dialect: AF-UI authoring over canonical UI graph
+// ------------------------------------------------------------
+
+export const IncidentDashboardView = ui.view("IncidentDashboardView")({
+  data: {
+    incidents: OpenIncidentsResource,
+  },
+
+  slots: {
+    root: ui.slot([ui.traits.container]),
+    toolbar: ui.slot([ui.traits.container]),
+    incidentList: ui.slot([ui.traits.collection]),
+    incidentRow: ui.slot([ui.traits.container]),
+    severityBadge: ui.slot([ui.traits.text]),
+    acknowledgeButton: ui.slot([ui.traits.interactive]),
+    resolveButton: ui.slot([ui.traits.interactive]),
+  },
+
+  structure: ({ slots, data }) =>
+    ui.tree(
+      ui.element("Stack", { slot: slots.root }, [
+        ui.element("Toolbar", { slot: slots.toolbar }, [
+          ui.text("Open incidents"),
+        ]),
+
+        ui.collection(data.incidents, {
+          slot: slots.incidentList,
+          itemSlot: slots.incidentRow,
+          renderItem: ({ item }) =>
+            ui.row([
+              ui.text(item.title),
+              ui.badge(item.severity, { slot: slots.severityBadge }),
+              ui.button("Acknowledge", { slot: slots.acknowledgeButton }),
+              ui.button("Resolve", { slot: slots.resolveButton }),
+            ]),
+        }),
+      ]),
+);
+
+export const AcknowledgeBehavior = ui.behavior("AcknowledgeBehavior")({
+  targets: {
+    button: ui.requires(ui.traits.interactive),
+  },
+
+  on: ui.events.press,
+
+  run: acknowledgeIncident,
+
+  input: ({ item }) => ({
+    incidentId: item.id,
+  }),
+
+  enabledWhen: ({ session, item }) =>
+    canAcknowledgeIncident.call({
+      session,
+      incident: item,
+    }),
+});
+
+export const ResolveBehavior = ui.behavior("ResolveBehavior")({
+  targets: {
+    button: ui.requires(ui.traits.interactive),
+  },
+
+  on: ui.events.press,
+
+  run: resolveIncident,
+
+  input: ({ item }) => ({
+    incidentId: item.id,
+    resolutionSummary: "Resolved from dashboard",
+  }),
+
+  enabledWhen: ({ session, item }) =>
+    canResolveIncident.call({
+      session,
+      incident: item,
+    }),
+});
+
+export const IncidentDashboardStyle = ui.style("IncidentDashboardStyle")({
+  tokens: {
+    spacing: ui.token.spacing(4),
+    dangerColor: ui.token.color("red.600"),
+  },
+
+  slots: {
+    severityBadge: ui.styleSlot({
+      variantBy: Incident.fields.severity,
+      variants: {
+        sev1: { color: "red.600", weight: "bold" },
+        sev2: { color: "orange.600" },
+        sev3: { color: "yellow.700" },
+        sev4: { color: "gray.600" },
+      },
+    }),
+  },
+});
+
+export const IncidentDashboard = ui.component("IncidentDashboard")({
+  view: IncidentDashboardView,
+
+  props: {
+    organizationId: Organization.fields.id.type,
+    projectId: t.optional(Project.fields.id.type),
+  },
+}).pipe(
+  ui.attachBehavior(AcknowledgeBehavior, {
+    button: IncidentDashboardView.slots.acknowledgeButton,
+  }),
+
+  ui.attachBehavior(ResolveBehavior, {
+    button: IncidentDashboardView.slots.resolveButton,
+  }),
+
+  ui.attachStyle(IncidentDashboardStyle, {
+    severityBadge: IncidentDashboardView.slots.severityBadge,
+  }),
+);
+
+// JSON-Render catalog/spec target.
+export const IncidentDashboardJsonSpec = ui.jsonRender.spec(
+  "IncidentDashboardJsonSpec",
+)({
+  source: IncidentDashboard,
+
+  mode: "catalog_and_spec",
+
+  aiEditable: true,
+
+  verifyOnImport: [
+    ui.verify.knownCatalogComponents,
+    ui.verify.slotCapabilityCompatibility,
+    ui.verify.actionInputCompatibility,
+    ui.verify.stateBindingCompatibility,
+  ],
+});
+
+// ------------------------------------------------------------
+// 15. Deployment and infrastructure as graph facts
+// ------------------------------------------------------------
+
+export const PostgresDatabase = deploy.resource("PostgresDatabase", {
+  target: targets.postgres,
+  provides: [deploy.capabilities.sql, deploy.capabilities.transactions],
+});
+
+export const NotificationWorker = deploy.worker("NotificationWorker", {
+  boundary: WorkerBoundary,
+
+  handles: [
+    NotificationQueue,
+    notifyOnIncidentDeclared,
+  ],
+
+  requires: [
+    deploy.capabilities.network,
+    deploy.capabilities.email,
+  ],
+});
+
+export const OpsDeskDeployment = deploy.stack("OpsDeskCloudflare")({
+  target: targets.alchemy,
+
+  resources: [
+    PostgresDatabase,
+    NotificationWorker,
+    deploy.secret("SlackWebhookUrl"),
+    deploy.secret("EmailApiKey"),
+    deploy.bucket("IncidentAttachments"),
+  ],
+
+  boundaries: [
+    ClientBoundary,
+    ServerBoundary,
+    WorkerBoundary,
+    DatabaseBoundary,
+  ],
+});
+
+// ------------------------------------------------------------
+// 16. Custom invariant family
+// ------------------------------------------------------------
+
+export const AtLeastOnceRequiresIdempotency =
+  invariant.family("AtLeastOnceRequiresIdempotency")({
+    subject: dispatch.nodes.dispatch,
+
+    when: ({ dispatchNode }) =>
+      expr.eq(dispatchNode.delivery.guarantee, "at_least_once"),
+
+    must: ({ dispatchNode }) =>
+      expr.existsEdge(dispatch.edges.usesIdempotency, {
+        dispatch: dispatchNode,
+      }),
+
+    diagnostic: diagnostic.define("dispatch.at_least_once.requires_idempotency", {
+      severity: "error",
+      audience: ["developer", "ai_agent"],
+      message:
+        "Dispatch uses at-least-once delivery but has no idempotency plan.",
+      remediation: {
+        kind: "add_edge",
+        edgeKind: dispatch.edges.usesIdempotency,
+        suggestion: "Use idempotency.eventId(...) or idempotency.inputHash(...).",
+      },
+    }),
+  });
+
+export const ClientCannotReadServerOnlyFields =
+  invariant.family("ClientCannotReadServerOnlyFields")({
+    subject: ui.nodes.component,
+
+    when: ({ component }) => expr.eq(component.boundary, ClientBoundary),
+
+    must: ({ component }) =>
+      expr.not(
+        expr.existsPath(component, {
+          via: [
+            ui.edges.usesResource,
+            callable.edges.queryReads,
+          ],
+          toTrait: traits.serverOnly,
+        }),
+      ),
+
+    diagnostic: diagnostic.define("ui.client.server_only_field", {
+      severity: "error",
+      audience: ["developer", "ai_agent"],
+      message:
+        "Client component reads a server-only field through a query/resource path.",
+      remediation: {
+        kind: "suggest_boundary_projection",
+        suggestion:
+          "Add a server-safe projection query or mark the field as client-readable.",
+      },
+    }),
+  });
+
+// ------------------------------------------------------------
+// 17. Storage mapping
+// ------------------------------------------------------------
+
+export const OpsDeskStorage = storage.postgres.schema("opsdesk", {
+  database: PostgresDatabase,
+
+  entities: [
+    Organization,
+    User,
+    Team,
+    Project,
+    Incident,
+    IncidentUpdate,
+    AuditLog,
+    NotificationPreference,
+  ],
+
+  naming: storage.naming.snakeCase(),
+
+  policies: [
+    incidentPolicy,
+  ],
+
+  outbox: {
+    events: [IncidentDeclared, IncidentAcknowledged, IncidentResolved],
+    table: "outbox_events",
+  },
+});
+
+// ------------------------------------------------------------
+// 18. Build the graph
+// ------------------------------------------------------------
+
+export const appGraph = gen.graph.pipe(
+  // Boundaries/context/providers
+  ClientBoundary,
+  ServerBoundary,
+  WorkerBoundary,
+  DatabaseBoundary,
+  AuthSession,
+  RequestClock,
+  AuthSessionProvider,
+  ClockProvider,
+
+  // Domain
+  Organization,
+  User,
+  Team,
+  Project,
+  Incident,
+  IncidentUpdate,
+  AuditLog,
+  NotificationPreference,
+  orgUsers,
+  orgProjects,
+  projectIncidents,
+  incidentUpdates,
+
+  // Types/variants/operations
+  Severity,
+  IncidentStatus,
+  NotificationChannel,
+  SetField,
+  AppendIncidentUpdate,
+  TransitionIncidentStatus,
+
+  // Rules/policies
+  isOrgMember,
+  canViewIncident,
+  canManageIncident,
+  canAcknowledgeIncident,
+  canResolveIncident,
+  incidentPolicy,
+
+  // Queries/resources
+  OpenIncidentsKey,
+  IncidentDetailKey,
+  IncidentTimelineKey,
+  listOpenIncidents,
+  getIncidentDetail,
+  getIncidentTimeline,
+  OpenIncidentsResource,
+  IncidentDetailResource,
+
+  // Actions/events/dispatch/dataflow
+  declareIncident,
+  acknowledgeIncident,
+  resolveIncident,
+  IncidentDeclared,
+  IncidentAcknowledged,
+  IncidentResolved,
+  NotificationQueue,
+  TeamIncidentMailbox,
+  IncidentEventStream,
+  enqueueIncidentNotifications,
+  notifyOnIncidentDeclared,
+  maintainTeamMailbox,
+
+  // Reactivity/sync
+  AcknowledgeIncidentMutation,
+  ResolveIncidentMutation,
+  IncidentSyncPlan,
+
+  // UI
+  IncidentDashboardView,
+  AcknowledgeBehavior,
+  ResolveBehavior,
+  IncidentDashboardStyle,
+  IncidentDashboard,
+  IncidentDashboardJsonSpec,
+
+  // Deployment/storage/invariants
+  PostgresDatabase,
+  NotificationWorker,
+  OpsDeskDeployment,
+  AtLeastOnceRequiresIdempotency,
+  ClientCannotReadServerOnlyFields,
+  OpsDeskStorage,
+);
+
+// TypeScript witness.
+// This is erased at runtime, but useful for editor feedback.
+export type OpsDeskGraph = GraphWitnessOf<typeof appGraph>;
+export type IncidentValue = InferEntity<typeof Incident>;
+export type IncidentDeclaredPayload = InferDecoded<typeof IncidentDeclared.payload>;
+
+// ------------------------------------------------------------
+// 19. Example graph traversal
+// ------------------------------------------------------------
+
+const fieldsWrittenByResolveIncident = appGraph.edges
+  .ofKind(callable.edges.actionWrites)
+  .whereEndpoint("action", resolveIncident.ref)
+  .targets("field");
+
+const queriesReadingIncidentStatus = appGraph.view(
+  gen.reactivity.views.readWriteIndex,
+).queriesReadingField(Incident.fields.status);
+
+const behaviorAttachments = appGraph.edges
+  .ofKind(ui.edges.behaviorAttachesToSlot)
+  .whereEndpoint("behavior", AcknowledgeBehavior.ref)
+  .targets("slot");
+
+const requiredProviders = appGraph.view(
+  gen.core.views.providerSatisfaction,
+).requirementsFor(resolveIncident.ref);
+
+// ------------------------------------------------------------
+// 20. Compile pipelines
+// ------------------------------------------------------------
+
+export const checkResult = appGraph.run(
+  pipeline("opsdesk.check")
+    .verifySymbols()
+    .verifyDialects()
+    .verifyInvariants()
+    .deriveReadWriteEdges()
+    .deriveRequirementBubbling()
+    .deriveReactivity()
+    .deriveOptimisticPlans()
+    .deriveDeploymentRequirements()
+    .canonicalize()
+    .diagnostics({
+      format: "developer",
+      failOn: "error",
+    }),
+);
+
+export const buildResult = appGraph.run(
+  pipeline("opsdesk.build")
+    .from(checkResult)
+
+    // Legalize logical source IR into target dialect IR.
+    .legalize(targets.postgres)
+    .legalize(targets.effect)
+    .legalize(targets.react)
+    .legalize(targets.jsonRender)
+    .legalize(targets.openapi)
+    .legalize(targets.alchemy)
+
+    // Lower target dialect IR.
+    .lower(targets.postgres)
+    .lower(targets.effect)
+    .lower(targets.react)
+    .lower(targets.jsonRender)
+    .lower(targets.openapi)
+    .lower(targets.alchemy)
+
+    // Emit artifacts.
+    .emit(targets.postgres.artifacts.sqlMigration, {
+      path: "generated/db/migrations/001_init.sql",
+    })
+
+    .emit(targets.effect.artifacts.serverRuntime, {
+      path: "generated/server/runtime.ts",
+    })
+
+    .emit(targets.react.artifacts.component, {
+      source: IncidentDashboard,
+      path: "generated/web/components/IncidentDashboard.tsx",
+    })
+
+    .emit(targets.jsonRender.artifacts.catalog, {
+      source: IncidentDashboardJsonSpec,
+      path: "generated/ui/catalog.json",
+    })
+
+    .emit(targets.jsonRender.artifacts.spec, {
+      source: IncidentDashboardJsonSpec,
+      path: "generated/ui/incident-dashboard.json",
+    })
+
+    .emit(targets.openapi.artifacts.document, {
+      path: "generated/openapi.json",
+    })
+
+    .emit(targets.alchemy.artifacts.stack, {
+      source: OpsDeskDeployment,
+      path: "generated/deploy/opsdesk.ts",
+    })
+
+    .emit(targets.docs.artifacts.markdown, {
+      path: "generated/docs/opsdesk.md",
+    })
+
+    .emit(targets.tests.artifacts.propertyTests, {
+      path: "generated/tests/opsdesk.generated.test.ts",
+    }),
+);
+
+// ------------------------------------------------------------
+// 21. AI-imported UI JSON flow
+// ------------------------------------------------------------
+
+export const importedDashboardCandidate = ui.jsonRender.importSpec({
+  catalog: "generated/ui/catalog.json",
+  spec: "ai-output/incident-dashboard-candidate.json",
+
+  into: appGraph,
+
+  mode: "candidate",
+
+  verify: [
+    ui.verify.knownCatalogComponents,
+    ui.verify.slotCapabilityCompatibility,
+    ui.verify.actionInputCompatibility,
+    ui.verify.stateBindingCompatibility,
+    ClientCannotReadServerOnlyFields,
+  ],
+});
+
+if (!importedDashboardCandidate.ok) {
+  for (const finding of importedDashboardCandidate.diagnostics) {
+    console.error(finding.message);
+    console.error(finding.remediation);
+  }
+}
+
+// ------------------------------------------------------------
+// 22. What this single graph gives the compiler
+// ------------------------------------------------------------
+
+/**
+ * From the same graph, Gen2 can derive:
+ *
+ * - Postgres tables, indexes, foreign keys, RLS policies, outbox table.
+ * - Effect server runtime, providers, layers, actions, errors.
+ * - React components, hooks, mutations, disabled states, optimistic updates.
+ * - JSON-Render catalog/spec for AI-editable UI.
+ * - OpenAPI routes for queries/actions.
+ * - Alchemy deployment resources: workers, database, secrets, queues.
+ * - Cache keys and invalidation edges.
+ * - Offline queue and replay plan.
+ * - At-least-once idempotency verification.
+ * - State-machine transition diagnostics.
+ * - Invariant checks and AI repair hints.
+ * - Audit docs and property tests.
+ */
+```
+
+The key thing this example demonstrates is that the public API can feel domain-specific and ergonomic while the compiler only sees graph facts:
+
+```txt
+Node(Entity): Incident
+Node(Action): acknowledgeIncident
+Node(Rule): canAcknowledgeIncident
+Node(Event): IncidentAcknowledged
+Node(Queue): NotificationQueue
+Node(Component): IncidentDashboard
+
+Edge(OwnsField): Incident -> Incident.status
+Edge(ActionWrites): acknowledgeIncident -> Incident.status
+Edge(ActionEmits): acknowledgeIncident -> IncidentAcknowledged
+Edge(GuardedBy): acknowledgeIncident -> canAcknowledgeIncident
+Edge(QueryReads): listOpenIncidents -> Incident.status
+Edge(InvalidatesKey): acknowledgeIncident -> OpenIncidentsKey
+Edge(DispatchTriggeredBy): notifyOnIncidentDeclared -> IncidentDeclared
+Edge(BehaviorRunsAction): AcknowledgeBehavior -> acknowledgeIncident
+Edge(ComponentReturnsView): IncidentDashboard -> IncidentDashboardView
+
+Trait: Incident.status is state-machine-backed
+Trait: TransitionIncidentStatus is patchable
+Trait: NotificationQueue is durable
+Trait: IncidentDashboard is client-renderable
+Trait: IncidentDeclared is serializable
+```
+
+That is the “ultimate API” shape: rich authoring surface, tiny graph ontology, strong TypeScript witness layer, runtime graph verification, and target-specific output derived from the same semantic source.
+
+
+Below is the **revised version** of the same real-world app, assuming the suggested improvements were integrated.
+
+The main difference from the previous example:
+
+```txt id="5rxumh"
+Before:
+  Manually wire every entity, rule, action, event, mutation, resource,
+  dispatch, UI view, storage mapping, and deployment resource.
+
+Now:
+  Use kits, feature modules, recipes, projections, generated graph witnesses,
+  capability reports, explain/trace APIs, importers, and semantic graph diffs.
+
+Still:
+  Everything lowers to the same graph facts.
+```
+
+This is still an idealized target API, but it should feel closer to what the library should actually expose.
+
+---
+
+```ts id="0qtv1n"
+import {
+  createGen,
+  dialects,
+  targets,
+  traits,
+  laws,
+  invariant,
+  diagnostic,
+  sensitivity,
+  delivery,
+  idempotency,
+  retry,
+  expr,
+  type InferEntity,
+  type InferDecoded,
+  type GraphWitnessOf,
+} from "@dirived/gen2";
+
+/**
+ * OpsDesk:
+ *
+ * A multi-tenant incident-management SaaS app.
+ *
+ * Features:
+ * - organizations, users, teams, projects
+ * - incident lifecycle state machine
+ * - tenant-scoped auth
+ * - server/database policy enforcement
+ * - incident dashboard UI
+ * - optimistic actions
+ * - notification outbox + worker queue
+ * - JSON-render AI-editable UI
+ * - generated Postgres, React, Effect server, OpenAPI, Alchemy deployment
+ * - graph diagnostics, capability reports, semantic diff, explain/trace
+ */
+
+// -----------------------------------------------------------------------------
+// 1. Create app with a high-level SaaS kit
+// -----------------------------------------------------------------------------
+
+export const gen = createGen("opsdesk")
+  .use(dialects.core)
+  .use(dialects.type)
+  .use(dialects.domain)
+  .use(dialects.operation)
+  .use(dialects.expr)
+  .use(dialects.rule)
+  .use(dialects.callable)
+  .use(dialects.auth)
+  .use(dialects.dispatch)
+  .use(dialects.reactivity)
+  .use(dialects.dataflow)
+  .use(dialects.ui)
+  .use(dialects.storage)
+  .use(dialects.variant)
+  .use(dialects.invariant)
+  .use(dialects.diagnostic)
+  .use(dialects.deployment)
+  .use(targets.postgres)
+  .use(targets.effect)
+  .use(targets.react)
+  .use(targets.jsonRender)
+  .use(targets.openapi)
+  .use(targets.alchemy)
+  .use(targets.tests)
+  .use(targets.docs);
+
+const t = gen.type;
+const domain = gen.domain;
+const rule = gen.rule;
+const dataflow = gen.dataflow;
+const ui = gen.ui;
+const deploy = gen.deployment;
+const storage = gen.storage;
+
+// High-level kit.
+// This creates conventional boundaries, provider slots, pass defaults,
+// target defaults, and common SaaS graph recipes.
+export const app = gen.kit.saas("OpsDesk", {
+  tenantModel: "organization",
+  auth: "session-cookie",
+  database: targets.postgres,
+  server: targets.effect,
+  web: targets.react,
+  deployment: targets.alchemy,
+
+  defaults: {
+    timestamps: true,
+    audit: true,
+    softDelete: false,
+    optimisticMutations: true,
+    jsonRender: true,
+    generatedTests: true,
+  },
+});
+
+// Kit-provided boundaries.
+export const {
+  ClientBoundary,
+  ServerBoundary,
+  WorkerBoundary,
+  DatabaseBoundary,
+} = app.boundaries;
+
+// Kit-provided contexts/providers.
+export const AuthSession = app.auth.session({
+  fields: {
+    userId: t.uuid,
+    organizationId: t.uuid,
+    role: t.enum("OrgRole", ["owner", "admin", "responder", "viewer"] as const),
+    teamIds: t.array(t.uuid),
+  },
+  sensitivity: sensitivity.auth(),
+});
+
+export const RequestClock = app.context.clock("RequestClock");
+
+export const AuthModule = app.module("auth").pipe(
+  AuthSession,
+  app.auth.cookieProvider("opsdesk_session", {
+    provides: AuthSession,
+    runsIn: ServerBoundary,
+  }),
+  RequestClock,
+  app.provider.runtimeClock({
+    provides: RequestClock,
+    runsIn: ServerBoundary,
+  }),
+);
+
+// -----------------------------------------------------------------------------
+// 2. Shared domain types and variants
+// -----------------------------------------------------------------------------
+
+export const Severity = t.enum("IncidentSeverity", [
+  "sev1",
+  "sev2",
+  "sev3",
+  "sev4",
+] as const);
+
+export const NotificationChannel = t.enum("NotificationChannel", [
+  "email",
+  "slack",
+  "sms",
+] as const);
+
+export const IncidentStatus = gen.variant.stateMachine("IncidentStatus", {
+  states: ["open", "acknowledged", "mitigated", "resolved", "cancelled"] as const,
+
+  transitions: {
+    open: ["acknowledged", "cancelled"],
+    acknowledged: ["mitigated", "resolved", "cancelled"],
+    mitigated: ["resolved"],
+    resolved: [],
+    cancelled: [],
+  },
+
+  terminal: ["resolved", "cancelled"] as const,
+});
+
+// -----------------------------------------------------------------------------
+// 3. Core domain module
+// -----------------------------------------------------------------------------
+
+export class Organization extends domain.entity.class("Organization", {
+  traits: [traits.tenantRoot],
+
+  fields: {
+    id: domain.field(t.uuid).primary(),
+    slug: domain.field(t.string).unique(),
+    name: domain.field(t.string),
+    plan: domain.field(t.enum("Plan", ["free", "team", "enterprise"] as const)),
+    createdAt: domain.field(t.datetime),
+  },
+
+  invariants: [
+    invariant.unique("organization.slug", {
+      field: "slug",
+      diagnostic: diagnostic.define("org.slug.not_unique", {
+        severity: "error",
+        message: "Organization slug must be unique.",
+        remediation: {
+          kind: "suggest_value",
+          field: "slug",
+        },
+      }),
+    }),
+  ],
+}) {}
+
+export class User extends domain.entity.class("User", {
+  fields: {
+    id: domain.field(t.uuid).primary(),
+    organizationId: domain.field(Organization.fields.id.type).indexed(),
+    email: domain.field(t.email).unique(),
+    displayName: domain.field(t.string),
+    role: domain.field(AuthSession.type.fields.role),
+    createdAt: domain.field(t.datetime),
+    disabledAt: domain.field(t.optional(t.datetime)),
+  },
+
+  indexes: [
+    domain.index("user_by_org_email", {
+      fields: ["organizationId", "email"],
+      unique: true,
+    }),
+  ],
+}) {}
+
+export class Team extends domain.entity.class("Team", {
+  fields: {
+    id: domain.field(t.uuid).primary(),
+    organizationId: domain.field(Organization.fields.id.type).indexed(),
+    name: domain.field(t.string),
+    createdAt: domain.field(t.datetime),
+  },
+}) {}
+
+export class Project extends domain.entity.class("Project", {
+  fields: {
+    id: domain.field(t.uuid).primary(),
+    organizationId: domain.field(Organization.fields.id.type).indexed(),
+    owningTeamId: domain.field(Team.fields.id.type).indexed(),
+    name: domain.field(t.string),
+    slug: domain.field(t.string),
+    createdAt: domain.field(t.datetime),
+    archivedAt: domain.field(t.optional(t.datetime)),
+  },
+
+  indexes: [
+    domain.index("project_by_org_slug", {
+      fields: ["organizationId", "slug"],
+      unique: true,
+    }),
+  ],
+}) {}
+
+export const CoreDomainModule = app.module("core-domain").pipe(
+  Organization,
+  User,
+  Team,
+  Project,
+
+  domain.relation("OrganizationUsers", {
+    from: Organization,
+    to: User,
+    kind: "one_to_many",
+    fromField: Organization.fields.id,
+    toField: User.fields.organizationId,
+    integrity: domain.integrity.databaseForeignKey({ onDelete: "restrict" }),
+  }),
+
+  domain.relation("OrganizationProjects", {
+    from: Organization,
+    to: Project,
+    kind: "one_to_many",
+    fromField: Organization.fields.id,
+    toField: Project.fields.organizationId,
+  }),
+
+  domain.relation("TeamProjects", {
+    from: Team,
+    to: Project,
+    kind: "one_to_many",
+    fromField: Team.fields.id,
+    toField: Project.fields.owningTeamId,
+  }),
+);
+
+// -----------------------------------------------------------------------------
+// 4. Incident entities
+// -----------------------------------------------------------------------------
+
+export class Incident extends domain.entity.class("Incident", {
+  traits: [traits.audited, traits.syncable],
+
+  fields: {
+    id: domain.field(t.uuid).primary(),
+    organizationId: domain.field(Organization.fields.id.type).indexed(),
+    projectId: domain.field(Project.fields.id.type).indexed(),
+    title: domain.field(t.string),
+    summary: domain.field(t.optional(t.string)),
+    severity: domain.field(Severity),
+    status: domain.field(IncidentStatus.type),
+    createdByUserId: domain.field(User.fields.id.type),
+    assignedTeamId: domain.field(t.optional(Team.fields.id.type)),
+    acknowledgedByUserId: domain.field(t.optional(User.fields.id.type)),
+    acknowledgedAt: domain.field(t.optional(t.datetime)),
+    mitigatedAt: domain.field(t.optional(t.datetime)),
+    resolvedAt: domain.field(t.optional(t.datetime)),
+    cancelledAt: domain.field(t.optional(t.datetime)),
+    createdAt: domain.field(t.datetime),
+    updatedAt: domain.field(t.datetime),
+  },
+
+  invariants: [
+    invariant.required("incident.title", {
+      field: "title",
+      diagnostic: diagnostic.define("incident.title.required", {
+        severity: "error",
+        message: "Incident title is required.",
+      }),
+    }),
+
+    invariant.custom("sev1_requires_assigned_team", {
+      subject: "Incident",
+
+      when: ({ incident }) =>
+        expr.eq(incident.severity, "sev1"),
+
+      must: ({ incident }) =>
+        expr.isNotNull(incident.assignedTeamId),
+
+      diagnostic: diagnostic.define("incident.sev1.requires_team", {
+        severity: "error",
+        audience: ["developer", "ai_agent", "user"],
+        message: "SEV1 incidents must have an assigned team.",
+        remediation: {
+          kind: "set_field",
+          field: "assignedTeamId",
+        },
+      }),
+    }),
+  ],
+}) {}
+
+export class IncidentUpdate extends domain.entity.class("IncidentUpdate", {
+  traits: [traits.appendOnly],
+
+  fields: {
+    id: domain.field(t.uuid).primary(),
+    organizationId: domain.field(Organization.fields.id.type).indexed(),
+    incidentId: domain.field(Incident.fields.id.type).indexed(),
+    authorUserId: domain.field(User.fields.id.type),
+    body: domain.field(t.string),
+    createdAt: domain.field(t.datetime),
+  },
+}) {}
+
+export class AuditLog extends domain.entity.class("AuditLog", {
+  traits: [traits.appendOnly, traits.serverOnly],
+
+  fields: {
+    id: domain.field(t.uuid).primary(),
+    organizationId: domain.field(Organization.fields.id.type).indexed(),
+    actorType: domain.field(t.enum("AuditActorType", ["user", "system", "worker"] as const)),
+    actorUserId: domain.field(t.optional(User.fields.id.type)),
+    action: domain.field(t.string),
+    entityRef: domain.field(t.string),
+    payload: domain.field(t.json),
+    createdAt: domain.field(t.datetime),
+  },
+}) {}
+
+export class NotificationPreference extends domain.entity.class(
+  "NotificationPreference",
+  {
+    fields: {
+      id: domain.field(t.uuid).primary(),
+      organizationId: domain.field(Organization.fields.id.type).indexed(),
+      userId: domain.field(User.fields.id.type).indexed(),
+      channel: domain.field(NotificationChannel),
+      enabled: domain.field(t.boolean),
+      minimumSeverity: domain.field(Severity),
+    },
+  },
+) {}
+
+export const IncidentDomainModule = app.module("incident-domain").pipe(
+  Incident,
+  IncidentUpdate,
+  AuditLog,
+  NotificationPreference,
+
+  domain.relation("ProjectIncidents", {
+    from: Project,
+    to: Incident,
+    kind: "one_to_many",
+    fromField: Project.fields.id,
+    toField: Incident.fields.projectId,
+  }),
+
+  domain.relation("IncidentUpdates", {
+    from: Incident,
+    to: IncidentUpdate,
+    kind: "one_to_many",
+    fromField: Incident.fields.id,
+    toField: IncidentUpdate.fields.incidentId,
+  }),
+);
+
+// -----------------------------------------------------------------------------
+// 5. Client-safe projections
+// -----------------------------------------------------------------------------
+
+/**
+ * Projection APIs are first-class safety tools.
+ *
+ * UI should usually consume projections rather than whole server entities.
+ */
+export const IncidentCard = app.projection("IncidentCard", {
+  from: Incident,
+  placement: ClientBoundary,
+
+  fields: {
+    id: Incident.fields.id,
+    organizationId: Incident.fields.organizationId,
+    projectId: Incident.fields.projectId,
+    title: Incident.fields.title,
+    severity: Incident.fields.severity,
+    status: Incident.fields.status,
+    assignedTeamId: Incident.fields.assignedTeamId,
+    updatedAt: Incident.fields.updatedAt,
+  },
+});
+
+export const IncidentDetail = app.projection("IncidentDetail", {
+  from: Incident,
+  placement: ClientBoundary,
+
+  fields: {
+    id: Incident.fields.id,
+    organizationId: Incident.fields.organizationId,
+    projectId: Incident.fields.projectId,
+    title: Incident.fields.title,
+    summary: Incident.fields.summary,
+    severity: Incident.fields.severity,
+    status: Incident.fields.status,
+    assignedTeamId: Incident.fields.assignedTeamId,
+    acknowledgedByUserId: Incident.fields.acknowledgedByUserId,
+    acknowledgedAt: Incident.fields.acknowledgedAt,
+    mitigatedAt: Incident.fields.mitigatedAt,
+    resolvedAt: Incident.fields.resolvedAt,
+    createdAt: Incident.fields.createdAt,
+    updatedAt: Incident.fields.updatedAt,
+  },
+});
+
+// -----------------------------------------------------------------------------
+// 6. Rules and policy
+// -----------------------------------------------------------------------------
+
+export const canViewIncident = rule("canViewIncident")((ctx, r) =>
+  r
+    .vars({
+      session: AuthSession,
+      incident: Incident,
+    })
+    .when(({ session, incident }) =>
+      expr.eq(session.organizationId, incident.organizationId),
+    )
+    .traits([traits.sqlLowerable]),
+);
+
+export const canManageIncident = rule("canManageIncident")((ctx, r) =>
+  r
+    .vars({
+      session: AuthSession,
+      incident: Incident,
+    })
+    .when(({ session, incident }) =>
+      expr.and(
+        expr.eq(session.organizationId, incident.organizationId),
+        expr.or(
+          expr.eq(session.role, "owner"),
+          expr.eq(session.role, "admin"),
+          expr.and(
+            expr.eq(session.role, "responder"),
+            expr.includes(session.teamIds, incident.assignedTeamId),
+          ),
+        ),
+      ),
+    )
+    .traits([traits.sqlLowerable]),
+);
+
+export const canAcknowledgeIncident = rule("canAcknowledgeIncident")((ctx, r) =>
+  r
+    .vars({
+      session: AuthSession,
+      incident: Incident,
+    })
+    .when(({ session, incident }) =>
+      expr.and(
+        canManageIncident.call({ session, incident }),
+        expr.eq(incident.status, "open"),
+      ),
+    ),
+);
+
+export const canResolveIncident = rule("canResolveIncident")((ctx, r) =>
+  r
+    .vars({
+      session: AuthSession,
+      incident: Incident,
+    })
+    .when(({ session, incident }) =>
+      expr.and(
+        canManageIncident.call({ session, incident }),
+        expr.or(
+          expr.eq(incident.status, "acknowledged"),
+          expr.eq(incident.status, "mitigated"),
+        ),
+      ),
+    ),
+);
+
+export const IncidentPolicy = app.auth.tenantPolicy("IncidentPolicy", {
+  tenant: Organization,
+  entity: Incident,
+
+  rules: {
+    read: canViewIncident,
+    update: canManageIncident,
+  },
+
+  enforce: {
+    read: ["server", "database"],
+    update: ["server"],
+  },
+
+  exposeClientHints: true,
+});
+
+// -----------------------------------------------------------------------------
+// 7. Operations and recipes
+// -----------------------------------------------------------------------------
+
+/**
+ * Recipes generate operation/action/event/mutation/test facts from a compact
+ * semantic declaration.
+ *
+ * The recipe still exposes every generated piece for customization.
+ */
+
+export const IncidentLifecycle = app.recipes.stateMachineFeature("IncidentLifecycle", {
+  entity: Incident,
+  state: Incident.fields.status,
+  machine: IncidentStatus,
+
+  timestampField: Incident.fields.updatedAt,
+
+  audit: {
+    entity: AuditLog,
+    actorContext: AuthSession,
+  },
+
+  operations: {
+    transition: {
+      traits: [
+        traits.deterministic,
+        traits.patchable,
+        traits.serverOnly,
+      ],
+
+      laws: [
+        laws.validStateTransition({
+          machine: IncidentStatus,
+        }),
+
+        laws.rollbackSafe({
+          assurance: "by_construction",
+        }),
+      ],
+    },
+  },
+
+  transitions: {
+    acknowledge: {
+      name: "acknowledgeIncident",
+      from: "open",
+      to: "acknowledged",
+
+      input: {
+        incidentId: Incident.fields.id.type,
+      },
+
+      guard: canAcknowledgeIncident,
+
+      set: ({ session, clock }) => ({
+        acknowledgedByUserId: session.userId,
+        acknowledgedAt: clock.now,
+        updatedAt: clock.now,
+      }),
+
+      event: {
+        name: "IncidentAcknowledged",
+        payload: ({ input, session, clock, incident }) => ({
+          eventId: app.uuid(),
+          organizationId: incident.organizationId,
+          incidentId: input.incidentId,
+          acknowledgedByUserId: session.userId,
+          occurredAt: clock.now,
+        }),
+      },
+
+      optimistic: true,
+      offline: true,
+    },
+
+    resolve: {
+      name: "resolveIncident",
+      from: ["acknowledged", "mitigated"],
+      to: "resolved",
+
+      input: {
+        incidentId: Incident.fields.id.type,
+        resolutionSummary: t.string,
+      },
+
+      guard: canResolveIncident,
+
+      append: {
+        entity: IncidentUpdate,
+        values: ({ input, session, clock, incident }) => ({
+          id: app.uuid(),
+          organizationId: incident.organizationId,
+          incidentId: input.incidentId,
+          authorUserId: session.userId,
+          body: input.resolutionSummary,
+          createdAt: clock.now,
+        }),
+      },
+
+      set: ({ clock }) => ({
+        resolvedAt: clock.now,
+        updatedAt: clock.now,
+      }),
+
+      event: {
+        name: "IncidentResolved",
+        payload: ({ input, session, clock, incident }) => ({
+          eventId: app.uuid(),
+          organizationId: incident.organizationId,
+          incidentId: input.incidentId,
+          resolvedByUserId: session.userId,
+          occurredAt: clock.now,
+        }),
+      },
+
+      optimistic: true,
+      offline: false,
+    },
+  },
+});
+
+// Generated pieces are still addressable.
+export const acknowledgeIncident = IncidentLifecycle.actions.acknowledge;
+export const resolveIncident = IncidentLifecycle.actions.resolve;
+
+export const IncidentAcknowledged = IncidentLifecycle.events.acknowledge;
+export const IncidentResolved = IncidentLifecycle.events.resolve;
+
+export const AcknowledgeIncidentMutation =
+  IncidentLifecycle.mutations.acknowledge;
+
+export const ResolveIncidentMutation =
+  IncidentLifecycle.mutations.resolve;
+
+// Manual action still possible when needed.
+export const declareIncident = app.action("declareIncident")((ctx, action) =>
+  action
+    .input({
+      organizationId: Organization.fields.id.type,
+      projectId: Project.fields.id.type,
+      title: t.string,
+      summary: t.optional(t.string),
+      severity: Severity,
+      assignedTeamId: t.optional(Team.fields.id.type),
+    })
+    .requires(AuthSession)
+    .requires(RequestClock)
+    .runsIn(ServerBoundary)
+    .writes([Incident, AuditLog])
+    .body(({ input, session, clock }) => {
+      const incident = Incident.insert({
+        id: app.uuid(),
+        organizationId: input.organizationId,
+        projectId: input.projectId,
+        title: input.title,
+        summary: input.summary,
+        severity: input.severity,
+        status: "open",
+        assignedTeamId: input.assignedTeamId,
+        createdByUserId: session.userId,
+        createdAt: clock.now,
+        updatedAt: clock.now,
+      });
+
+      AuditLog.insert({
+        id: app.uuid(),
+        organizationId: input.organizationId,
+        actorType: "user",
+        actorUserId: session.userId,
+        action: "incident.declared",
+        entityRef: incident.ref.id,
+        payload: { severity: input.severity },
+        createdAt: clock.now,
+      });
+
+      return { incident };
+    })
+    .event("IncidentDeclared", ({ input, result, clock }) => ({
+      eventId: app.uuid(),
+      organizationId: input.organizationId,
+      incidentId: result.incident.id,
+      projectId: input.projectId,
+      severity: input.severity,
+      title: input.title,
+      occurredAt: clock.now,
+    })),
+);
+
+export const IncidentDeclared = declareIncident.events.IncidentDeclared;
+
+// -----------------------------------------------------------------------------
+// 8. Queries, keys, resources, and sync
+// -----------------------------------------------------------------------------
+
+/**
+ * Query/resource recipes generate key families, resource state,
+ * read edges, client-safe projections, target hooks, and tests.
+ */
+
+export const IncidentQueries = app.recipes.queryResourceSet("IncidentQueries", {
+  entity: Incident,
+
+  projection: {
+    list: IncidentCard,
+    detail: IncidentDetail,
+  },
+
+  queries: {
+    listOpen: {
+      name: "listOpenIncidents",
+
+      input: {
+        organizationId: Organization.fields.id.type,
+        projectId: t.optional(Project.fields.id.type),
+      },
+
+      key: "openIncidents",
+
+      requires: [AuthSession],
+
+      guard: ({ session, input }) =>
+        expr.eq(session.organizationId, input.organizationId),
+
+      where: ({ input, row }) =>
+        expr.and(
+          expr.eq(row.organizationId, input.organizationId),
+          input.projectId
+            ? expr.eq(row.projectId, input.projectId)
+            : expr.true(),
+          expr.not(expr.includes(["resolved", "cancelled"], row.status)),
+        ),
+
+      orderBy: ({ row }) => [
+        row.severity.desc(),
+        row.updatedAt.desc(),
+      ],
+    },
+
+    detail: {
+      name: "getIncidentDetail",
+
+      input: {
+        incidentId: Incident.fields.id.type,
+      },
+
+      key: "incidentDetail",
+
+      requires: [AuthSession],
+
+      whereUnique: ({ input }) => ({
+        id: input.incidentId,
+      }),
+
+      guardResult: ({ session, result }) =>
+        canViewIncident.call({
+          session,
+          incident: result,
+        }),
+    },
+  },
+});
+
+export const listOpenIncidents = IncidentQueries.queries.listOpen;
+export const getIncidentDetail = IncidentQueries.queries.detail;
+
+export const OpenIncidentsKey = IncidentQueries.keys.listOpen;
+export const IncidentDetailKey = IncidentQueries.keys.detail;
+
+export const OpenIncidentsResource = IncidentQueries.resources.listOpen;
+export const IncidentDetailResource = IncidentQueries.resources.detail;
+
+// Timeline resource remains custom because it reads IncidentUpdate.
+export const IncidentTimeline = app.recipes.queryResource("IncidentTimeline", {
+  entity: IncidentUpdate,
+
+  projection: IncidentUpdate,
+
+  query: {
+    name: "getIncidentTimeline",
+
+    input: {
+      incidentId: Incident.fields.id.type,
+    },
+
+    key: "incidentTimeline",
+
+    requires: [AuthSession],
+
+    where: ({ input, row }) =>
+      expr.eq(row.incidentId, input.incidentId),
+
+    orderBy: ({ row }) => [row.createdAt.asc()],
+  },
+});
+
+export const getIncidentTimeline = IncidentTimeline.query;
+export const IncidentTimelineKey = IncidentTimeline.key;
+export const IncidentTimelineResource = IncidentTimeline.resource;
+
+export const IncidentSyncPlan = app.sync.semantic("IncidentSyncPlan", {
+  resources: [
+    OpenIncidentsResource,
+    IncidentDetailResource,
+    IncidentTimelineResource,
+  ],
+
+  mutations: [
+    AcknowledgeIncidentMutation,
+    ResolveIncidentMutation,
+  ],
+
+  derive: {
+    invalidation: true,
+    optimisticPatches: true,
+    rollback: true,
+  },
+
+  fallback: {
+    opaque: "broad_invalidation",
+    unprovablePatch: "invalidate",
+  },
+
+  offline: {
+    allow: [acknowledgeIncident],
+
+    queue: app.recipes.offlineCommandQueue("OfflineIncidentCommands", {
+      storage: storage.indexedDb("opsdesk_offline_commands"),
+      encryption: "required",
+      idempotency: "input_hash",
+      drainWhen: "online",
+    }),
+  },
+});
+
+// -----------------------------------------------------------------------------
+// 9. Notifications: effect, queue, dispatch, worker
+// -----------------------------------------------------------------------------
+
+/**
+ * Notification recipe generates:
+ * - effect definitions
+ * - queue
+ * - dead-letter queue
+ * - worker action
+ * - dispatch from event
+ * - deployment requirements
+ * - diagnostics for idempotency/delivery
+ */
+
+export const IncidentNotifications = app.recipes.notificationPipeline(
+  "IncidentNotifications",
+  {
+    trigger: IncidentDeclared,
+
+    channels: ["email", "slack"],
+
+    effects: {
+      email: app.effect("email.send", {
+        requires: [deploy.capabilities.email],
+        placement: ServerBoundary,
+      }),
+
+      slack: app.effect("slack.send", {
+        requires: [deploy.capabilities.network],
+        placement: ServerBoundary,
+      }),
+    },
+
+    queue: {
+      name: "NotificationQueue",
+      placement: WorkerBoundary,
+
+      message: t.object("NotificationMessage", {
+        messageId: t.uuid,
+        organizationId: Organization.fields.id.type,
+        incidentId: Incident.fields.id.type,
+        channel: NotificationChannel,
+        recipientUserId: User.fields.id.type,
+        subject: t.string,
+        body: t.string,
+      }),
+
+      storage: storage.durableQueue({
+        name: "notification_queue",
+        encrypted: true,
+      }),
+
+      delivery: delivery.atLeastOnce(),
+
+      retry: retry.exponential({
+        maxAttempts: 8,
+        initialDelayMs: 1_000,
+        maxDelayMs: 60_000,
+      }),
+
+      idempotency: idempotency.messageId(({ message }) => message.messageId),
+      deadLetter: true,
+    },
+
+    selectRecipients: ({ event }) =>
+      app.query.inline("selectIncidentNotificationRecipients", {
+        from: NotificationPreference,
+        where: (pref) =>
+          expr.and(
+            expr.eq(pref.organizationId, event.payload.organizationId),
+            expr.eq(pref.enabled, true),
+          ),
+      }),
+
+    message: ({ event, recipient }) => ({
+      messageId: event.payload.eventId,
+      organizationId: event.payload.organizationId,
+      incidentId: event.payload.incidentId,
+      channel: recipient.channel,
+      recipientUserId: recipient.userId,
+      subject: `New ${event.payload.severity.toUpperCase()} incident: ${event.payload.title}`,
+      body: `Incident ${event.payload.incidentId} was declared.`,
+    }),
+
+    deliveryPlan: delivery.outbox({
+      guarantee: "at_least_once",
+      storage: storage.postgresTable("incident_outbox"),
+    }),
+
+    idempotency: idempotency.eventId(({ event }) => event.payload.eventId),
+  },
+);
+
+export const NotificationQueue = IncidentNotifications.queue;
+export const notifyOnIncidentDeclared = IncidentNotifications.dispatch;
+export const NotificationWorkerAction = IncidentNotifications.workerAction;
+
+// -----------------------------------------------------------------------------
+// 10. UI feature recipe plus custom slot attachments
+// -----------------------------------------------------------------------------
+
+/**
+ * UI recipe generates:
+ * - view
+ * - slots
+ * - component
+ * - resource bindings
+ * - mutation behaviors
+ * - JSON-render catalog/spec
+ * - React component target model
+ *
+ * Then we customize slots/styles manually.
+ */
+
+export const IncidentDashboardFeature = app.recipes.dashboard("IncidentDashboard", {
+  resource: OpenIncidentsResource,
+
+  item: IncidentCard,
+
+  title: "Open incidents",
+
+  slots: {
+    root: ui.slot([ui.traits.container]),
+    toolbar: ui.slot([ui.traits.container]),
+    list: ui.slot([ui.traits.collection]),
+    row: ui.slot([ui.traits.container]),
+    severityBadge: ui.slot([ui.traits.text]),
+    acknowledgeButton: ui.slot([ui.traits.interactive]),
+    resolveButton: ui.slot([ui.traits.interactive]),
+  },
+
+  columns: [
+    { label: "Title", value: (i) => i.title },
+    { label: "Severity", value: (i) => i.severity, slot: "severityBadge" },
+    { label: "Status", value: (i) => i.status },
+    { label: "Updated", value: (i) => i.updatedAt },
+  ],
+
+  actions: [
+    {
+      label: "Acknowledge",
+      action: acknowledgeIncident,
+      slot: "acknowledgeButton",
+      input: ({ item }) => ({
+        incidentId: item.id,
+      }),
+      enabledWhen: ({ session, item }) =>
+        canAcknowledgeIncident.call({
+          session,
+          incident: item,
+        }),
+    },
+
+    {
+      label: "Resolve",
+      action: resolveIncident,
+      slot: "resolveButton",
+      input: ({ item }) => ({
+        incidentId: item.id,
+        resolutionSummary: "Resolved from dashboard",
+      }),
+      enabledWhen: ({ session, item }) =>
+        canResolveIncident.call({
+          session,
+          incident: item,
+        }),
+    },
+  ],
+
+  jsonRender: {
+    aiEditable: true,
+    verifyOnImport: [
+      ui.verify.knownCatalogComponents,
+      ui.verify.slotCapabilityCompatibility,
+      ui.verify.actionInputCompatibility,
+      ui.verify.stateBindingCompatibility,
+    ],
+  },
+});
+
+export const IncidentDashboard = IncidentDashboardFeature.component;
+export const IncidentDashboardView = IncidentDashboardFeature.view;
+export const IncidentDashboardJsonSpec = IncidentDashboardFeature.jsonRenderSpec;
+
+export const IncidentDashboardStyle = ui.style("IncidentDashboardStyle")({
+  tokens: {
+    spacing: ui.token.spacing(4),
+    dangerColor: ui.token.color("red.600"),
+  },
+
+  slots: {
+    severityBadge: ui.styleSlot({
+      variantBy: Incident.fields.severity,
+      variants: {
+        sev1: { color: "red.600", weight: "bold" },
+        sev2: { color: "orange.600" },
+        sev3: { color: "yellow.700" },
+        sev4: { color: "gray.600" },
+      },
+    }),
+  },
+});
+
+export const IncidentDashboardUiModule = app.module("incident-ui").pipe(
+  IncidentDashboardFeature,
+  ui.attachStyle(IncidentDashboardStyle, {
+    severityBadge: IncidentDashboardView.slots.severityBadge,
+  }),
+);
+
+// -----------------------------------------------------------------------------
+// 11. Custom invariant families
+// -----------------------------------------------------------------------------
+
+export const AtLeastOnceRequiresIdempotency =
+  invariant.family("AtLeastOnceRequiresIdempotency")({
+    subject: app.dispatch.nodes.dispatch,
+
+    when: ({ dispatchNode }) =>
+      expr.eq(dispatchNode.delivery.guarantee, "at_least_once"),
+
+    must: ({ dispatchNode }) =>
+      expr.existsEdge(app.dispatch.edges.usesIdempotency, {
+        dispatch: dispatchNode,
+      }),
+
+    diagnostic: diagnostic.define("dispatch.at_least_once.requires_idempotency", {
+      severity: "error",
+      audience: ["developer", "ai_agent"],
+      message:
+        "Dispatch uses at-least-once delivery but has no idempotency plan.",
+      remediation: {
+        kind: "add_edge",
+        edgeKind: app.dispatch.edges.usesIdempotency,
+        suggestion: "Use idempotency.eventId(...) or idempotency.inputHash(...).",
+      },
+    }),
+  });
+
+export const ClientCannotReadServerOnlyFields =
+  invariant.family("ClientCannotReadServerOnlyFields")({
+    subject: ui.nodes.component,
+
+    when: ({ component }) =>
+      expr.eq(component.boundary, ClientBoundary),
+
+    must: ({ component }) =>
+      expr.not(
+        expr.existsPath(component, {
+          via: [
+            ui.edges.usesResource,
+            app.callable.edges.queryReads,
+          ],
+          toTrait: traits.serverOnly,
+        }),
+      ),
+
+    diagnostic: diagnostic.define("ui.client.server_only_field", {
+      severity: "error",
+      audience: ["developer", "ai_agent"],
+      message:
+        "Client component reads a server-only field through a query/resource path.",
+      remediation: {
+        kind: "suggest_projection",
+        suggestion:
+          "Use a client-safe projection or move the component to a server boundary.",
+      },
+    }),
+  });
+
+export const InvariantModule = app.module("invariants").pipe(
+  AtLeastOnceRequiresIdempotency,
+  ClientCannotReadServerOnlyFields,
+);
+
+// -----------------------------------------------------------------------------
+// 12. Storage and deployment
+// -----------------------------------------------------------------------------
+
+export const OpsDeskStorage = app.recipes.postgresStorage("OpsDeskStorage", {
+  databaseName: "opsdesk",
+
+  entities: [
+    Organization,
+    User,
+    Team,
+    Project,
+    Incident,
+    IncidentUpdate,
+    AuditLog,
+    NotificationPreference,
+  ],
+
+  naming: storage.naming.snakeCase(),
+
+  policies: [
+    IncidentPolicy,
+  ],
+
+  outbox: {
+    events: [
+      IncidentDeclared,
+      IncidentAcknowledged,
+      IncidentResolved,
+    ],
+    table: "outbox_events",
+  },
+});
+
+export const OpsDeskDeployment = app.recipes.alchemyStack("OpsDeskCloudflare", {
+  resources: [
+    OpsDeskStorage.database,
+    IncidentNotifications.worker,
+    deploy.secret("SlackWebhookUrl"),
+    deploy.secret("EmailApiKey"),
+    deploy.bucket("IncidentAttachments"),
+  ],
+
+  boundaries: [
+    ClientBoundary,
+    ServerBoundary,
+    WorkerBoundary,
+    DatabaseBoundary,
+  ],
+
+  capabilities: [
+    deploy.capabilities.sql,
+    deploy.capabilities.transactions,
+    deploy.capabilities.queue,
+    deploy.capabilities.email,
+    deploy.capabilities.network,
+  ],
+});
+
+export const DeploymentModule = app.module("deployment").pipe(
+  OpsDeskStorage,
+  OpsDeskDeployment,
+);
+
+// -----------------------------------------------------------------------------
+// 13. Compose feature modules into the app graph
+// -----------------------------------------------------------------------------
+
+export const IncidentModule = app.module("incident").pipe(
+  IncidentDomainModule,
+
+  Severity,
+  IncidentStatus,
+
+  canViewIncident,
+  canManageIncident,
+  canAcknowledgeIncident,
+  canResolveIncident,
+  IncidentPolicy,
+
+  IncidentLifecycle,
+  declareIncident,
+
+  IncidentQueries,
+  IncidentTimeline,
+  IncidentSyncPlan,
+
+  IncidentNotifications,
+
+  IncidentDashboardUiModule,
+);
+
+export const appGraph = gen.graph.pipe(
+  AuthModule,
+  CoreDomainModule,
+  IncidentModule,
+  InvariantModule,
+  DeploymentModule,
+);
+
+// TypeScript graph witness.
+export type OpsDeskGraph = GraphWitnessOf<typeof appGraph>;
+export type IncidentValue = InferEntity<typeof Incident>;
+export type IncidentCardValue = InferDecoded<typeof IncidentCard.type>;
+export type IncidentDeclaredPayload = InferDecoded<typeof IncidentDeclared.payload>;
+
+// -----------------------------------------------------------------------------
+// 14. Capability report
+// -----------------------------------------------------------------------------
+
+/**
+ * Capability reports help users and AI agents understand what is legal
+ * before emission.
+ */
+
+export const capabilityReport = appGraph.capabilities.report({
+  targets: [
+    targets.postgres,
+    targets.react,
+    targets.jsonRender,
+    targets.effect,
+    targets.alchemy,
+  ],
+
+  focus: [
+    IncidentDashboard,
+    IncidentSyncPlan,
+    notifyOnIncidentDeclared,
+    OpsDeskDeployment,
+  ],
+});
+
+capabilityReport.print();
+
+/**
+ * Example report:
+ *
+ * IncidentDashboard:
+ *   React: supported
+ *   JSON-Render: supported
+ *   Client-safe rules: partial
+ *     canResolveIncident reads assignedTeamId through IncidentCard projection: supported
+ *
+ * notifyOnIncidentDeclared:
+ *   At-least-once delivery: supported
+ *   Idempotency: supported by eventId
+ *   Outbox: supported by Postgres target
+ *
+ * IncidentSyncPlan:
+ *   Optimistic acknowledgeIncident: exact patch
+ *   Optimistic resolveIncident: patch + timeline append
+ *   Offline acknowledgeIncident: supported
+ *   Offline resolveIncident: intentionally disabled
+ */
+
+// -----------------------------------------------------------------------------
+// 15. Explain and trace APIs
+// -----------------------------------------------------------------------------
+
+export const explainOpenIncidentsInvalidation = appGraph.explain(
+  app.reactivity.edges.invalidatesKey,
+  {
+    action: acknowledgeIncident,
+    key: OpenIncidentsKey.any(),
+  },
+);
+
+/**
+ * Example explanation:
+ *
+ * acknowledgeIncident invalidates OpenIncidentsKey because:
+ * 1. acknowledgeIncident applies TransitionIncidentStatus.
+ * 2. TransitionIncidentStatus writes Incident.status.
+ * 3. listOpenIncidents reads Incident.status.
+ * 4. listOpenIncidents derives OpenIncidentsKey.
+ * 5. status transition open -> acknowledged does not remove the incident
+ *    from the open list, but it changes visible row state.
+ * 6. exact row patch is available through PatchProtocol.
+ */
+
+export const explainDashboardButton = appGraph.explain(
+  ui.edges.behaviorRunsAction,
+  {
+    behavior: IncidentDashboardFeature.behaviors.acknowledge,
+    action: acknowledgeIncident,
+  },
+);
+
+/**
+ * Example explanation:
+ *
+ * Acknowledge button runs acknowledgeIncident because:
+ * 1. Dashboard recipe declared row action Acknowledge.
+ * 2. acknowledgeButton slot has UiInteractive.
+ * 3. Acknowledge behavior requires UiInteractive.
+ * 4. action input maps item.id -> incidentId.
+ * 5. enabledWhen is canAcknowledgeIncident.
+ */
+
+export const artifactTrace = appGraph.traceArtifact(
+  "generated/web/components/IncidentDashboard.tsx",
+);
+
+// -----------------------------------------------------------------------------
+// 16. AI-imported JSON-render candidate
+// -----------------------------------------------------------------------------
+
+/**
+ * Importers are peers to emitters.
+ *
+ * AI-generated UI specs come in as candidate graph facts.
+ * They are verified before acceptance.
+ */
+
+export const importedDashboardCandidate = gen.import.jsonRenderSpec({
+  catalog: "generated/ui/catalog.json",
+  spec: "ai-output/incident-dashboard-candidate.json",
+
+  into: appGraph,
+
+  namespace: "ai.dashboard.candidate",
+
+  mode: "candidate",
+
+  verify: [
+    ui.verify.knownCatalogComponents,
+    ui.verify.slotCapabilityCompatibility,
+    ui.verify.actionInputCompatibility,
+    ui.verify.stateBindingCompatibility,
+    ClientCannotReadServerOnlyFields,
+  ],
+});
+
+if (!importedDashboardCandidate.ok) {
+  for (const finding of importedDashboardCandidate.diagnostics) {
+    console.error(finding.code);
+    console.error(finding.message);
+    console.error(finding.remediation);
+  }
+}
+
+export const reviewedDashboardGraph = importedDashboardCandidate.ok
+  ? appGraph.pipe(importedDashboardCandidate.acceptedFacts)
+  : appGraph;
+
+// -----------------------------------------------------------------------------
+// 17. Semantic graph diff
+// -----------------------------------------------------------------------------
+
+/**
+ * Graph diff is semantic, not textual.
+ *
+ * It powers:
+ * - migration generation
+ * - AI review
+ * - deployment change reports
+ * - target breaking-change reports
+ */
+
+export const previousGraph = gen.import.previousGraph({
+  path: "generated/graphs/opsdesk.previous.graph.json",
+});
+
+export const semanticDiff = gen.graph.diff(previousGraph, appGraph);
+
+semanticDiff.print({
+  format: "review",
+});
+
+/**
+ * Example:
+ *
+ * Added Entity IncidentUpdate
+ * Added Action resolveIncident
+ * Added Event IncidentResolved
+ * Changed Query listOpenIncidents: projection Incident -> IncidentCard
+ * Added Queue NotificationQueue
+ * Added Worker NotificationWorker
+ * Added Invariant ClientCannotReadServerOnlyFields
+ */
+
+// -----------------------------------------------------------------------------
+// 18. Build/check pipelines
+// -----------------------------------------------------------------------------
+
+export const checkResult = appGraph.run(
+  app.pipeline("opsdesk.check")
+    .verifySymbols()
+    .verifyDialects()
+    .verifyInvariants()
+    .verifyPolicies()
+    .deriveReadWriteEdges()
+    .deriveRequirementBubbling()
+    .deriveReactivity()
+    .deriveOptimisticPlans()
+    .deriveDeploymentRequirements()
+    .capabilityReport(capabilityReport)
+    .canonicalize()
+    .diagnostics({
+      audience: "developer",
+      failOn: "error",
+    }),
+);
+
+export const legalized = checkResult.graph.legalize({
+  targets: [
+    targets.postgres,
+    targets.effect,
+    targets.react,
+    targets.jsonRender,
+    targets.openapi,
+    targets.alchemy,
+    targets.tests,
+    targets.docs,
+  ],
+});
+
+/**
+ * Emitters consume legalized target dialect IR only.
+ * Direct source-dialect emission is not allowed.
+ */
+export const buildResult = legalized.emit([
+  targets.postgres.artifacts.sqlMigration({
+    path: "generated/db/migrations/001_init.sql",
+  }),
+
+  targets.effect.artifacts.serverRuntime({
+    path: "generated/server/runtime.ts",
+  }),
+
+  targets.react.artifacts.component({
+    source: IncidentDashboard,
+    path: "generated/web/components/IncidentDashboard.tsx",
+  }),
+
+  targets.jsonRender.artifacts.catalog({
+    source: IncidentDashboardJsonSpec,
+    path: "generated/ui/catalog.json",
+  }),
+
+  targets.jsonRender.artifacts.spec({
+    source: IncidentDashboardJsonSpec,
+    path: "generated/ui/incident-dashboard.json",
+  }),
+
+  targets.openapi.artifacts.document({
+    path: "generated/openapi.json",
+  }),
+
+  targets.alchemy.artifacts.stack({
+    source: OpsDeskDeployment,
+    path: "generated/deploy/opsdesk.ts",
+  }),
+
+  targets.tests.artifacts.propertyTests({
+    path: "generated/tests/opsdesk.property.generated.test.ts",
+    include: [
+      "state_machine_transitions",
+      "policy_matrix",
+      "operation_laws",
+      "optimistic_rollback",
+      "offline_replay",
+      "invariant_preservation",
+    ],
+  }),
+
+  targets.tests.artifacts.fixtures({
+    path: "generated/tests/opsdesk.fixtures.ts",
+  }),
+
+  targets.docs.artifacts.markdown({
+    path: "generated/docs/opsdesk.md",
+  }),
+
+  targets.typescript.artifacts.graphWitness({
+    path: "generated/opsdesk.graph.d.ts",
+  }),
+
+  targets.graph.artifacts.snapshot({
+    path: "generated/graphs/opsdesk.graph.json",
+  }),
+]);
+
+// -----------------------------------------------------------------------------
+// 19. What the recipe-based graph still contains
+// -----------------------------------------------------------------------------
+
+/**
+ * Even though the authoring API is much higher-level, the graph still contains
+ * precise semantic facts:
+ *
+ * Node(Entity): Incident
+ * Node(Field): Incident.status
+ * Node(StateMachine): IncidentStatus
+ * Node(Action): acknowledgeIncident
+ * Node(Event): IncidentAcknowledged
+ * Node(Mutation): AcknowledgeIncidentMutation
+ * Node(Query): listOpenIncidents
+ * Node(Resource): OpenIncidentsResource
+ * Node(Component): IncidentDashboard
+ * Node(Queue): NotificationQueue
+ * Node(DeploymentResource): NotificationWorker
+ *
+ * Edge(OwnsField): Incident -> Incident.status
+ * Edge(ActionWrites): acknowledgeIncident -> Incident.status
+ * Edge(ActionEmits): acknowledgeIncident -> IncidentAcknowledged
+ * Edge(QueryReads): listOpenIncidents -> Incident.status
+ * Edge(GuardedBy): acknowledgeIncident -> canAcknowledgeIncident
+ * Edge(InvalidatesKey): acknowledgeIncident -> OpenIncidentsKey
+ * Edge(BehaviorRunsAction): AcknowledgeBehavior -> acknowledgeIncident
+ * Edge(DispatchTriggeredBy): notifyOnIncidentDeclared -> IncidentDeclared
+ * Edge(QueueHandledBy): NotificationQueue -> NotificationWorkerAction
+ *
+ * Trait: TransitionIncidentStatus is patchable
+ * Trait: IncidentStatus is exhaustive
+ * Trait: NotificationQueue is durable
+ * Trait: IncidentDashboard is client-renderable
+ * Trait: IncidentDeclared is serializable
+ */
+```
+
+## Why this version is better
+
+The earlier example proved the graph can express everything. This version shows how the library can be used comfortably.
+
+The important improvements are:
+
+```txt id="mefmpi"
+1. Kits establish app-level defaults.
+2. Modules provide human/agent edit boundaries.
+3. Recipes encode common graph patterns.
+4. Projections make client safety explicit.
+5. Generated pieces remain addressable and customizable.
+6. Capability reports explain target support before emission.
+7. Explain/trace APIs make derived facts trustworthy.
+8. Importers allow AI-generated and legacy artifacts to become graph facts.
+9. Graph diff supports migrations, reviews, and deployment planning.
+10. Target legalization is mandatory before emission.
+11. Tests/docs/graph witnesses are first-class artifacts.
+```
+
+The ultimate API should support both levels:
+
+```txt id="aivzkf"
+High-level:
+  app.recipes.stateMachineFeature(...)
+  app.recipes.dashboard(...)
+  app.recipes.notificationPipeline(...)
+
+Low-level:
+  domain.entity(...)
+  rule(...)
+  action(...)
+  edge(...)
+  dispatch(...)
+  ui.attachBehavior(...)
+```
+
+That gives users and AI agents a good default path without hiding the semantic graph underneath.

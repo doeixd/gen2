@@ -1,4 +1,6 @@
-# Core Primitives And Composition Model
+# Core Primitives And Composition Model (pre-Phase-5 snapshot)
+
+> **HISTORICAL.** Snapshot of the primitive model before Phase 5; superseded first by [`core-primitives.md`](./core-primitives.md) and then by the graph-kernel architecture ([`docs/revised2/PLAN.md`](./revised2/PLAN.md), [`docs/revision/revised-core.md`](./revision/revised-core.md)). Kept for diffing the trajectory only.
 
 Gen2 is a typed semantic IR SDK for full-stack applications. Its core idea is that application meaning should be described once as static, inspectable TypeScript values, then checked, derived, generated, visualized, and evolved from that graph.
 

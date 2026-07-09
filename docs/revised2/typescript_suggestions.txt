@@ -1,0 +1,5449 @@
+The current direction is already good: `defineEdgeFromKind`, `nodesOfKindDef`, `edgesOfKindDef`, and `defineDialect` are using typed witnesses instead of pure strings. The biggest remaining problem is that those witnesses are **not carried far enough**. Types are inferred at creation time, then erased into broad `KernelGraph`, `KernelEdge`, `KernelObjectRef`, `string`, or `Dialect` later.
+
+Your own cheat sheet’s core rule fits these files well: create typed values first, then let APIs infer from those values; avoid user-written casts; keep the captured generic alive through derived APIs. 
+
+## 1. Make `KernelGraph` generic over its registered contents
+
+Right now `KernelGraph` stores broad maps:
+
+```ts
+nodes: ReadonlyMap<string, KernelNode>;
+edges: ReadonlyMap<string, KernelEdge>;
+```
+
+and `registerNode` / `registerEdge` return plain `KernelGraph`, so every registration loses the specific node/edge type immediately.  
+
+A better public API would accumulate graph state:
+
+```ts
+type KernelGraphState = {
+  types: Record<string, KernelType<any>>;
+  nodes: Record<string, KernelNode<any, any, any, any>>;
+  edges: Record<string, KernelEdge<any, any, any>>;
+  traits: Record<string, TraitDef>;
+};
+
+type KernelGraph<TState extends KernelGraphState = EmptyGraphState> = {
+  readonly id: KernelId<"graph">;
+  readonly nodes: ReadonlyMap<keyof TState["nodes"] & string, TState["nodes"][keyof TState["nodes"] & string]>;
+  readonly edges: ReadonlyMap<keyof TState["edges"] & string, TState["edges"][keyof TState["edges"] & string]>;
+};
+```
+
+Then registration can preserve state:
+
+```ts
+function registerNode<
+  const TGraph extends KernelGraph<any>,
+  const TNode extends KernelNode<any, any, any, any>,
+>(
+  graph: TGraph,
+  node: TNode,
+): AddNode<TGraph, TNode>;
+
+function registerEdge<
+  const TGraph extends KernelGraph<any>,
+  const TEdge extends KernelEdge<any, any, any>,
+>(
+  graph: TGraph,
+  edge: TEdge,
+): AddEdge<TGraph, TEdge>;
+```
+
+This would let later graph queries infer from what was actually registered.
+
+## 2. Add a fluent graph builder for better DX
+
+The functional API is clean, but repeated immutable calls get noisy:
+
+```ts
+let graph = createKernelGraph();
+graph = registerNode(graph, a);
+graph = registerEdge(graph, e);
+```
+
+Since registration accumulates meaningful type state, this is a good place for a type-state builder:
+
+```ts
+const graph = createGraph()
+  .node(userNode)
+  .node(sessionNode)
+  .edge(ownsEdge)
+  .edge(dependsOnEdge)
+  .done();
+
+graph.nodes.of(USER_NODE_KIND);
+// typed as user nodes only
+```
+
+Shape:
+
+```ts
+type GraphBuilder<TState extends KernelGraphState> = {
+  node<const TNode extends KernelNode<any, any, any, any>>(
+    node: TNode,
+  ): GraphBuilder<AddNodeState<TState, TNode>>;
+
+  edge<const TEdge extends KernelEdge<any, any, any>>(
+    edge: TEdge,
+  ): GraphBuilder<AddEdgeState<TState, TEdge>>;
+
+  done(): KernelGraph<TState>;
+};
+```
+
+This follows the type-state pattern from the cheat sheet: use fluent builders when chained calls accumulate meaningful type information. 
+
+## 3. Make `KernelObjectRef` kind-aware and target-aware
+
+`KernelEdgeEndpoint` currently stores:
+
+```ts
+target: KernelObjectRef;
+```
+
+which means endpoint roles know their role ID, but not what kind of object they are allowed to point to. 
+
+I’d make refs carry object kind, node/edge/type kind, and ID:
+
+```ts
+type KernelRef<
+  TObjectKind extends "node" | "edge" | "type" | "trait",
+  TKind,
+  const TId extends string,
+> = {
+  objectKind: TObjectKind;
+  kind: TKind;
+  id: KernelId<TObjectKind>;
+  name?: string;
+};
+```
+
+Then endpoints can be constrained:
+
+```ts
+type EndpointRoleDef<
+  const TName extends string,
+  TTarget extends KernelRef<any, any, any> = KernelRef<any, any, any>,
+> = {
+  name: TName;
+  target: TTarget;
+};
+```
+
+So an edge kind can say:
+
+```ts
+const SATISFIES = defineEdgeKind({
+  id: "edge.kind.satisfies",
+  endpoints: {
+    provider: endpoint("provider").target(PROVIDER_NODE_KIND),
+    requirement: endpoint("requirement").target(REQUIREMENT_NODE_KIND),
+  },
+});
+```
+
+Then this becomes a type error:
+
+```ts
+defineEdgeFromKind(SATISFIES, "edge:x", {
+  provider: refTo(requirementNode), // error
+  requirement: refTo(providerNode), // error
+});
+```
+
+This is probably the highest-value type-safety upgrade.
+
+## 4. Preserve endpoint output types in `defineEdgeFromKind`
+
+`defineEdgeFromKind` already infers endpoint input names from the edge kind, which is good. But the return type erases endpoint shape back to `readonly KernelEdgeEndpoint[]`. 
+
+Current:
+
+```ts
+): KernelEdge<EdgeKindFromDef<Kind>, readonly KernelEdgeEndpoint[], Metadata>
+```
+
+Better:
+
+```ts
+type EndpointTupleFor<Kind extends EdgeKindDef> = {
+  readonly [K in keyof Kind["endpoints"]]: EndpointOutputFor<Kind["endpoints"][K]>;
+};
+
+type EdgeFromKind<
+  Kind extends EdgeKindDef,
+  Metadata extends EdgeMetadataFor<Kind> = EdgeMetadataFor<Kind>,
+> = KernelEdge<
+  EdgeKindFromDef<Kind>,
+  EndpointTupleFor<Kind>,
+  Metadata
+>;
+
+function defineEdgeFromKind<
+  const Kind extends EdgeKindDef,
+  const Metadata extends EdgeMetadataFor<Kind> = EdgeMetadataFor<Kind>,
+>(
+  kind: Kind,
+  id: EdgeIdFor<Kind>,
+  endpoints: EndpointInputsFor<Kind>,
+  input?: EdgeInputFor<Kind, Metadata>,
+): EdgeFromKind<Kind, Metadata>;
+```
+
+Then `edge.endpoints` stays typed without needing a second read helper.
+
+## 5. Make `readEdgeEndpoints` require a matching edge kind
+
+`readEdgeEndpoints(kind, edge)` returns endpoints for `kind`, but accepts any `KernelEdge`. Internally it searches by role ID and casts the object to `EndpointOutputsFor<Kind>`. 
+
+Make the edge parameter generic on the same kind:
+
+```ts
+function readEdgeEndpoints<
+  const Kind extends EdgeKindDef,
+  const Edge extends EdgeFromKind<Kind>,
+>(
+  kind: Kind,
+  edge: Edge,
+): EndpointOutputsFor<Kind>;
+```
+
+For dynamic cases, expose an unsafe/dynamic variant separately:
+
+```ts
+function tryReadEdgeEndpoints<const Kind extends EdgeKindDef>(
+  kind: Kind,
+  edge: KernelEdge,
+): EndpointOutputsFor<Kind> | undefined {
+  if (edge.kind.id !== kind.id) return undefined;
+  // runtime validation here
+}
+```
+
+That gives you two clear modes:
+
+```ts
+readEdgeEndpoints(SATISFIES, typedEdge);    // fully typed
+tryReadEdgeEndpoints(SATISFIES, unknownEdge); // runtime checked
+```
+
+## 6. Replace role-prefix graph traversal with edge-kind direction metadata
+
+`edgesBetween` and `neighborhood` infer direction using string prefixes like `"edge.role.owner"`, `"edge.role.source"`, `"edge.role.from"`, `"edge.role.writer"`, etc.  The same source/target heuristic appears again in `neighborhood`. 
+
+That is brittle. Direction should be part of the edge-kind witness:
+
+```ts
+const OWNS = defineEdgeKind({
+  id: "edge.kind.owns",
+  endpoints: {
+    owner: endpoint("owner").direction("out"),
+    owned: endpoint("owned").direction("in"),
+  },
+});
+```
+
+Then graph traversal can become:
+
+```ts
+graph.edges.from(node).via(OWNS);
+graph.edges.to(node).via(OWNS);
+graph.neighborhood(node, {
+  depth: 2,
+  via: [OWNS, DEPENDS_ON, SATISFIES],
+});
+```
+
+Type shape:
+
+```ts
+type EndpointDirection = "source" | "target" | "undirected";
+
+type DirectedEndpointRoleDef<Name extends string, Direction extends EndpointDirection> =
+  EndpointRoleDef<Name> & {
+    direction: Direction;
+  };
+```
+
+This improves both correctness and DX: users no longer need to encode semantics into naming conventions.
+
+## 7. Accept typed refs/nodes, not `string` IDs, in graph queries
+
+These APIs accept `string` IDs:
+
+```ts
+edgesFrom(graph, nodeId: string)
+edgesTo(graph, targetId: string)
+edgesBetween(graph, fromId: string, toId: string)
+neighborhood(graph, nodeId: string, ...)
+```
+
+
+
+Prefer overloads that accept typed nodes or refs:
+
+```ts
+function edgesFrom<const TNode extends KernelNode<any, any, any, any>>(
+  graph: KernelGraph<any>,
+  node: TNode | RefOf<TNode>,
+): readonly OutgoingEdgesFor<typeof graph, TNode>[];
+
+function edgesFrom(
+  graph: KernelGraph,
+  nodeId: KernelId<"node">,
+): readonly KernelEdge[];
+```
+
+Usage:
+
+```ts
+graph.edges.from(userNode);
+graph.edges.from(refOf(userNode));
+graph.edges.from(nodeId("node:user:1"));
+```
+
+You can keep the raw ID API, but it should be the low-level overload, not the best-DX path.
+
+## 8. Turn graph queries into a typed query object
+
+Current query functions are flat utilities:
+
+```ts
+nodesOfKindDef(graph, kind)
+edgesOfKindDef(graph, kind)
+nodesWithTrait(graph, trait)
+```
+
+They work, but composition is awkward. 
+
+A composable API could look like:
+
+```ts
+graph
+  .nodes(PROVIDER_NODE_KIND)
+  .withTrait(EXTERNAL_IMPL)
+  .where((node) => node.metadata.custom.source_kind === "service_constructor")
+  .toArray();
+
+graph
+  .edges(SATISFIES_EDGE_KIND)
+  .whereEndpoint("provider", providerNode)
+  .map((edge) => edge.endpoints.requirement.target);
+```
+
+Type shape:
+
+```ts
+type NodeQuery<TGraph, TNode> = {
+  withTrait<const TTrait extends TraitDef>(
+    trait: TTrait,
+  ): NodeQuery<TGraph, TNode & HasTrait<TTrait>>;
+
+  where(fn: (node: TNode) => boolean): NodeQuery<TGraph, TNode>;
+
+  map<TResult>(fn: (node: TNode) => TResult): readonly TResult[];
+
+  toArray(): readonly TNode[];
+};
+```
+
+This makes graph traversal composable without giving up inference.
+
+## 9. Make dialect registry generic over registered dialects
+
+`defineDialect` preserves literal arrays nicely, but `DialectRegistry` stores broad `Dialect` values in `Map<string, Dialect>` and returns broad `Dialect | undefined` from lookups.  
+
+Make the registry carry the dialect tuple:
+
+```ts
+type DialectRegistry<const TDialects extends readonly Dialect[]> = {
+  getById<const TId extends DialectIds<TDialects>>(
+    id: TId,
+  ): ExtractDialectById<TDialects, TId>;
+
+  getDialectForNodeKind<const TKind extends NodeKindsOf<TDialects>[number]>(
+    kind: TKind,
+  ): DialectOwningNodeKind<TDialects, TKind>;
+
+  getDialectForEdgeKind<const TKind extends EdgeKindsOf<TDialects>[number]>(
+    kind: TKind,
+  ): DialectOwningEdgeKind<TDialects, TKind>;
+};
+```
+
+Usage:
+
+```ts
+const registry = defineDialectRegistry([coreDialect, storageDialect] as const);
+
+const d1 = registry.getById(BUILT_IN_DIALECTS.CORE);
+// typed as typeof coreDialect
+
+const d2 = registry.getDialectForNodeKind(PROVIDER_NODE_KIND);
+// typed as the dialect that owns PROVIDER_NODE_KIND
+```
+
+Also, take node-kind witnesses instead of `kindId: string`:
+
+```ts
+registry.getDialectForNodeKind(PROVIDER_NODE_KIND);
+registry.getDialectForEdgeKind(SATISFIES_EDGE_KIND);
+registry.getDialectForTrait(providerTraits.EXTERNAL_IMPL);
+```
+
+The current string-based lookup API loses the witness relationship. 
+
+## 10. Make `defineDialect` default arrays without `as unknown as`
+
+`defineDialect` currently uses casts for omitted arrays:
+
+```ts
+nodeKinds: def.nodeKinds ?? ([] as unknown as NodeKinds)
+```
+
+and the same pattern for edge kinds, endpoint roles, traits, passes, and lowerings. 
+
+A cleaner API is to normalize through overloads or a helper:
+
+```ts
+const empty = <const T extends readonly unknown[]>(): T => [] as unknown as T;
+```
+
+But even better, make the input require arrays with defaults at the call helper layer:
+
+```ts
+function defineDialect<const TDef extends DialectDefShape>(
+  def: TDef,
+): DialectFromDef<WithDialectDefaults<TDef>> {
+  return {
+    id: def.id,
+    label: def.label,
+    nodeKinds: def.nodeKinds ?? [],
+    edgeKinds: def.edgeKinds ?? [],
+    endpointRoles: def.endpointRoles ?? [],
+    traits: def.traits ?? [],
+    passes: def.passes ?? [],
+    lowerings: def.lowerings ?? [],
+    metadata: def.metadata,
+  } as DialectFromDef<WithDialectDefaults<TDef>>;
+}
+```
+
+This still uses one internal cast, but the public type is derived from the user’s literal input. That matches the cheat sheet’s guidance: casts are acceptable when centralized in factories and users do not need to write them. 
+
+## 11. Brand IDs by domain, kind, and dialect
+
+`defineEdge` accepts `id: string` and casts it to `KernelId<"edge">`.  `dialectId` similarly creates a branded dialect ID from a string. 
+
+Push that pattern further:
+
+```ts
+type EdgeId<const TKindId extends string> =
+  KernelId<"edge"> & { readonly __edgeKind: TKindId };
+
+type NodeId<const TKindId extends string> =
+  KernelId<"node"> & { readonly __nodeKind: TKindId };
+
+function edgeId<const TKind extends EdgeKindDef>(
+  kind: TKind,
+  local: string,
+): EdgeId<TKind["id"]> {
+  return `edge:${kind.id}:${local}` as EdgeId<TKind["id"]>;
+}
+```
+
+Usage:
+
+```ts
+defineEdgeFromKind(SATISFIES_EDGE_KIND, edgeId(SATISFIES_EDGE_KIND, "provider->requirement"), ...);
+```
+
+Now you cannot accidentally pass a node ID as an edge ID or use a `PLACED_IN` edge ID for a `SATISFIES` edge.
+
+## 12. Infer endpoint object shape from named endpoint records, not endpoint names
+
+You support both tuple-ish endpoints and record-ish endpoint shape via `EndpointShapeOf`, then map role names into object keys. 
+
+The DX would be better if `defineEdgeKind` canonicalized all endpoint definitions into a named record:
+
+```ts
+const SATISFIES = defineEdgeKind({
+  id: "edge.kind.satisfies",
+  endpoints: {
+    provider: endpointRole("provider"),
+    requirement: endpointRole("requirement"),
+  },
+});
+```
+
+Then `EndpointInputsFor` becomes much simpler:
+
+```ts
+type EndpointInputsFor<Kind extends EdgeKindDef> = {
+  [K in keyof Kind["endpoints"]]: EndpointInputFor<Kind["endpoints"][K]>;
+};
+```
+
+This avoids the current extra conditional machinery and makes autocomplete match the user’s object literal keys exactly.
+
+## 13. Add dialect-scoped builders
+
+Dialects are the natural “project generic” boundary. The dialect already owns node kinds, edge kinds, endpoint roles, traits, passes, and lowerings. 
+
+A dialect-scoped builder would improve composability:
+
+```ts
+const core = defineDialectBuilder(BUILT_IN_DIALECTS.CORE)
+  .nodeKind(REQUIREMENT_NODE_KIND)
+  .nodeKind(PROVIDER_NODE_KIND)
+  .edgeKind(SATISFIES_EDGE_KIND)
+  .trait(providerTraits.EXTERNAL_IMPL)
+  .pass(checkRequirements)
+  .lowering(lowerRequirements)
+  .done();
+```
+
+Then registry and graph APIs can carry `typeof core`:
+
+```ts
+const graph = createGraph({ dialects: [core] });
+
+graph.edge(SATISFIES_EDGE_KIND, ...); // ok
+graph.edge(UNKNOWN_EDGE_KIND, ...);   // type error unless dialect registered
+```
+
+This is the same “project-carried generic” idea from the cheat sheet: once a library has an app/schema/project type, that generic should be carried by the whole API. 
+
+## 14. Expose dynamic APIs separately from typed APIs
+
+Some APIs are inherently dynamic: JSON import, graph visualization, external plugin loading, CLI inspection. Those should stay broad. But typed code paths should not pay the dynamic tax.
+
+Use two layers:
+
+```ts
+// typed
+graph.edges.ofKind(SATISFIES_EDGE_KIND);
+
+// dynamic
+graph.edges.ofKindId("edge.kind.satisfies");
+
+// typed
+registry.getDialectForNodeKind(PROVIDER_NODE_KIND);
+
+// dynamic
+registry.getDialectForNodeKindId("node.kind.provider");
+```
+
+This is an “overload inference facade”: expose clean typed call shapes while keeping implementation dynamic underneath.
+
+## 15. Suggested end-state API
+
+A high-DX version could look like this:
+
+```ts
+const core = defineDialect({
+  id: BUILT_IN_DIALECTS.CORE,
+  label: "Core",
+  nodeKinds: [REQUIREMENT_NODE_KIND, PROVIDER_NODE_KIND],
+  edgeKinds: [SATISFIES_EDGE_KIND, DEPENDS_ON_PROVIDER_EDGE_KIND],
+  traits: [providerTraits.EXTERNAL_IMPL, providerTraits.LOCAL_IMPL],
+});
+
+const registry = defineDialectRegistry([core]);
+
+const graph = createKernelGraph({ registry })
+  .node(requirementNode)
+  .node(providerNode)
+  .edge(
+    SATISFIES_EDGE_KIND,
+    {
+      provider: ref(providerNode),
+      requirement: ref(requirementNode),
+    },
+    {
+      provenance: explicit(),
+    },
+  );
+
+const satisfies = graph.edges.ofKind(SATISFIES_EDGE_KIND);
+
+for (const edge of satisfies) {
+  edge.endpoints.provider.target;    // typed provider ref
+  edge.endpoints.requirement.target; // typed requirement ref
+  edge.metadata?.custom;             // typed metadata for SATISFIES_EDGE_KIND
+}
+```
+
+## Highest-impact changes
+
+I’d prioritize these in order:
+
+1. **Generic `KernelGraph<TState>` or `GraphBuilder<TState>`** so registration does not erase types.
+2. **Kind-aware `KernelRef` / `KernelObjectRef`** so endpoints can require specific target node kinds.
+3. **Preserve endpoint shape in `KernelEdge` return types** instead of returning `readonly KernelEdgeEndpoint[]`.
+4. **Direction metadata on endpoint roles** so traversal does not depend on role ID prefixes.
+5. **Generic `DialectRegistry<TDialects>`** so lookups return the actual owning dialect type.
+6. **Typed APIs first, dynamic string-ID APIs second** for better autocomplete and safer usage.
+
+
+Yes, I get what you’re going for.
+
+You’re building something like a **typed semantic IR kernel**: dialects define the legal vocabulary, node/edge kinds act as typed witnesses, graphs store runtime objects, and passes/adapters/lowerings should be composable without losing the type relationships. The ideal shape is:
+
+```ts
+dialect witnesses
+  → graph captures registered vocabulary
+  → APIs carry graph/dialect generic
+  → queries/passes infer from kind/ref arguments
+  → result types fall out automatically
+```
+
+That matches the cheat sheet’s core principle almost exactly: create typed values first, carry the project generic, infer from arguments, and derive return types automatically.
+
+## Yes, FP could help — but mostly as typed composition, not as heavy FP ceremony
+
+I would not reach for a full `fp-ts`-style API first. I would use FP ideas selectively:
+
+1. **Pure graph transforms**
+2. **Composable graph queries**
+3. **Pass pipelines**
+4. **Curried/bound APIs**
+5. **Typed `.pipe()`**
+6. **`Result` / diagnostics accumulation**
+7. **Small algebraic data types for dynamic refinement**
+
+The goal is not “make it functional.” The goal is:
+
+> make graph construction, graph querying, verification, and lowering compose while preserving the witness generics.
+
+That matters because the current APIs already start typed, then often erase. For example, `KernelGraph` stores broad `ReadonlyMap<string, KernelNode>` and `ReadonlyMap<string, KernelEdge>`, so registered node/edge specificity is not kept in the graph type.  Similarly, `registerNode` and `registerEdge` accept typed values but return plain `KernelGraph`, so the type information does not accumulate. 
+
+## 1. FP-style graph construction: pure, composable, type-accumulating
+
+Instead of only this:
+
+```ts
+let graph = createKernelGraph();
+graph = registerNode(graph, providerNode);
+graph = registerEdge(graph, satisfiesEdge);
+```
+
+Expose a functional layer:
+
+```ts
+const graph = pipeGraph(createKernelGraph())
+  .through(addNode(providerNode))
+  .through(addNode(requirementNode))
+  .through(addEdge(satisfiesEdge))
+  .value();
+```
+
+But the important part is the type:
+
+```ts
+type GraphStep<TIn extends KernelGraph<any>, TOut extends KernelGraph<any>> =
+  (graph: TIn) => TOut;
+
+type GraphPipe<TGraph extends KernelGraph<any>> = {
+  through<TNext extends KernelGraph<any>>(
+    step: GraphStep<TGraph, TNext>,
+  ): GraphPipe<TNext>;
+
+  value(): TGraph;
+};
+```
+
+That is directly the cheat sheet’s **Project-Aware Type Pipe** idea: `.pipe()` should carry both the whole project type and the current value type.
+
+For your case, rename “project” to “kernel graph” or “dialect world”:
+
+```ts
+KernelPipe<TDialects, TGraph, TFocus>
+```
+
+where:
+
+* `TDialects` stays stable
+* `TGraph` accumulates registered objects
+* `TFocus` changes as you query or transform
+
+## 2. Passes should be typed graph transformations
+
+This is probably the cleanest FP win.
+
+Instead of passes being just runtime visitors, define them as typed transformations:
+
+```ts
+type KernelPass<
+  TInputGraph extends KernelGraph<any>,
+  TOutputGraph extends KernelGraph<any>,
+> = {
+  readonly name: string;
+  run(input: TInputGraph): PassResult<TOutputGraph>;
+};
+```
+
+Then:
+
+```ts
+const graph2 = graph
+  .pipe()
+  .through(inferProviderDependencies)
+  .through(checkRequirementSatisfaction)
+  .through(lowerToRuntimePlan)
+  .value();
+```
+
+Each pass can either:
+
+```ts
+Graph<A> -> Graph<B>
+```
+
+or:
+
+```ts
+Graph<A> -> Result<Graph<B>, Diagnostic[]>
+```
+
+That makes verification/lowering compositional while still type-aware.
+
+This is especially useful because dialects already conceptually own passes and lowerings. The `Dialect` type stores `nodeKinds`, `edgeKinds`, `traits`, `passes`, and `lowerings`, which makes dialects a natural generic boundary for pass composition. 
+
+## 3. Queries should be composable selectors, not one-off helpers
+
+Current graph queries are useful but flat:
+
+```ts
+nodesOfKindDef(graph, PROVIDER_NODE_KIND)
+edgesOfKindDef(graph, SATISFIES_EDGE_KIND)
+edgesFrom(graph, nodeId)
+edgesBetween(graph, fromId, toId)
+```
+
+The first two are moving in the right direction because they accept kind witnesses, but the graph still returns broad-ish values and later traversal drops to strings and role-prefix checks. 
+
+A more composable API:
+
+```ts
+const providers = graph
+  .nodes(PROVIDER_NODE_KIND)
+  .withTrait(providerTraits.EXTERNAL_IMPL)
+  .where((node) => node.metadata.custom.source_kind === "service_constructor")
+  .toArray();
+
+const bindings = graph
+  .edges(SATISFIES_EDGE_KIND)
+  .map((edge) => ({
+    provider: edge.endpoints.provider.target,
+    requirement: edge.endpoints.requirement.target,
+  }));
+```
+
+This is FP-ish: `filter`, `map`, `flatMap`, `collect`, `partition`, `groupBy`. But it is not abstract for abstraction’s sake. It gives you a fluent typed query algebra.
+
+The key type shape:
+
+```ts
+type EdgeQuery<
+  TGraph,
+  TKind extends EdgeKindDef,
+  TEdge extends EdgeFromKind<TKind>,
+> = {
+  where(fn: (edge: TEdge) => boolean): EdgeQuery<TGraph, TKind, TEdge>;
+
+  map<TResult>(
+    fn: (edge: TEdge) => TResult,
+  ): readonly TResult[];
+
+  endpoints(): readonly EndpointOutputsFor<TKind>[];
+};
+```
+
+That would also reduce the need for helper code like `readEdgeEndpoints`. Right now `readEdgeEndpoints` accepts any `KernelEdge` and casts the result to `EndpointOutputsFor<Kind>`, which means the kind/edge relationship is not enforced at the call boundary. 
+
+## 4. Add a typed `Option` / `Result` refinement layer for dynamic graph reads
+
+Graphs are runtime data structures. Sometimes you really do need to load unknown JSON or inspect unknown edges.
+
+So do not pretend everything is typed. Instead, split APIs:
+
+```ts
+// Static path: edge already known to be SATISFIES.
+readEdgeEndpoints(SATISFIES_EDGE_KIND, edge);
+
+// Dynamic path: unknown edge refined at runtime.
+matchEdge(SATISFIES_EDGE_KIND, unknownEdge);
+```
+
+Example:
+
+```ts
+const maybeSatisfies = edge.as(SATISFIES_EDGE_KIND);
+
+if (maybeSatisfies.ok) {
+  maybeSatisfies.value.endpoints.provider;
+  maybeSatisfies.value.endpoints.requirement;
+}
+```
+
+Type shape:
+
+```ts
+type Result<T, E> =
+  | { ok: true; value: T }
+  | { ok: false; error: E };
+
+function refineEdge<const TKind extends EdgeKindDef>(
+  kind: TKind,
+  edge: KernelEdge,
+): Result<EdgeFromKind<TKind>, Diagnostic>;
+```
+
+This is a good FP import: use `Result` where runtime refinement may fail. It keeps the unsafe cast inside a small, audited boundary, which matches your cheat sheet’s “library internals may cast, userland should not need to cast” rule.
+
+## 5. Use curried APIs to bind dialect/graph context once
+
+The current API repeatedly passes `graph`, `kind`, `edge`, IDs, etc. A curried binder can improve DX and inference:
+
+```ts
+const q = queryGraph(graph);
+
+const providers = q.nodes(PROVIDER_NODE_KIND);
+const satisfies = q.edges(SATISFIES_EDGE_KIND);
+```
+
+or:
+
+```ts
+const defineCore = defineForDialect(coreDialect);
+
+const satisfies = defineCore.edge(SATISFIES_EDGE_KIND, {
+  provider: providerRef,
+  requirement: requirementRef,
+});
+```
+
+That is exactly where **Curried Type Binder** and **Typed Builder Instance** fit. The cheat sheet explicitly calls out callbacks, builders, currying, and `.pipe()` as tools to improve inference when they create a useful type boundary.
+
+A nice shape:
+
+```ts
+const core = defineDialect({...});
+
+const kernel = createKernel(core);
+
+kernel.edge(SATISFIES_EDGE_KIND, {
+  provider: ref(providerNode),
+  requirement: ref(requirementNode),
+});
+```
+
+Because `kernel` captured `core`, `kernel.edge(...)` can reject edge kinds that do not belong to the dialect.
+
+## 6. Make dialect registry a registry-derived API
+
+`DialectRegistry` is currently dynamic: it stores broad `Dialect` values and exposes string lookup methods like `getDialectForNodeKind(kindId: string)`. 
+
+That should have two layers:
+
+```ts
+registry.getDialectForNodeKind(PROVIDER_NODE_KIND);
+// typed
+
+registry.getDialectForNodeKindId("node.kind.provider");
+// dynamic
+```
+
+And ideally:
+
+```ts
+const registry = defineDialectRegistry([
+  coreDialect,
+  storageDialect,
+] as const);
+
+const owner = registry.ownerOf(PROVIDER_NODE_KIND);
+// typeof coreDialect
+```
+
+This is the cheat sheet’s **Registry-Derived API** pattern. A literal registry should generate a typed API from its contents.
+
+## 7. Use FP-style `fold` / `match` for edge kinds and graph objects
+
+Anywhere you currently do:
+
+```ts
+if (edge.kind.id !== SATISFIES_EDGE_KIND.id) continue;
+```
+
+or switch on kind IDs, consider a matcher:
+
+```ts
+matchEdge(edge)
+  .case(SATISFIES_EDGE_KIND, (edge) => {
+    edge.endpoints.provider;
+    edge.endpoints.requirement;
+  })
+  .case(PLACED_IN_EDGE_KIND, (edge) => {
+    edge.endpoints.placed;
+    edge.endpoints.location;
+  })
+  .otherwise(() => {});
+```
+
+This gives you:
+
+* exhaustiveness when matching a known dialect
+* endpoint inference per case
+* less manual role lookup
+* less string matching
+
+This matters because `defineEdgeFromKind` already has enough type information to infer endpoint inputs from the edge-kind witness, but its return type currently erases the endpoint structure to `readonly KernelEdgeEndpoint[]`. 
+
+## 8. Direction and traversal should be declared, not inferred by string prefix
+
+This is one place where FP will not solve the root issue. The root issue is semantic data modeling.
+
+`edgesBetween` currently guesses source/target roles by checking prefixes like `"edge.role.owner"`, `"edge.role.source"`, `"edge.role.from"`, and so on. 
+
+Instead, put direction on the endpoint role witness:
+
+```ts
+const SATISFIES_EDGE_KIND = defineEdgeKind({
+  id: "edge.kind.satisfies",
+  endpoints: {
+    provider: endpoint("provider").source(),
+    requirement: endpoint("requirement").target(),
+  },
+});
+```
+
+Then traversal can be functional and typed:
+
+```ts
+graph
+  .from(providerNode)
+  .via(SATISFIES_EDGE_KIND)
+  .targets("requirement");
+```
+
+or:
+
+```ts
+graph.traverse(providerNode, {
+  depth: 2,
+  via: [SATISFIES_EDGE_KIND, DEPENDS_ON_PROVIDER_EDGE_KIND],
+});
+```
+
+FP helps compose traversal, but the type-safety comes from endpoint direction being part of the witness.
+
+## 9. I’d make the API feel like this
+
+### Define dialects
+
+```ts
+const core = defineDialect({
+  id: dialectId("dialect.core"),
+  label: "Core",
+  nodeKinds: {
+    requirement: REQUIREMENT_NODE_KIND,
+    provider: PROVIDER_NODE_KIND,
+  },
+  edgeKinds: {
+    satisfies: SATISFIES_EDGE_KIND,
+    dependsOnProvider: DEPENDS_ON_PROVIDER_EDGE_KIND,
+  },
+  traits: {
+    externalImpl: providerTraits.EXTERNAL_IMPL,
+  },
+});
+```
+
+Use records instead of arrays when possible. Arrays preserve order, but records give better named access and registry-derived APIs.
+
+### Create a typed kernel context
+
+```ts
+const kernel = createKernel({
+  dialects: [core],
+});
+```
+
+Now `kernel` carries the dialect generic.
+
+### Build graph
+
+```ts
+const graph = kernel.graph()
+  .node(requirementNode)
+  .node(providerNode)
+  .edge(SATISFIES_EDGE_KIND, {
+    provider: ref(providerNode),
+    requirement: ref(requirementNode),
+  })
+  .done();
+```
+
+### Query graph
+
+```ts
+const bindings = graph
+  .edges(SATISFIES_EDGE_KIND)
+  .map((edge) => ({
+    provider: edge.endpoints.provider.target,
+    requirement: edge.endpoints.requirement.target,
+  }));
+```
+
+### Run passes
+
+```ts
+const checked = graph
+  .pipe()
+  .through(inferProviderDependencies)
+  .through(checkRequirementSatisfaction)
+  .through(checkPlacementSafety)
+  .value();
+```
+
+### Dynamic import path
+
+```ts
+const loaded = decodeGraph(json, kernel);
+
+if (!loaded.ok) {
+  return loaded.diagnostics;
+}
+
+const graph = loaded.value;
+```
+
+This gives you both worlds:
+
+* runtime graph stays data-oriented
+* public API carries types through factories/builders/pipes
+* dynamic input is decoded/refined at the boundary
+
+## What from the cheat sheet fits best?
+
+Most relevant patterns:
+
+| Pattern                             | How it applies here                                                   |
+| ----------------------------------- | --------------------------------------------------------------------- |
+| **Factory-Built Entity Witness**    | `defineNodeKind`, `defineEdgeKind`, `defineDialect`, `ref(node)`      |
+| **Project-Carried Generics**        | `Kernel<TDialects>`, `KernelGraph<TRegistry>`                         |
+| **Project-Carried Local Inference** | `graph.edges(SATISFIES_EDGE_KIND)` infers endpoint and metadata shape |
+| **Typed Reference Object**          | typed node refs instead of `string` IDs                               |
+| **Curried Type Binder**             | `const coreApi = kernel.forDialect(core)`                             |
+| **Typed Builder Instance**          | `kernel.graph().node(...).edge(...).done()`                           |
+| **Project-Aware Type Pipe**         | pass pipelines and graph transform pipelines                          |
+| **Registry-Derived API**            | dialect registry derives legal node/edge/trait APIs                   |
+| **Type-State Builder**              | graph builder accumulates registered nodes/edges                      |
+| **Overload Inference Facade**       | typed APIs plus dynamic string-ID fallbacks                           |
+
+The cheat sheet’s “generic requirements bubble up” addendum is especially relevant: if an edge kind determines endpoint types, every wrapper around edge creation/querying needs to preserve that generic or intentionally erase it.
+
+## The core direction I’d recommend
+
+Do use FP, but use it in service of this design:
+
+```ts
+typed witnesses + pure transforms + typed query algebra
+```
+
+Not:
+
+```ts
+abstract functional programming library everywhere
+```
+
+The kernel wants to be an **IR graph with MLIR-style dialects**, but the TypeScript API wants to feel like:
+
+```ts
+define typed vocabulary
+bind it once
+compose transformations
+query with inferred endpoint/metadata types
+decode dynamic data at boundaries
+```
+
+So yes: FP can help a lot, especially for passes, graph construction, query composition, diagnostics accumulation, and refinement. But the main thing you’re going for is not “functional programming”; it is **typed witness-driven IR composition**.
+
+
+Yes — I like that API a lot.
+
+I’d shape it as:
+
+```ts
+const graph = kernel.graph.pipe(
+  node(requirementNode),
+  node(providerNode),
+  edge(SATISFIES_EDGE_KIND, {
+    provider: ref(providerNode),
+    requirement: ref(requirementNode),
+  }),
+  edge(DEPENDS_ON_PROVIDER_EDGE_KIND, {
+    dependent: ref(providerNode),
+    dependency: ref(otherProviderNode),
+  }),
+);
+```
+
+or, for edges that need previously registered refs:
+
+```ts
+const graph = kernel.graph.pipe(
+  node(requirementNode),
+  node(providerNode),
+
+  edge(SATISFIES_EDGE_KIND, (ctx) => ({
+    provider: ctx.ref(providerNode),
+    requirement: ctx.ref(requirementNode),
+  })),
+);
+```
+
+That is probably the best blend of FP + your cheat sheet.
+
+The important thing is: `node(...)` and `edge(...)` should not be graph objects. They should be **typed graph steps**.
+
+## Why this fits your code
+
+Your current graph API is already functional at runtime:
+
+```ts
+registerNode(graph, node)
+registerEdge(graph, edge)
+```
+
+Both return a new graph value, but they return the broad `KernelGraph` type, so the registered node/edge types are not accumulated.  The graph itself also stores broad maps like `ReadonlyMap<string, KernelNode>` and `ReadonlyMap<string, KernelEdge>`, which is good for runtime storage but loses specific type state at the public API layer. 
+
+So `kernel.graph.pipe(...)` could be the ergonomic public API over the existing immutable internals.
+
+## Core design
+
+I’d model it like this:
+
+```ts
+type GraphState = {
+  readonly nodes: Record<string, KernelNode>;
+  readonly edges: Record<string, KernelEdge>;
+};
+
+type EmptyGraphState = {
+  readonly nodes: {};
+  readonly edges: {};
+};
+
+type TypedGraph<TKernel, TState extends GraphState> = KernelGraph & {
+  readonly __kernel?: TKernel;
+  readonly __state?: TState;
+};
+
+type GraphStep<
+  TKernel,
+  TIn extends GraphState,
+  TOut extends GraphState,
+> = {
+  readonly run: (graph: TypedGraph<TKernel, TIn>) => TypedGraph<TKernel, TOut>;
+};
+```
+
+Then:
+
+```ts
+const graph = kernel.graph.pipe(
+  node(requirementNode),
+  node(providerNode),
+  edge(SATISFIES_EDGE_KIND, {
+    provider: ref(providerNode),
+    requirement: ref(requirementNode),
+  }),
+);
+```
+
+would infer something like:
+
+```ts
+TypedGraph<
+  typeof kernel,
+  {
+    nodes: {
+      [requirementNode.id]: typeof requirementNode;
+      [providerNode.id]: typeof providerNode;
+    };
+    edges: {
+      [satisfiesEdge.id]: EdgeFromKind<typeof SATISFIES_EDGE_KIND>;
+    };
+  }
+>
+```
+
+That gives you a runtime graph, but with accumulated type knowledge.
+
+## `node(...)`
+
+```ts
+function node<const TNode extends KernelNode<any, any, any, any>>(
+  node: TNode,
+): GraphStep<
+  any,
+  any,
+  AddNodeState<any, TNode>
+> {
+  return {
+    run(graph) {
+      return registerNode(graph, node) as any;
+    },
+  };
+}
+```
+
+Better with graph-state preservation:
+
+```ts
+type AddNodeState<TState extends GraphState, TNode extends KernelNode> = {
+  nodes: TState["nodes"] & Record<TNode["id"], TNode>;
+  edges: TState["edges"];
+};
+```
+
+## `edge(...)`
+
+You already have the hard part: `defineEdgeFromKind` accepts an edge-kind witness and uses `EndpointInputsFor<Kind>` so endpoint input names are inferred from the kind. 
+
+Wrap that in a graph step:
+
+```ts
+function edge<
+  const TKind extends EdgeKindDef<string, readonly EndpointRoleDef[]>,
+  const TId extends string,
+>(
+  kind: TKind,
+  id: TId,
+  endpoints: EndpointInputsFor<TKind>,
+  input?: EdgeInputFor<TKind>,
+): GraphStep<
+  any,
+  any,
+  AddEdgeState<any, EdgeFromKind<TKind, TId>>
+> {
+  return {
+    run(graph) {
+      const e = defineEdgeFromKind(kind, id, endpoints, input);
+      return registerEdge(graph, e) as any;
+    },
+  };
+}
+```
+
+Usage:
+
+```ts
+const graph = kernel.graph.pipe(
+  node(requirementNode),
+  node(providerNode),
+
+  edge(
+    SATISFIES_EDGE_KIND,
+    "edge:satisfies:auth->session",
+    {
+      provider: ref(providerNode),
+      requirement: ref(requirementNode),
+    },
+    {
+      provenance: { kind: "explicit" },
+    },
+  ),
+);
+```
+
+## Better DX: infer edge ID
+
+You probably do not want users writing edge IDs all the time. Make the ID optional or generated:
+
+```ts
+const graph = kernel.graph.pipe(
+  edge(SATISFIES_EDGE_KIND, {
+    provider: ref(providerNode),
+    requirement: ref(requirementNode),
+  }),
+);
+```
+
+Internally:
+
+```ts
+function edge<const TKind extends EdgeKindDef>(
+  kind: TKind,
+  endpoints: EndpointInputsFor<TKind>,
+  input?: EdgeInputFor<TKind>,
+): GraphStep<...> {
+  const id = createEdgeId(kind, endpoints);
+  // ...
+}
+```
+
+You can still expose an explicit form:
+
+```ts
+edge.withId("edge:satisfies:auth->session", SATISFIES_EDGE_KIND, {
+  provider: ref(providerNode),
+  requirement: ref(requirementNode),
+});
+```
+
+That is a nice overload-inference facade.
+
+## I would make `pipe` varargs, not `.through(...)`, for graph construction
+
+For graph construction, this:
+
+```ts
+const graph = kernel.graph.pipe(
+  node(a),
+  node(b),
+  edge(kind, { from: ref(a), to: ref(b) }),
+);
+```
+
+is nicer than:
+
+```ts
+const graph = kernel.graph
+  .through(node(a))
+  .through(node(b))
+  .through(edge(kind, { from: ref(a), to: ref(b) }))
+  .value();
+```
+
+The cheat sheet’s pipe pattern says `.pipe()` should carry both the whole project type and current value type.  Here, the “project” is the `kernel` / dialect registry, and the “current value” is the graph state.
+
+So conceptually:
+
+```ts
+TKernel stays stable
+TGraphState evolves after each step
+```
+
+## The hard part: variadic type inference
+
+The runtime implementation is easy:
+
+```ts
+function pipe(...steps: GraphStep<any, any, any>[]) {
+  return steps.reduce((graph, step) => step.run(graph), createKernelGraph());
+}
+```
+
+The type-level implementation is the challenge.
+
+You need a recursive tuple type:
+
+```ts
+type ApplySteps<
+  TKernel,
+  TState extends GraphState,
+  TSteps extends readonly GraphStep<any, any, any>[],
+> =
+  TSteps extends readonly [
+    GraphStep<TKernel, TState, infer TNextState>,
+    ...infer TRest extends readonly GraphStep<any, any, any>[],
+  ]
+    ? ApplySteps<TKernel, TNextState, TRest>
+    : TState;
+```
+
+Then:
+
+```ts
+function pipe<
+  const TKernel,
+  const TSteps extends readonly GraphStep<TKernel, any, any>[],
+>(
+  ...steps: TSteps
+): TypedGraph<TKernel, ApplySteps<TKernel, EmptyGraphState, TSteps>>;
+```
+
+In practice, TypeScript sometimes struggles with deeply recursive variadic inference. A pragmatic alternative is overloads up to, say, 10 or 20 steps. Your cheat sheet calls this an **Overload Inference Facade**: clean public call shapes, loose internal implementation. 
+
+## I’d support both forms
+
+Best DX:
+
+```ts
+const graph = kernel.graph.pipe(
+  node(requirementNode),
+  node(providerNode),
+  edge(SATISFIES_EDGE_KIND, {
+    provider: ref(providerNode),
+    requirement: ref(requirementNode),
+  }),
+);
+```
+
+Best inference fallback:
+
+```ts
+const graph = kernel.graph
+  .empty()
+  .add(node(requirementNode))
+  .add(node(providerNode))
+  .add(edge(SATISFIES_EDGE_KIND, {
+    provider: ref(providerNode),
+    requirement: ref(requirementNode),
+  }));
+```
+
+Why support both?
+
+The varargs form is beautiful for small graphs and test fixtures. The chained form usually gives TypeScript easier step-by-step inference and better error localization.
+
+## I’d also add `fragment(...)`
+
+For composability, let users define graph fragments:
+
+```ts
+const authFragment = fragment(
+  node(sessionRequirement),
+  node(cookieProvider),
+  edge(SATISFIES_EDGE_KIND, {
+    provider: ref(cookieProvider),
+    requirement: ref(sessionRequirement),
+  }),
+);
+
+const graph = kernel.graph.pipe(
+  authFragment,
+  storageFragment,
+  routeFragment,
+);
+```
+
+Type shape:
+
+```ts
+type GraphFragment<TKernel, TIn extends GraphState, TOut extends GraphState> =
+  GraphStep<TKernel, TIn, TOut>;
+```
+
+So a fragment is just a graph step. That is a very FP-friendly model.
+
+## Even better: contextual fragment callback
+
+For cases where refs should come from the accumulated graph state:
+
+```ts
+const graph = kernel.graph.pipe(
+  node(sessionRequirement),
+  node(cookieProvider),
+
+  define((ctx) =>
+    edge(SATISFIES_EDGE_KIND, {
+      provider: ctx.ref(cookieProvider),
+      requirement: ctx.ref(sessionRequirement),
+    }),
+  ),
+);
+```
+
+This uses the cheat sheet’s inferred-context-callback pattern: the earlier argument captures the type, and the callback receives the derived world. The selection guide explicitly points to typed builders, curried binders, project-aware pipes, and type-state builders for this kind of API. 
+
+## What I would avoid
+
+I would avoid making users write:
+
+```ts
+pipe(
+  registerNode(requirementNode),
+  registerNode(providerNode),
+  registerEdge(...)
+);
+```
+
+because `registerNode` and `registerEdge` are graph-level operations. The nicer public unit is:
+
+```ts
+node(requirementNode)
+edge(kind, endpoints)
+trait(...)
+typeDef(...)
+transform(...)
+```
+
+Each one creates a composable graph step.
+
+## Final shape I’d aim for
+
+```ts
+const graph = kernel.graph.pipe(
+  node(requirementNode),
+  node(providerNode),
+
+  edge(SATISFIES_EDGE_KIND, {
+    provider: ref(providerNode),
+    requirement: ref(requirementNode),
+  }),
+
+  edge(PLACED_IN_EDGE_KIND, {
+    placed: ref(providerNode),
+    location: ref(serverStorageNode),
+  }),
+
+  check(checkRequirementSatisfaction),
+  lower(inferProviderDependencies),
+);
+```
+
+Where:
+
+```ts
+node(value)      // GraphStep that adds a typed node
+edge(kind, ...)  // GraphStep that creates + adds a typed edge
+check(pass)      // GraphStep that accumulates diagnostics
+lower(pass)      // GraphStep that transforms graph state
+fragment(...)    // GraphStep composed of other graph steps
+```
+
+So yes: `const graph = kernel.graph.pipe(node(...), edge(...), ...)` is not only viable — it may be the cleanest API for what you’re building. It gives you FP composability while preserving the typed-witness model.
+
+
+Yes — this stuff is **exactly where the pipe / builder / composition API becomes more than DX sugar**.
+
+These files are modeling the deeper semantic layer:
+
+```txt
+Operation signatures
+Expression ASTs
+Operation/type edges
+Algebraic laws
+Rule bodies
+Rule reads
+Rule variables
+Rule dependency extraction
+```
+
+So I would not treat these as separate “adapter utilities.” I would turn them into **first-class typed graph fragments**.
+
+Right now the code mostly does:
+
+```ts
+domain object → KernelNode
+domain object → KernelEdge[]
+```
+
+For example, `opToKernelNode(op)` creates an `OPERATION_DEF` node, and `opToKernelEdges(op)` emits `HAS_INPUT_TYPE` / `HAS_OUTPUT_TYPE` edges for each operation argument and output. 
+
+The better API shape is:
+
+```ts
+const graph = kernel.graph.pipe(
+  operation(setArchivedAt),
+  law(setArchivedAt, LAWS.IDEMPOTENT),
+  law(setArchivedAt, LAWS.ROLLBACK_SAFE),
+
+  expr(canArchiveUserBody),
+  rule(canArchiveUser),
+
+  reads(canArchiveUser, User.organizationId),
+  reads(canArchiveUser, Actor.organizationId),
+
+  pass(deriveRuleDependencies),
+  pass(deriveOptimisticUpdates),
+);
+```
+
+Or even better, let the expression/rule factories derive the graph edges automatically.
+
+---
+
+# 1. Operations should be typed witnesses and graph fragments
+
+Current shape:
+
+```ts
+opToKernelNode(op)
+opToKernelEdges(op)
+```
+
+That is fine as a low-level adapter, but user-facing composition should be:
+
+```ts
+const setArchivedAt = defineOperation({
+  id: "op.user.setArchivedAt",
+  name: "Set archivedAt",
+  args: [User.ref, datetime.ref] as const,
+  output: User.ref,
+  category: "mutation",
+  laws: [LAWS.DETERMINISTIC, LAWS.ROLLBACK_SAFE],
+});
+```
+
+Then:
+
+```ts
+const graph = kernel.graph.pipe(
+  operation(setArchivedAt),
+);
+```
+
+Where `operation(setArchivedAt)` expands to:
+
+```txt
+Node(kind: OPERATION_DEF)
+Edge(kind: HAS_INPUT_TYPE) for each arg
+Edge(kind: HAS_OUTPUT_TYPE)
+Edge(kind: HAS_LAW) for each law
+```
+
+So instead of this being adapter-only:
+
+```ts
+opToKernelNode(op)
+opToKernelEdges(op)
+```
+
+it becomes a typed graph step:
+
+```ts
+operation(op): GraphStep<TKernel, TIn, TOut>
+```
+
+The runtime output can still reuse `opToKernelNode` and `opToKernelEdges`. The public API should hide that.
+
+## Better DX
+
+```ts
+const graph = kernel.graph.pipe(
+  operation(setField(User.archivedAt, datetime)),
+  operation(sendEmail),
+  operation(increment(Counter.value)),
+);
+```
+
+## Better type safety
+
+The operation signature should carry:
+
+```txt
+argument tuple types
+output type
+operation category
+traits
+laws
+effects
+lowering capabilities
+```
+
+Then expression calls can infer from the operation witness.
+
+---
+
+# 2. Replace `opCall` / `opCallTyped` split with one typed facade
+
+`expr.ts` already has a good start: `OperationExprArgsFor<Op>` maps an operation signature’s argument types to a tuple of `KernelExpr<...>` values, and `opCallTyped` uses that to type-check call arguments. 
+
+But the API currently has both:
+
+```ts
+opCall(operation, args)
+opCallTyped(operation, args)
+```
+
+The untyped version accepts `readonly KernelExpr[]`, and the typed version casts into it. 
+
+I would expose this instead:
+
+```ts
+expr.call(operation, ...args)
+```
+
+Example:
+
+```ts
+const sameOrg = expr.call(
+  eq,
+  expr.get(actor, Actor.organizationId),
+  expr.get(user, User.organizationId),
+);
+```
+
+Type shape:
+
+```ts
+function call<const Op extends OpSignature>(
+  operation: Op,
+  ...args: OperationExprArgsFor<Op>
+): OperationCallExpr<Op>;
+```
+
+Then keep a dynamic escape hatch:
+
+```ts
+expr.callUnchecked(operation, args)
+```
+
+That gives you:
+
+```txt
+typed path by default
+dynamic path explicit
+unsafe cast inside the library
+```
+
+This is straight from the cheat sheet: the user should pass typed witnesses, while internal casts stay inside factory/helper boundaries. 
+
+---
+
+# 3. Expressions should become composable graph fragments too
+
+Right now `KernelExpr<Out>` is a typed AST node with `op`, `type`, `args`, `phase`, `requirements`, `effects`, and metadata. 
+
+That is good. But I would make expressions also implement a graph-fragment protocol:
+
+```ts
+const body = expr
+  .ref(actor)
+  .get(Actor.organizationId)
+  .eq(expr.ref(user).get(User.organizationId));
+```
+
+Then:
+
+```ts
+const graph = kernel.graph.pipe(
+  expression(body),
+);
+```
+
+`expression(body)` can materialize:
+
+```txt
+Expr object
+Expr operation nodes, if needed
+READS edges
+REQUIRES edges
+EFFECT edges
+derived traits
+```
+
+You already have `deriveExprTraits(expr)`, which derives traits like `PURE`, `DETERMINISTIC`, and `PREDICATE`.  I would make that a pass:
+
+```ts
+const graph = kernel.graph.pipe(
+  expression(body),
+  pass(deriveExpressionTraits),
+);
+```
+
+or automatic:
+
+```ts
+expression(body, { deriveTraits: true })
+```
+
+## Replace string requirements/effects
+
+This part should become typed:
+
+```ts
+requirements?: readonly string[];
+effects?: readonly string[];
+```
+
+Use refs instead:
+
+```ts
+requirements?: readonly Ref<RequirementKind, any>[];
+effects?: readonly Ref<EffectKind, any>[];
+```
+
+So expression dependencies can be checked and queried like everything else.
+
+---
+
+# 4. Laws should be graph claims with typed witnesses
+
+`law.ts` is a strong concept. Laws are semantic claims about operations, transforms, nodes, and expressions, and witnesses can be identity expressions, inverse transforms, proofs, or custom data. 
+
+Current API:
+
+```ts
+defineLaw(...)
+defineLawWithIdentity(...)
+defineLawWithInverse(...)
+defineLawWithProof(...)
+defineLawWithWitness(...)
+```
+
+That works, but I would make the public API feel like this:
+
+```ts
+const addMoney = defineOperation({
+  id: "op.money.add",
+  args: [Money, Money] as const,
+  output: Money,
+});
+
+const graph = kernel.graph.pipe(
+  operation(addMoney),
+
+  claim(addMoney, LAWS.ASSOCIATIVE),
+  claim(addMoney, LAWS.COMMUTATIVE),
+  claim(addMoney, LAWS.IDENTITY, {
+    identity: expr.literal(Money, 0),
+  }),
+);
+```
+
+Or builder style:
+
+```ts
+const addMoney = operation("op.money.add")
+  .args(Money, Money)
+  .returns(Money)
+  .law(LAWS.ASSOCIATIVE)
+  .law(LAWS.COMMUTATIVE)
+  .law(LAWS.IDENTITY, {
+    identity: expr.literal(Money, 0),
+  })
+  .define();
+```
+
+The important type relationship:
+
+```ts
+claim(target, law, witness)
+```
+
+should enforce:
+
+```txt
+law.target must match target kind
+identity witness must be an Expr
+inverse witness must be a Transform
+proof witness must be proof-shaped
+custom witness must match law payload
+```
+
+Right now laws have `target: "operation" | "transform" | "node" | "expr"` and optional witness payloads.  I would strengthen that into:
+
+```ts
+type LawDef<
+  TTarget extends LawTarget,
+  TWitness = { kind: "none" },
+> = {
+  id: KernelId<"law">;
+  target: TTarget;
+  witness: WitnessSchema<TWitness>;
+};
+```
+
+Then:
+
+```ts
+claim(addMoney, LAWS.PURE);
+// type error if LAWS.PURE targets expr only
+
+claim(addMoney, LAWS.IDENTITY, {
+  identity: expr.literal(Money, 0),
+});
+// ok if IDENTITY targets operation and expects identity expr
+```
+
+## Why laws matter
+
+This should be a headline feature, not internal plumbing.
+
+Laws power:
+
+```txt
+optimistic updates
+rollback plans
+retry safety
+offline replay
+CRDT-like merges
+incremental view maintenance
+cacheability
+parallel execution
+idempotent queues
+```
+
+Your original doc already talks about operations with laws like commutative, associative, idempotent, reversible, monotonic, identity, inverse, and retry-safe.  This API should make that real.
+
+---
+
+# 5. Rules should be authored as typed expressions, then lowered into graph facts
+
+The rule adapter currently does a lot manually:
+
+```ts
+ruleToKernelNode(rule)
+ruleToKernelEdges(rule, deps, bodyExprId)
+extractRuleDependenciesFromGraph(graph, ruleNodeId)
+```
+
+It builds rule nodes, body edges, var declaration edges, and `RULE_READS` edges. 
+
+This is the right semantic model, but the public API should be:
+
+```ts
+const canArchiveUser = defineRule("canArchiveUser", (ctx) =>
+  expr.and(
+    expr.eq(ctx.actor.role, Role.Manager),
+    expr.eq(ctx.actor.organizationId, ctx.user.organizationId),
+  )
+);
+```
+
+Then:
+
+```ts
+const graph = kernel.graph.pipe(
+  rule(canArchiveUser),
+);
+```
+
+`rule(canArchiveUser)` should expand to:
+
+```txt
+Node(kind: RULE)
+Node(kind: VAR_DECL) for each var
+Expr body
+Edge(kind: RULE_HAS_BODY)
+Edge(kind: RULE_DECLARES_VAR)
+Edge(kind: RULE_READS) for every field/entity read by the expression
+Trait(rule.pure)
+Trait(rule.predicate)
+```
+
+The rule’s dependency surface should come from the typed expression body, not from untyped bridge metadata.
+
+## Replace `_bridgeField` / `_bridgeEntity`
+
+The current rule bridge stores original domain objects in edge metadata:
+
+```ts
+custom: { _bridgeField: field }
+custom: { _bridgeEntity: entity }
+```
+
+and later casts them back out during graph dependency extraction. 
+
+That is okay as a temporary bridge, but it is not the final API.
+
+Prefer graph-native refs:
+
+```ts
+edge(ruleReads, {
+  reader: ref(canArchiveUser),
+  read: ref(User.organizationId),
+});
+```
+
+Then dependency extraction becomes:
+
+```ts
+const deps = graph
+  .edges.ofKind(ruleReads)
+  .whereEndpoint("reader", ref(canArchiveUser))
+  .map((edge) => edge.endpoints.read.target);
+```
+
+No `_bridgeField`.
+No `_bridgeEntity`.
+No `as Field`.
+No tuple endpoint lookup.
+
+---
+
+# 6. Rule dependencies should become a query, not a bespoke extractor
+
+Current:
+
+```ts
+extractRuleDependenciesFromGraph(graph, ruleNodeId)
+```
+
+walks raw edges, checks edge kind IDs, finds endpoint roles, then reconstructs entities, fields, and variables. 
+
+Better:
+
+```ts
+const deps = graph.rules.dependenciesOf(canArchiveUser);
+```
+
+or generic graph query:
+
+```ts
+const deps = graph
+  .edges.ofKind(RULE_READS_EDGE_KIND)
+  .whereEndpoint("reader", ref(canArchiveUser))
+  .targets("read");
+```
+
+Then specialized convenience:
+
+```ts
+const fields = graph.rules.fieldsReadBy(canArchiveUser);
+const entities = graph.rules.entitiesReadBy(canArchiveUser);
+const vars = graph.rules.varsDeclaredBy(canArchiveUser);
+```
+
+This would use the typed edge kind witness rather than manual role arrays. You already have `defineEdgeFromKind` and `readEdgeEndpoints`, but the current edge return type still erases endpoints to `readonly KernelEdgeEndpoint[]`, and `readEdgeEndpoints` accepts a broad `KernelEdge`. 
+
+So I would strengthen `defineEdgeFromKind` first, then build typed graph queries on top.
+
+---
+
+# 7. The ideal composed API for this layer
+
+Here is the shape I think you want:
+
+```ts
+const canArchiveUser = defineRule("canArchiveUser", (ctx) =>
+  expr.and(
+    expr.eq(ctx.actor.role, Role.Manager),
+    expr.eq(ctx.actor.organizationId, ctx.user.organizationId),
+  )
+);
+
+const archiveUser = defineAction("archiveUser", {
+  input: {
+    actor: Actor,
+    user: User,
+  },
+
+  guard: canArchiveUser,
+
+  body: action.pipe(
+    op.set(User.archivedAt, expr.now()),
+    op.emit(UserArchived),
+    op.sendEmail(userArchivedEmail),
+  ),
+});
+
+const graph = kernel.graph.pipe(
+  entity(User),
+  field(User.id),
+  field(User.email),
+  field(User.organizationId),
+  field(User.archivedAt),
+
+  rule(canArchiveUser),
+  action(archiveUser),
+
+  operation(op.set),
+  operation(op.emit),
+  operation(op.sendEmail),
+
+  claim(op.set, LAWS.ROLLBACK_SAFE),
+  claim(op.set, LAWS.IDEMPOTENT),
+
+  pass(deriveRuleReads),
+  pass(deriveActionWrites),
+  pass(deriveAffectedQueries),
+  pass(deriveOptimisticUpdates),
+  pass(checkClientSafety),
+  pass(checkProviderRequirements),
+);
+```
+
+The user writes product semantics.
+
+The API derives graph facts.
+
+The compiler checks the graph.
+
+---
+
+# 8. Another version using builders
+
+For larger definitions:
+
+```ts
+const canArchiveUser = kernel.rule
+  .define("canArchiveUser")
+  .vars({
+    actor: Actor,
+    user: User,
+  })
+  .body((ctx) =>
+    expr.and(
+      expr.eq(ctx.actor.role, Role.Manager),
+      expr.eq(ctx.actor.organizationId, ctx.user.organizationId),
+    )
+  )
+  .law(LAWS.PURE)
+  .law(LAWS.DETERMINISTIC)
+  .done();
+
+const setArchivedAt = kernel.operation
+  .define("setArchivedAt")
+  .args(User, DateTime)
+  .returns(User)
+  .law(LAWS.IDEMPOTENT)
+  .law(LAWS.ROLLBACK_SAFE)
+  .done();
+
+const graph = kernel.graph.pipe(
+  rule(canArchiveUser),
+  operation(setArchivedAt),
+);
+```
+
+This is where the cheat sheet’s **Typed Builder Instance**, **Curried Type Binder**, **Registry-Derived API**, and **Type-State Builder** patterns apply directly. 
+
+---
+
+# 9. How these files map to graph-step APIs
+
+| Current file concept                 | Keep internally | Public API shape                    |
+| ------------------------------------ | --------------- | ----------------------------------- |
+| `opToKernelNode`                     | yes             | `operation(op)`                     |
+| `opToKernelEdges`                    | yes             | included in `operation(op)`         |
+| `opCallTyped`                        | yes internally  | `expr.call(op, ...args)`            |
+| `deriveExprTraits`                   | yes             | `pass(deriveExpressionTraits)`      |
+| `defineLaw*`                         | yes             | `claim(target, law, witness?)`      |
+| `LAWS`                               | yes             | typed law witnesses                 |
+| `ruleToKernelNode`                   | yes             | `rule(ruleDef)`                     |
+| `ruleToKernelEdges`                  | yes             | included in `rule(ruleDef)`         |
+| `extractRuleDependenciesFromGraph`   | replace         | `graph.rules.dependenciesOf(rule)`  |
+| `_bridgeField` metadata              | temporary       | typed refs and graph queries        |
+| manual `defineEdge(...)` role arrays | phase out       | `edge(RULE_READS_EDGE_KIND, {...})` |
+
+---
+
+# 10. The main correction I’d make
+
+Right now, several pieces are still adapter-shaped:
+
+```txt
+take legacy object
+produce broad KernelNode
+produce broad KernelEdge[]
+recover meaning later with casts
+```
+
+The target architecture should be:
+
+```txt
+define typed semantic witness
+turn witness into graph fragment
+compose fragments through pipe/builder
+preserve type state
+query by typed edge/node/law witnesses
+decode dynamic data only at boundaries
+```
+
+So this stuff should become the **core developer-facing proof** of Dirived:
+
+```ts
+const graph = kernel.graph.pipe(
+  rule(canArchiveUser),
+  action(archiveUser),
+  operation(setArchivedAt),
+  claim(setArchivedAt, LAWS.ROLLBACK_SAFE),
+  pass(deriveOptimisticUpdates),
+);
+```
+
+That is the story:
+
+```txt
+operations describe what changes
+expressions describe inspectable logic
+laws describe what behavior is safe
+rules describe reusable business constraints
+edges connect all of it
+passes derive consequences
+targets emit the app
+```
+
+This is the layer where “semantic app compiler” becomes concrete.
+
+
+Yes. That is a very good API direction.
+
+I would make `defineAction` an **overload inference facade** with three ergonomic modes:
+
+```ts
+defineAction()
+// builder
+
+defineAction("archiveUser")
+// curried named action binder
+
+defineAction.with<AppCtx>()("archiveUser")
+// context-bound curried action binder
+```
+
+I would **not** make `defineAction<AppCtx>("archiveUser")` the primary path, because TypeScript does not have great partial type-argument inference. Once the user supplies `AppCtx`, the later literal name generic can easily stop inferring cleanly unless you force awkward defaults or require `defineAction<AppCtx, "archiveUser">("archiveUser")`. The cleaner version is:
+
+```ts
+defineAction.with<AppCtx>()("archiveUser")
+```
+
+or:
+
+```ts
+defineAction<AppCtx>()("archiveUser")
+```
+
+That matches the patterns in your cheat sheet: builder when type state accumulates, curried binder when you want to bind context once, inferred callback when one argument creates a typed world, and overload facade when the runtime implementation is dynamic but the public shapes should feel clean. 
+
+## The API family I’d use
+
+```ts
+// 1. No args: builder mode
+const archiveUser = defineAction()
+  .name("archiveUser")
+  .input({
+    actor: Actor,
+    user: User,
+  })
+  .guard(canArchiveUser)
+  .body((ctx) =>
+    ctx.pipe(
+      op.set(ctx.input.user.archivedAt, expr.now()),
+      op.emit(UserArchived),
+    )
+  )
+  .done();
+```
+
+```ts
+// 2. Name only: curried named binder
+const archiveUser = defineAction("archiveUser")({
+  input: {
+    actor: Actor,
+    user: User,
+  },
+
+  guard: canArchiveUser,
+
+  body: (ctx) =>
+    ctx.pipe(
+      op.set(ctx.input.user.archivedAt, expr.now()),
+      op.emit(UserArchived),
+    ),
+});
+```
+
+```ts
+// 3. Name only + callback builder
+const archiveUser = defineAction("archiveUser")((ctx, action) =>
+  action
+    .input({
+      actor: ctx.entities.Actor,
+      user: ctx.entities.User,
+    })
+    .guard(ctx.rules.canArchiveUser)
+    .body((body) =>
+      body.pipe(
+        ctx.ops.set(ctx.input.user.archivedAt, ctx.expr.now()),
+        ctx.ops.emit(ctx.events.UserArchived),
+      )
+    )
+);
+```
+
+```ts
+// 4. Explicit context generic: bind context first, then infer name
+const defineAppAction = defineAction.with<AppCtx>();
+
+const archiveUser = defineAppAction("archiveUser")((ctx, action) =>
+  action
+    .input({
+      actor: ctx.entities.Actor,
+      user: ctx.entities.User,
+    })
+    .guard(ctx.rules.canArchiveUser)
+    .body((body) =>
+      body.pipe(
+        ctx.ops.set(ctx.input.user.archivedAt, ctx.expr.now()),
+        ctx.ops.emit(ctx.events.UserArchived),
+      )
+    )
+);
+```
+
+That gives you all the authoring styles without sacrificing inference.
+
+## Why this fits especially well here
+
+Your current expression layer already has the important relationship: an operation signature determines argument expression types and output expression type through `OperationExprArgsFor<Op>` and `OperationCallExpr<Op>`. 
+
+So `defineAction` should preserve that same relationship upward:
+
+```txt
+operation signature
+  → typed expression call
+  → typed action body
+  → action reads/writes/effects/errors
+  → graph edges
+  → compiler passes
+```
+
+That is exactly where generics need to “bubble up.” The action API should not erase operation, expression, rule, input, and output types too early.
+
+## Suggested overload shape
+
+Conceptually:
+
+```ts
+type DefineAction = {
+  (): ActionBuilder<DefaultCtx, UnnamedActionState>;
+
+  <const TName extends string>(
+    name: TName,
+  ): ActionBinder<DefaultCtx, TName>;
+
+  with<const TCtx>(): {
+    (): ActionBuilder<TCtx, UnnamedActionState>;
+
+    <const TName extends string>(
+      name: TName,
+    ): ActionBinder<TCtx, TName>;
+  };
+};
+```
+
+Then:
+
+```ts
+const defineAppAction = defineAction.with<AppCtx>();
+
+const archiveUser = defineAppAction("archiveUser")({
+  input: {
+    actor: Actor,
+    user: User,
+  },
+  guard: canArchiveUser,
+  body: (ctx) => ctx.pipe(/* ... */),
+});
+```
+
+The generic is bound at `.with<AppCtx>()`.
+
+The name is inferred later as the literal `"archiveUser"`.
+
+That is much cleaner than trying to make `defineAction<AppCtx>("archiveUser")` do everything.
+
+## The binder can accept either object or function
+
+The returned function can have two overloads:
+
+```ts
+type ActionBinder<TCtx, TName extends string> = {
+  <const TSpec extends ActionObjectSpec<TCtx>>(
+    spec: TSpec,
+  ): ActionDef<TCtx, TName, NormalizeActionSpec<TCtx, TSpec>>;
+
+  <const TResult extends ActionBuildResult>(
+    build: (
+      ctx: ActionDefineContext<TCtx>,
+      action: ActionBuilder<TCtx, NamedActionState<TName>>,
+    ) => TResult,
+  ): ActionDef<TCtx, TName, NormalizeActionBuildResult<TResult>>;
+};
+```
+
+So users can write declarative object config:
+
+```ts
+const archiveUser = defineAction("archiveUser")({
+  input: {
+    actor: Actor,
+    user: User,
+  },
+  guard: canArchiveUser,
+  writes: [User.archivedAt],
+  emits: [UserArchived],
+});
+```
+
+or callback/builder config:
+
+```ts
+const archiveUser = defineAction("archiveUser")((ctx, action) =>
+  action
+    .input({
+      actor: ctx.entities.Actor,
+      user: ctx.entities.User,
+    })
+    .guard(ctx.rules.canArchiveUser)
+    .writes(ctx.entities.User.archivedAt)
+    .emits(ctx.events.UserArchived)
+);
+```
+
+The object form is concise.
+
+The callback form gives better contextual autocomplete and lets `ctx` carry the project/kernel/dialect generic.
+
+## Builder mode should be type-stateful
+
+The no-argument builder should accumulate state:
+
+```ts
+const archiveUser = defineAction()
+  .name("archiveUser")
+  .input({
+    actor: Actor,
+    user: User,
+  })
+  .guard(canArchiveUser)
+  .writes(User.archivedAt)
+  .emits(UserArchived)
+  .body((ctx) =>
+    ctx.pipe(
+      op.set(ctx.input.user.archivedAt, expr.now()),
+      op.emit(UserArchived),
+    )
+  )
+  .done();
+```
+
+Type-state should know:
+
+```txt
+name has been set
+input has been set
+guard exists
+writes are known
+emits are known
+body returns the right operation/result type
+```
+
+So you can prevent invalid builder states:
+
+```ts
+defineAction()
+  .body(/* ... */)
+  // ^ type error or degraded context:
+  // body needs input first if it references ctx.input
+
+defineAction()
+  .name("archiveUser")
+  .input({ user: User })
+  .guard(canArchiveUserForProject)
+  // ^ type-check guard against input context
+```
+
+Shape:
+
+```ts
+type ActionBuilder<TCtx, TState> = {
+  name<const TName extends string>(
+    name: TName,
+  ): ActionBuilder<TCtx, TState & { name: TName }>;
+
+  input<const TInput extends ActionInputSpec<TCtx>>(
+    input: TInput,
+  ): ActionBuilder<TCtx, TState & { input: TInput }>;
+
+  guard<const TRule extends RuleForAction<TCtx, NoInfer<TState>>>(
+    rule: TRule,
+  ): ActionBuilder<TCtx, TState & { guard: TRule }>;
+
+  body<const TBody extends ActionBodyFor<TCtx, NoInfer<TState>>>(
+    body: TBody,
+  ): ActionBuilder<TCtx, TState & { body: TBody }>;
+
+  done(): CompleteActionDef<TCtx, TState>;
+};
+```
+
+`NoInfer` matters here: once `input(...)` defines the action input, later methods like `guard(...)`, `writes(...)`, and `body(...)` should be checked against that input rather than widening or redefining it. Your cheat sheet explicitly calls out `NoInfer` for this one-way inference case. 
+
+## I’d make actions graph fragments
+
+An action definition should be a typed witness, but also lower into graph facts.
+
+```ts
+const graph = kernel.graph.pipe(
+  action(archiveUser),
+);
+```
+
+That should expand to:
+
+```txt
+Node(kind: ACTION)
+Edge(kind: ACTION_HAS_INPUT)
+Edge(kind: ACTION_GUARDED_BY)
+Edge(kind: ACTION_WRITES)
+Edge(kind: ACTION_EMITS)
+Edge(kind: ACTION_REQUIRES_PROVIDER)
+Edge(kind: ACTION_HAS_BODY)
+```
+
+This mirrors what your current rule bridge is doing manually: building a rule node, var nodes, body edge, var declaration edges, and read edges, then extracting dependencies from the materialized graph. 
+
+The higher-level API should make that feel like:
+
+```ts
+const graph = kernel.graph.pipe(
+  rule(canArchiveUser),
+  action(archiveUser),
+  pass(deriveActionDependencies),
+  pass(checkAuthorizationCoverage),
+);
+```
+
+## The best shape overall
+
+I’d expose these forms:
+
+```ts
+// Builder
+defineAction()
+  .name("archiveUser")
+  .input(...)
+  .guard(...)
+  .body(...)
+  .done();
+```
+
+```ts
+// Curried by name, object form
+defineAction("archiveUser")({
+  input: ...,
+  guard: ...,
+  body: ...,
+});
+```
+
+```ts
+// Curried by name, callback/builder form
+defineAction("archiveUser")((ctx, action) =>
+  action.input(...).guard(...).body(...)
+);
+```
+
+```ts
+// Context-bound factory
+const defineAppAction = defineAction.with<AppCtx>();
+
+defineAppAction("archiveUser")((ctx, action) =>
+  action.input(...).guard(...).body(...)
+);
+```
+
+```ts
+// Value-bound factory, even better when possible
+const defineAppAction = kernel.defineAction;
+
+defineAppAction("archiveUser")((ctx, action) =>
+  action.input(...).guard(...).body(...)
+);
+```
+
+That last one is probably the best DX, because a value like `kernel` can carry the whole dialect/project generic without the user writing type parameters at all.
+
+## My recommendation
+
+Support `defineAction<Ctx>()("name")` or `defineAction.with<Ctx>()("name")`.
+
+Be cautious about making `defineAction<Ctx>("name")` the main documented API. It looks nice, but it fights TypeScript’s partial generic inference. The curried generic binder is more reliable:
+
+```ts
+const archiveUser = defineAction.with<AppCtx>()("archiveUser")((ctx, action) =>
+  action
+    .input({ actor: ctx.Actor, user: ctx.User })
+    .guard(ctx.canArchiveUser)
+    .body((body) =>
+      body.pipe(
+        ctx.ops.set(ctx.User.archivedAt, ctx.expr.now()),
+        ctx.ops.emit(ctx.UserArchived),
+      )
+    )
+);
+```
+
+That gives you the thing you want:
+
+```txt
+builder when called with no args
+curried when called with a name
+object or ctx/builder callback as the second step
+context generic bound once
+literal name preserved
+action type inferred from input, guard, body, operations, effects, errors, and laws
+```
+
+So yes — this is the right direction. The main adjustment is: **bind generics through `.with<T>()` or a kernel value, then infer the name and spec from later arguments.**
+
+Yes — dialects can be **very type-safe and highly inferred**, and they probably should be one of the nicest DX surfaces in the whole system.
+
+The key distinction:
+
+```txt
+Static dialects declared in TypeScript
+  → can be strongly typed and inferred.
+
+Dynamic/plugin dialects loaded at runtime
+  → must be decoded/refined first, then become typed.
+```
+
+So “fully type safe” is possible for authored dialects, graph steps, builders, passes, lowerings, and queries inside the same TypeScript program. Runtime-loaded dialects need a validation boundary.
+
+Your current `Dialect` model is already pointing the right way: a dialect owns node kinds, edge kinds, endpoint roles, traits, passes, and lowerings. `defineDialect` also already uses `const` generics to preserve literal node/edge/trait arrays.  The main gap is that `DialectRegistry` stores broad `Dialect` values and exposes string lookups like `getDialectForNodeKind(kindId: string)`, which erases the specific owning dialect type. 
+
+I would evolve dialects into the **primary typed vocabulary boundary**.
+
+---
+
+## The desired mental model
+
+A dialect should be a typed package of meaning:
+
+```txt
+Dialect
+  owns node kinds
+  owns edge kinds
+  owns traits
+  owns laws
+  owns operations
+  owns expressions
+  owns graph fragments
+  owns passes
+  owns lowerings
+  owns target emitters
+  exports a typed authoring API
+```
+
+Then:
+
+```ts
+const app = defineDialect("app")({
+  nodes: { entity, field, action, rule, query },
+  edges: { ownsField, guards, reads, writes, emits },
+  traits: { serverOnly, clientSafe, destructive },
+  operations: { setField, sendEmail },
+  laws: { rollbackSafe, idempotent },
+  passes: { deriveReads, checkGuards },
+  lowerings: { toReact, toPostgres },
+});
+```
+
+The dialect value becomes a **typed witness** for everything it owns.
+
+---
+
+## Better DX: records over arrays
+
+Current dialects use arrays:
+
+```ts
+defineDialect({
+  id,
+  label,
+  nodeKinds: [...],
+  edgeKinds: [...],
+  traits: [...],
+});
+```
+
+Arrays are okay for runtime iteration, but records give much better DX:
+
+```ts
+const app = defineDialect("app")({
+  label: "Application",
+
+  nodes: {
+    entity,
+    field,
+    action,
+    rule,
+    query,
+  },
+
+  edges: {
+    ownsField,
+    guards,
+    reads,
+    writes,
+    emits,
+  },
+
+  traits: {
+    serverOnly,
+    clientSafe,
+    destructive,
+  },
+
+  passes: {
+    deriveReads,
+    checkGuards,
+    deriveOptimisticUpdates,
+  },
+});
+```
+
+Then users get:
+
+```ts
+app.nodes.action
+app.edges.writes
+app.traits.serverOnly
+app.passes.checkGuards
+```
+
+That is much nicer than indexing arrays or importing every symbol manually.
+
+Internally you can still normalize records into arrays for storage.
+
+---
+
+## Dialect definition API
+
+I would support the same overload pattern you were considering for `defineAction`.
+
+### 1. Builder mode
+
+```ts
+const app = defineDialect()
+  .id("dialect.app")
+  .label("Application")
+  .node("entity", entityNode)
+  .node("field", fieldNode)
+  .node("action", actionNode)
+  .edge("writes", writesEdge)
+  .edge("guards", guardsEdge)
+  .trait("serverOnly", serverOnly)
+  .pass("checkGuards", checkGuards)
+  .lowering("toReact", toReact)
+  .done();
+```
+
+Good for progressive authoring and step-by-step type-state.
+
+### 2. Curried name mode
+
+```ts
+const app = defineDialect("app")({
+  label: "Application",
+  nodes: {
+    entity,
+    field,
+    action,
+  },
+  edges: {
+    writes,
+    guards,
+  },
+});
+```
+
+Good for most use.
+
+### 3. Context-bound mode
+
+```ts
+const defineAppDialect = defineDialect.with<KernelCore>();
+
+const app = defineAppDialect("app")((ctx, d) =>
+  d
+    .imports(ctx.dialects.core)
+    .node("entity", entityNode)
+    .node("action", actionNode)
+    .edge("writes", writesEdge)
+    .pass("checkGuards", checkGuards)
+);
+```
+
+This is useful if dialects can depend on a core vocabulary.
+
+---
+
+## Dialects should have typed imports
+
+Most dialects will depend on other dialects.
+
+For example, an app dialect might depend on core node/edge/trait definitions, expression traits, laws, operation kinds, and deployment/provider concepts. Your broader product doc already frames custom semantics as dialects over the same IR that can participate in auth, UI, storage, sync, tests, deployment, observability, and code generation. 
+
+So make imports explicit:
+
+```ts
+const app = defineDialect("app")({
+  imports: [core, expr, operation, deployment],
+
+  nodes: {
+    action,
+    rule,
+    query,
+  },
+
+  edges: {
+    guards,
+    reads,
+    writes,
+  },
+});
+```
+
+Then edge definitions can reference imported node kinds:
+
+```ts
+const writes = app.edge("writes", {
+  endpoints: {
+    action: endpoint("action").target(app.nodes.action).source(),
+    field: endpoint("field").target(domain.nodes.field).target(),
+  },
+});
+```
+
+If `domain` is not imported, that should be a type error or a registry diagnostic.
+
+---
+
+## Kernel should be typed by registered dialects
+
+This is the big one.
+
+```ts
+const kernel = createKernel({
+  dialects: [core, domain, app, ui, deployment],
+});
+```
+
+`kernel` should carry:
+
+```ts
+Kernel<{
+  core: typeof core;
+  domain: typeof domain;
+  app: typeof app;
+  ui: typeof ui;
+  deployment: typeof deployment;
+}>
+```
+
+Then graph construction can reject unknown vocabulary:
+
+```ts
+kernel.graph.pipe(
+  node(app.nodes.action, archiveUser),
+  edge(app.edges.writes, {
+    action: ref(archiveUser),
+    field: ref(User.archivedAt),
+  }),
+);
+```
+
+But this should fail:
+
+```ts
+kernel.graph.pipe(
+  edge(billing.edges.charges, {
+    // error if billing dialect was not registered
+  }),
+);
+```
+
+That is the “project-carried generic” pattern applied to dialect registries.
+
+---
+
+## Graph steps should declare required dialects
+
+Every graph step can carry a phantom requirement:
+
+```ts
+type GraphStep<TRequires, TIn, TOut> = {
+  run(graph: TypedGraph<TIn>): TypedGraph<TOut>;
+  readonly __requires?: TRequires;
+};
+```
+
+Then:
+
+```ts
+node(app.nodes.action, archiveUser)
+// requires typeof app
+
+edge(app.edges.writes, ...)
+// requires typeof app plus any dialects used by endpoint targets
+```
+
+`kernel.graph.pipe(...)` checks:
+
+```txt
+RequiredDialects<Step> must be included in KernelDialects<Kernel>
+```
+
+That gives great DX:
+
+```ts
+const graph = kernel.graph.pipe(
+  action(archiveUser),
+  pass(app.passes.checkGuards),
+);
+```
+
+If the app dialect is missing, the error says:
+
+```txt
+Graph step requires dialect "app", but kernel only registered "core" and "domain".
+```
+
+That is much better than a runtime “unknown edge kind” error.
+
+---
+
+## Typed dialect registry
+
+The current `DialectRegistry` uses broad maps:
+
+```ts
+private readonly byNodeKind = new Map<string, Dialect>();
+private readonly byEdgeKind = new Map<string, Dialect>();
+private readonly byTrait = new Map<string, Dialect>();
+```
+
+and returns broad `Dialect | undefined` from string-based lookup methods. 
+
+I would add a typed registry factory:
+
+```ts
+const registry = defineDialectRegistry({
+  core,
+  domain,
+  app,
+  ui,
+});
+```
+
+Then:
+
+```ts
+registry.get("app");
+// typeof app
+
+registry.ownerOf(app.nodes.action);
+// typeof app
+
+registry.ownerOf(app.edges.writes);
+// typeof app
+
+registry.has(app.traits.serverOnly);
+// true typed/narrowed when possible
+```
+
+Keep dynamic APIs, but name them as dynamic:
+
+```ts
+registry.getById("dialect.app");
+registry.getOwnerByKindId("app.edge.writes");
+```
+
+Typed APIs take witnesses:
+
+```ts
+registry.ownerOf(app.edges.writes);
+```
+
+Dynamic APIs take strings:
+
+```ts
+registry.ownerOfId("app.edge.writes");
+```
+
+That split is important.
+
+---
+
+## Dialect-local authoring APIs
+
+A dialect should export its own nice mini-DSL.
+
+Example:
+
+```ts
+const app = defineDialect("app")((d) => {
+  const action = d.nodeKind("action", {
+    metadata: schema<ActionMetadata>(),
+  });
+
+  const rule = d.nodeKind("rule", {
+    traits: [d.trait("pure"), d.trait("predicate")],
+  });
+
+  const guards = d.edgeKind("guards", {
+    endpoints: {
+      rule: d.endpoint("rule").target(rule).source(),
+      action: d.endpoint("action").target(action).target(),
+    },
+  });
+
+  return {
+    nodes: { action, rule },
+    edges: { guards },
+  };
+});
+```
+
+Then the consuming code is clean:
+
+```ts
+const canArchiveUser = app.rule("canArchiveUser", (ctx) =>
+  ctx.expr.eq(ctx.actor.organizationId, ctx.user.organizationId)
+);
+
+const archiveUser = app.action("archiveUser")((ctx, action) =>
+  action
+    .input({ actor: Actor, user: User })
+    .guard(canArchiveUser)
+    .writes(User.archivedAt)
+);
+```
+
+That is the best version of dialect DX: dialects do not just hold raw kinds; they generate typed authoring helpers.
+
+---
+
+## Dialects can generate their own builders
+
+For example:
+
+```ts
+const crm = defineDialect("crm")({
+  nodes: {
+    customer,
+    lead,
+    pipeline,
+    opportunity,
+  },
+
+  edges: {
+    assignedTo,
+    inPipeline,
+    convertedTo,
+  },
+
+  builders: {
+    customer: defineCustomer,
+    lead: defineLead,
+    pipeline: definePipeline,
+  },
+});
+```
+
+Then:
+
+```ts
+const customer = crm.customer("Customer")({
+  fields: {
+    email: Email,
+    status: crm.enums.customerStatus,
+  },
+});
+
+const lead = crm.lead("Lead")((ctx, lead) =>
+  lead
+    .field("email", Email)
+    .assignedTo(ctx.entities.User)
+    .convertsTo(customer)
+);
+```
+
+These builders can return graph fragments:
+
+```ts
+const graph = kernel.graph.pipe(
+  crm.fragment(customer),
+  crm.fragment(lead),
+);
+```
+
+Or directly:
+
+```ts
+const graph = kernel.graph.pipe(
+  customer,
+  lead,
+);
+```
+
+if the values implement the graph-step/fragment protocol.
+
+---
+
+## Dialect capabilities should type passes and lowerings
+
+A pass should declare the dialects and graph facts it expects:
+
+```ts
+const checkGuards = definePass({
+  name: "app.checkGuards",
+
+  requires: [app],
+
+  run(graph) {
+    // graph is typed with app vocabulary
+  },
+});
+```
+
+A lowering should declare source and target dialects:
+
+```ts
+const lowerRulesToPostgres = defineLowering({
+  from: app.nodes.rule,
+  to: postgres.nodes.policy,
+
+  requires: [app, postgres],
+
+  lower(rule, ctx) {
+    // rule is typed as app rule node
+    // ctx can create postgres policy nodes
+  },
+});
+```
+
+Then:
+
+```ts
+kernel.graph.pipe(
+  pass(app.passes.checkGuards),
+  lower(app.lowerings.rulesToPostgres),
+);
+```
+
+should be legal only when the kernel has the required dialects registered.
+
+---
+
+## Dialects can be inferred from graph fragments
+
+Nice DX:
+
+```ts
+const users = app.entity("User")({
+  fields: {
+    email: Email,
+  },
+});
+
+const graph = kernel.graph.pipe(users);
+```
+
+`users` can carry:
+
+```txt
+requires dialect app
+contributes node User
+contributes field User.email
+contributes ownsField edges
+```
+
+So the kernel can infer the dialect requirement from the fragment.
+
+You can also offer:
+
+```ts
+const kernel = createKernel.inferFrom(
+  users,
+  archiveUser,
+  ui.adminDashboard,
+);
+```
+
+This can infer the required dialect set:
+
+```txt
+app
+domain
+ui
+expr
+operation
+```
+
+Then create a typed kernel automatically.
+
+---
+
+## What “fully type-safe dialects” means
+
+I would define it as:
+
+### TypeScript can prove:
+
+```txt
+This node kind belongs to this dialect.
+This edge kind belongs to this dialect.
+This trait can target this object kind.
+This edge endpoint expects this target kind.
+This pass requires these dialects.
+This lowering accepts this source kind and emits this target kind.
+This graph step cannot run unless its required dialects are registered.
+This dialect builder can only reference imported dialect vocabulary.
+```
+
+### Compiler passes validate:
+
+```txt
+Duplicate kind IDs.
+Missing imported dialects at runtime.
+Conflicting lowerings.
+Unsupported target combinations.
+Invalid graph-wide invariants.
+Plugin schema mismatches.
+Dynamic JSON/plugin dialect correctness.
+```
+
+This matches the broader system framing: TypeScript catches local mistakes, compiler passes catch global mistakes, and diagnostics explain what cannot be proven statically. Your existing copy already says this directly for graph-wide safety and inference. 
+
+---
+
+## The shape I’d aim for
+
+```ts
+const app = defineDialect("app")((d) => {
+  const action = d.nodeKind("action");
+  const rule = d.nodeKind("rule");
+  const field = d.import(domain.nodes.field);
+
+  const writes = d.edgeKind("writes", {
+    endpoints: {
+      action: d.endpoint("action").target(action).source(),
+      field: d.endpoint("field").target(field).target(),
+    },
+  });
+
+  const guards = d.edgeKind("guards", {
+    endpoints: {
+      rule: d.endpoint("rule").target(rule).source(),
+      action: d.endpoint("action").target(action).target(),
+    },
+  });
+
+  const checkGuards = d.pass("checkGuards", (graph) => {
+    // graph is typed with this dialect vocabulary
+  });
+
+  return {
+    nodes: { action, rule },
+    edges: { writes, guards },
+    passes: { checkGuards },
+  };
+});
+
+const kernel = createKernel({
+  dialects: { app, domain, expr, operation },
+});
+
+const graph = kernel.graph.pipe(
+  node(app.nodes.action, archiveUser),
+  node(app.nodes.rule, canArchiveUser),
+
+  edge(app.edges.guards, {
+    rule: ref(canArchiveUser),
+    action: ref(archiveUser),
+  }),
+
+  edge(app.edges.writes, {
+    action: ref(archiveUser),
+    field: ref(User.archivedAt),
+  }),
+
+  pass(app.passes.checkGuards),
+);
+```
+
+This gives:
+
+```txt
+typed dialect definition
+typed dialect registry
+typed graph construction
+typed edge endpoints
+typed pass requirements
+typed lowering requirements
+typed query APIs
+dynamic escape hatches at boundaries
+```
+
+---
+
+## Best DX summary
+
+I’d make dialects feel like this:
+
+```ts
+const app = defineDialect("app")({
+  imports: [core, domain, expr],
+
+  nodes: {
+    action,
+    rule,
+    query,
+  },
+
+  edges: {
+    guards,
+    reads,
+    writes,
+  },
+
+  traits: {
+    destructive,
+    serverOnly,
+  },
+
+  passes: {
+    deriveReads,
+    checkGuards,
+  },
+});
+
+const kernel = createKernel({ dialects: { app, domain, expr } });
+
+const graph = kernel.graph.pipe(
+  app.action("archiveUser")((ctx, action) =>
+    action
+      .guard(ctx.rules.canArchiveUser)
+      .writes(ctx.entities.User.archivedAt)
+  ),
+
+  pass(app.passes.deriveReads),
+  pass(app.passes.checkGuards),
+);
+```
+
+That is the direction: **dialects are not just runtime registries; they are typed vocabulary factories**.
+
+So yes, dialects can be deeply type-safe and inferred. The trick is to make the dialect value carry the generic everywhere: into builders, graph steps, passes, lowerings, registry lookups, and queries.
+
+
+Yes — the ideal design should make dialects feel like **typed vocabulary modules**, not runtime registries.
+
+The current code is close at the low level: `defineDialect` preserves arrays of node kinds, edge kinds, traits, passes, and lowerings, but the registry and graph APIs mostly erase that specificity into broad `Dialect`, `KernelGraph`, `KernelNode`, and `KernelEdge` shapes. The current `DialectRegistry` stores broad `Dialect` values in maps keyed by strings, and lookup methods return `Dialect | undefined`, so the owning dialect type is not preserved after registration.  The current graph also stores broad maps of `KernelNode` and `KernelEdge`, and registration returns plain `KernelGraph`, so graph state does not accumulate in the type. 
+
+Here is what I would want instead.
+
+---
+
+# 1. Dialects as typed vocabulary modules
+
+Instead of:
+
+```ts
+const app = defineDialect({
+  id: dialectId("dialect.app"),
+  label: "App",
+  nodeKinds: [ACTION_NODE_KIND, RULE_NODE_KIND],
+  edgeKinds: [GUARDS_EDGE_KIND, WRITES_EDGE_KIND],
+  traits: [DESTRUCTIVE_TRAIT],
+});
+```
+
+Prefer records or a callback that returns records:
+
+```ts
+const app = defineDialect("app")((d) => {
+  const action = d.nodeKind("action", {
+    metadata: schema<ActionMetadata>(),
+  });
+
+  const rule = d.nodeKind("rule", {
+    metadata: schema<RuleMetadata>(),
+    traits: {
+      pure: d.trait("rule.pure", { target: "node" }),
+      predicate: d.trait("rule.predicate", { target: "node" }),
+    },
+  });
+
+  const field = d.import(domain.nodes.field);
+
+  const guards = d.edgeKind("guards", {
+    endpoints: {
+      rule: d.endpoint("rule").target(rule).source(),
+      action: d.endpoint("action").target(action).target(),
+    },
+  });
+
+  const writes = d.edgeKind("writes", {
+    endpoints: {
+      action: d.endpoint("action").target(action).source(),
+      field: d.endpoint("field").target(field).target(),
+    },
+    metadata: schema<{
+      operation: "set" | "increment" | "append" | "delete";
+      reversible?: boolean;
+    }>(),
+  });
+
+  return {
+    nodes: {
+      action,
+      rule,
+      field,
+    },
+
+    edges: {
+      guards,
+      writes,
+    },
+
+    traits: {
+      destructive: d.trait("destructive", { target: "node" }),
+      serverOnly: d.trait("serverOnly", { target: "node" }),
+    },
+  };
+});
+```
+
+Now the dialect value itself is a typed witness:
+
+```ts
+app.nodes.action;
+app.nodes.rule;
+app.edges.guards;
+app.edges.writes;
+app.traits.serverOnly;
+```
+
+This is much better DX than importing many loose constants or searching arrays.
+
+---
+
+# 2. Kernel captures registered dialects
+
+The kernel should bind dialects once:
+
+```ts
+const kernel = createKernel({
+  dialects: {
+    core,
+    domain,
+    expr,
+    operation,
+    app,
+    ui,
+    deployment,
+  },
+});
+```
+
+After this, `kernel` knows the legal vocabulary.
+
+So this should work:
+
+```ts
+kernel.graph.pipe(
+  node(app.nodes.action, archiveUser),
+  node(app.nodes.rule, canArchiveUser),
+
+  edge(app.edges.guards, {
+    rule: ref(canArchiveUser),
+    action: ref(archiveUser),
+  }),
+);
+```
+
+But this should fail if `billing` was not registered:
+
+```ts
+kernel.graph.pipe(
+  edge(billing.edges.chargesCustomer, {
+    customer: ref(Customer),
+    invoice: ref(Invoice),
+  }),
+  // ^ type error:
+  // billing dialect is not registered in this kernel
+);
+```
+
+The ideal type relationship is:
+
+```txt
+createKernel({ dialects })
+  → captures dialect registry generic
+  → graph.pipe(...) only accepts steps requiring those dialects
+```
+
+---
+
+# 3. Edge endpoints should be fully typed
+
+Your current `defineEdgeFromKind` already infers endpoint input names from an edge-kind witness, which is good. But it returns `KernelEdge<..., readonly KernelEdgeEndpoint[], ...>`, so the named endpoint structure is erased. 
+
+The ideal API should preserve endpoint shape:
+
+```ts
+const graph = kernel.graph.pipe(
+  edge(app.edges.writes, {
+    action: ref(archiveUser),
+    field: ref(User.archivedAt),
+  }, {
+    metadata: {
+      operation: "set",
+      reversible: true,
+    },
+  }),
+);
+```
+
+Then later:
+
+```ts
+const writesEdges = graph.edges.ofKind(app.edges.writes);
+
+for (const write of writesEdges) {
+  write.endpoints.action.target;
+  // typed Action ref
+
+  write.endpoints.field.target;
+  // typed Field ref
+
+  write.metadata.operation;
+  // "set" | "increment" | "append" | "delete"
+
+  write.metadata.reversible;
+  // boolean | undefined
+}
+```
+
+Bad endpoint names should fail:
+
+```ts
+edge(app.edges.writes, {
+  actor: ref(currentUser),
+  // ^ type error: "actor" is not an endpoint of writes
+
+  field: ref(User.archivedAt),
+});
+```
+
+Bad endpoint target kinds should fail:
+
+```ts
+edge(app.edges.writes, {
+  action: ref(User.email),
+  //      ^ type error: expected Action ref
+
+  field: ref(User.archivedAt),
+});
+```
+
+Bad metadata should fail:
+
+```ts
+edge(app.edges.writes, {
+  action: ref(archiveUser),
+  field: ref(User.archivedAt),
+}, {
+  metadata: {
+    operation: "sendEmail",
+    //         ^ type error
+  },
+});
+```
+
+---
+
+# 4. Graph pipe should compose typed graph steps
+
+The graph API should be value-first and composable:
+
+```ts
+const graph = kernel.graph.pipe(
+  entity(User),
+
+  action(archiveUser),
+  rule(canArchiveUser),
+
+  edge(app.edges.guards, {
+    rule: ref(canArchiveUser),
+    action: ref(archiveUser),
+  }),
+
+  edge(app.edges.writes, {
+    action: ref(archiveUser),
+    field: ref(User.archivedAt),
+  }, {
+    metadata: {
+      operation: "set",
+      reversible: true,
+    },
+  }),
+
+  pass(app.passes.checkGuards),
+  pass(app.passes.deriveAffectedQueries),
+);
+```
+
+Each item is a `GraphStep`:
+
+```ts
+type GraphStep<TRequires, TIn, TOut> = {
+  run(graph: TypedGraph<TIn>): TypedGraph<TOut>;
+  readonly requires?: TRequires;
+};
+```
+
+So the pipe can enforce:
+
+```txt
+step requires app dialect
+kernel has app dialect
+step contributes action node
+step contributes writes edge
+graph type accumulates contributed facts
+```
+
+---
+
+# 5. Builder API for larger graphs
+
+The pipe form is great for compact composition. For larger definitions, use a type-state builder:
+
+```ts
+const graph = kernel.graph
+  .builder()
+  .node(app.nodes.rule, canArchiveUser)
+  .node(app.nodes.action, archiveUser)
+  .edge(app.edges.guards, {
+    rule: ref(canArchiveUser),
+    action: ref(archiveUser),
+  })
+  .edge(app.edges.writes, {
+    action: ref(archiveUser),
+    field: ref(User.archivedAt),
+  }, {
+    metadata: {
+      operation: "set",
+      reversible: true,
+    },
+  })
+  .pass(app.passes.checkGuards)
+  .done();
+```
+
+The builder gives better autocomplete and error locality:
+
+```txt
+after .node(canArchiveUser)
+  graph state knows canArchiveUser exists
+
+after .edge(guards, ...)
+  graph state knows archiveUser is guarded by canArchiveUser
+
+after .pass(checkGuards)
+  diagnostics can be attached to typed graph facts
+```
+
+---
+
+# 6. Dialect-defined authoring helpers
+
+The nicest DX comes when a dialect exports builders, not just raw node and edge kinds.
+
+Example:
+
+```ts
+const canArchiveUser = app.rule("canArchiveUser")((ctx) =>
+  expr.and(
+    expr.eq(ctx.actor.role, Role.Manager),
+    expr.eq(ctx.actor.organizationId, ctx.user.organizationId),
+  )
+);
+```
+
+```ts
+const archiveUser = app.action("archiveUser")((ctx, action) =>
+  action
+    .input({
+      actor: ctx.entities.Actor,
+      user: ctx.entities.User,
+    })
+    .guard(canArchiveUser)
+    .writes(ctx.entities.User.archivedAt, {
+      operation: "set",
+      reversible: true,
+    })
+    .emits(ctx.events.UserArchived)
+);
+```
+
+Then graph construction is very clean:
+
+```ts
+const graph = kernel.graph.pipe(
+  app.fragment(canArchiveUser),
+  app.fragment(archiveUser),
+  pass(app.passes.deriveReads),
+  pass(app.passes.checkGuards),
+  pass(app.passes.deriveOptimisticUpdates),
+);
+```
+
+Or, if these values implement the graph-fragment protocol:
+
+```ts
+const graph = kernel.graph.pipe(
+  canArchiveUser,
+  archiveUser,
+  pass(app.passes.deriveOptimisticUpdates),
+);
+```
+
+That is the ideal feel: users author domain concepts, and those concepts lower into nodes and edges.
+
+---
+
+# 7. `defineAction` can use overloads
+
+This is the API shape you described:
+
+```ts
+defineAction()
+// builder
+
+defineAction("archiveUser")
+// curried named binder
+
+defineAction.with<AppCtx>()("archiveUser")
+// context-bound named binder
+```
+
+Example:
+
+```ts
+const archiveUser = defineAction.with<AppCtx>()("archiveUser")({
+  input: {
+    actor: Actor,
+    user: User,
+  },
+
+  guard: canArchiveUser,
+
+  body: (ctx) =>
+    ctx.pipe(
+      op.set(ctx.input.user.archivedAt, expr.now()),
+      op.emit(UserArchived),
+    ),
+});
+```
+
+And callback-builder form:
+
+```ts
+const archiveUser = defineAction.with<AppCtx>()("archiveUser")((ctx, action) =>
+  action
+    .input({
+      actor: ctx.entities.Actor,
+      user: ctx.entities.User,
+    })
+    .guard(ctx.rules.canArchiveUser)
+    .writes(ctx.entities.User.archivedAt)
+    .emits(ctx.events.UserArchived)
+    .body((body) =>
+      body.pipe(
+        ctx.ops.set(ctx.input.user.archivedAt, ctx.expr.now()),
+        ctx.ops.emit(ctx.events.UserArchived),
+      )
+    )
+);
+```
+
+No-arg builder form:
+
+```ts
+const archiveUser = defineAction.with<AppCtx>()()
+  .name("archiveUser")
+  .input({
+    actor: Actor,
+    user: User,
+  })
+  .guard(canArchiveUser)
+  .writes(User.archivedAt)
+  .body((ctx) =>
+    ctx.pipe(
+      op.set(ctx.input.user.archivedAt, expr.now()),
+    )
+  )
+  .done();
+```
+
+I would prefer `.with<AppCtx>()("archiveUser")` over `defineAction<AppCtx>("archiveUser")`, because TypeScript partial generic inference tends to be awkward when the first generic is explicit but later generics should still infer.
+
+---
+
+# 8. Operations, expressions, and laws as first-class dialect concepts
+
+The current operation adapter lowers an operation signature into an operation node plus input/output type edges.  The current expression system has typed operation calls, including `OperationExprArgsFor<Op>`, which maps operation argument types into expression argument types.  The law system already models algebraic and behavioral claims like idempotent, commutative, rollback-safe, deterministic, and cacheable. 
+
+The ideal design should expose those as authoring primitives:
+
+```ts
+const setArchivedAt = operation.define("setArchivedAt")
+  .args(User, DateTime)
+  .returns(User)
+  .law(LAWS.IDEMPOTENT)
+  .law(LAWS.ROLLBACK_SAFE)
+  .done();
+```
+
+Or object form:
+
+```ts
+const setArchivedAt = operation.define("setArchivedAt")({
+  args: [User, DateTime],
+  output: User,
+  laws: [
+    LAWS.IDEMPOTENT,
+    LAWS.ROLLBACK_SAFE,
+  ],
+});
+```
+
+Then:
+
+```ts
+const graph = kernel.graph.pipe(
+  operation.fragment(setArchivedAt),
+);
+```
+
+which lowers to:
+
+```txt
+Node(kind: OPERATION_DEF)
+Edge(kind: HAS_INPUT_TYPE)
+Edge(kind: HAS_OUTPUT_TYPE)
+Edge(kind: HAS_LAW)
+```
+
+Expression calls should infer operation argument types:
+
+```ts
+const body = expr.call(
+  setArchivedAt,
+  expr.ref(user),
+  expr.now(),
+);
+```
+
+Wrong argument type:
+
+```ts
+expr.call(
+  setArchivedAt,
+  expr.ref(user),
+  expr.literal("not a date"),
+  //           ^ type error
+);
+```
+
+---
+
+# 9. Laws should be target-safe
+
+Current laws have a target like `"operation" | "transform" | "node" | "expr"`.  The ideal API should enforce that at claim time.
+
+```ts
+claim(setArchivedAt, LAWS.IDEMPOTENT);
+// ok if IDPOTENT targets operation
+
+claim(canArchiveUserExpr, LAWS.PURE);
+// ok if PURE targets expr
+
+claim(User.email, LAWS.PURE);
+// type error: PURE targets expr, not field node
+```
+
+Witness payloads should be typed too:
+
+```ts
+claim(addMoney, LAWS.IDENTITY, {
+  identity: expr.literal(Money, 0),
+});
+```
+
+Bad witness:
+
+```ts
+claim(addMoney, LAWS.IDENTITY, {
+  identity: User.email,
+  //        ^ type error: expected expression witness
+});
+```
+
+This is especially important because laws power downstream behavior:
+
+```txt
+idempotent
+  → safe retry
+
+rollback-safe
+  → optimistic rollback
+
+commutative
+  → CRDT-like merge
+
+identity
+  → aggregation initialization
+
+deterministic
+  → cacheability / reproducibility
+```
+
+---
+
+# 10. Query API should be kind-aware
+
+Instead of:
+
+```ts
+for (const edge of graph.edges.values()) {
+  if (edge.kind.id !== RULE_READS_EDGE_KIND.id) continue;
+  // find endpoint by role ID...
+}
+```
+
+Prefer:
+
+```ts
+const deps = graph
+  .edges.ofKind(app.edges.reads)
+  .whereEndpoint("reader", ref(canArchiveUser))
+  .targets("read");
+```
+
+Or dialect convenience:
+
+```ts
+const deps = app.rules.dependenciesOf(graph, canArchiveUser);
+
+deps.fields;
+deps.entities;
+deps.variables;
+```
+
+The current rule bridge manually walks edges, checks edge kind IDs, finds endpoints by role ID, and casts bridge metadata back into domain objects.  The ideal design should make those dependencies graph-native:
+
+```ts
+graph.edges.ofKind(app.edges.reads)
+```
+
+returns edges whose endpoints and metadata are already typed.
+
+---
+
+# 11. Passes should declare dialect requirements
+
+A pass should say what it needs:
+
+```ts
+const checkGuards = app.pass("checkGuards", {
+  requires: [app],
+
+  run(graph) {
+    const actions = graph.nodes.ofKind(app.nodes.action);
+
+    for (const action of actions) {
+      const guards = graph.edges
+        .ofKind(app.edges.guards)
+        .whereEndpoint("action", ref(action))
+        .toArray();
+
+      if (guards.length === 0) {
+        graph.diagnostic({
+          code: "action.missing_guard",
+          subject: ref(action),
+          severity: "error",
+          message: `Action ${action.name} has no guard.`,
+        });
+      }
+    }
+
+    return graph;
+  },
+});
+```
+
+Then:
+
+```ts
+kernel.graph.pipe(
+  pass(app.passes.checkGuards),
+);
+```
+
+should type-check only if `kernel` includes the `app` dialect.
+
+---
+
+# 12. Lowerings should type source and target dialects
+
+Example:
+
+```ts
+const lowerRuleToPostgresPolicy = defineLowering({
+  from: app.nodes.rule,
+  to: postgres.nodes.policy,
+
+  requires: [app, postgres],
+
+  lower(rule, ctx) {
+    return postgres.policy(`${rule.name}_policy`)({
+      predicate: ctx.lowerExpr(rule.body, postgres.sql),
+    });
+  },
+});
+```
+
+Usage:
+
+```ts
+const graph = kernel.graph.pipe(
+  rule(canArchiveUser),
+  lower(lowerRuleToPostgresPolicy),
+);
+```
+
+This should fail if the kernel does not include `postgres`.
+
+---
+
+# 13. Dynamic/plugin dialects need decoding
+
+Static TypeScript dialects can be deeply typed.
+
+Runtime-loaded dialects need a boundary:
+
+```ts
+const loaded = decodeDialect(json);
+
+if (!loaded.ok) {
+  return loaded.diagnostics;
+}
+
+const pluginDialect = loaded.value;
+```
+
+After decoding, you can use dynamic APIs:
+
+```ts
+kernel.registry.getDialectById(pluginDialect.id);
+graph.edges.ofKindId("plugin.edge.someEdge");
+```
+
+But typed APIs should require typed witnesses:
+
+```ts
+graph.edges.ofKind(app.edges.writes);
+```
+
+The split should be explicit:
+
+```txt
+typed APIs accept witnesses
+dynamic APIs accept strings
+dynamic data must be decoded/refined first
+```
+
+---
+
+# 14. The ideal end-to-end example
+
+```ts
+const domain = defineDialect("domain")((d) => {
+  const entity = d.nodeKind("entity");
+  const field = d.nodeKind("field");
+
+  const ownsField = d.edgeKind("ownsField", {
+    endpoints: {
+      entity: d.endpoint("entity").target(entity).source(),
+      field: d.endpoint("field").target(field).target(),
+    },
+  });
+
+  return {
+    nodes: { entity, field },
+    edges: { ownsField },
+  };
+});
+
+const app = defineDialect("app")((d) => {
+  const action = d.nodeKind("action");
+  const rule = d.nodeKind("rule");
+  const field = d.import(domain.nodes.field);
+
+  const guards = d.edgeKind("guards", {
+    endpoints: {
+      rule: d.endpoint("rule").target(rule).source(),
+      action: d.endpoint("action").target(action).target(),
+    },
+  });
+
+  const writes = d.edgeKind("writes", {
+    endpoints: {
+      action: d.endpoint("action").target(action).source(),
+      field: d.endpoint("field").target(field).target(),
+    },
+    metadata: schema<{
+      operation: "set" | "increment" | "append" | "delete";
+      reversible?: boolean;
+    }>(),
+  });
+
+  const checkGuards = d.pass("checkGuards", (graph) => {
+    return graph;
+  });
+
+  return {
+    nodes: { action, rule },
+    edges: { guards, writes },
+    passes: { checkGuards },
+  };
+});
+
+const kernel = createKernel({
+  dialects: {
+    domain,
+    app,
+  },
+});
+
+const User = domain.entity("User")({
+  fields: {
+    id: Id,
+    email: Email,
+    archivedAt: DateTime.optional(),
+  },
+});
+
+const canArchiveUser = app.rule("canArchiveUser")((ctx) =>
+  expr.eq(ctx.actor.organizationId, ctx.user.organizationId)
+);
+
+const archiveUser = app.action("archiveUser")((ctx, action) =>
+  action
+    .input({
+      actor: Actor,
+      user: User,
+    })
+    .guard(canArchiveUser)
+    .writes(User.fields.archivedAt, {
+      operation: "set",
+      reversible: true,
+    })
+);
+
+const graph = kernel.graph.pipe(
+  User,
+  canArchiveUser,
+  archiveUser,
+  pass(app.passes.checkGuards),
+);
+```
+
+That is the ideal feel.
+
+The user authors:
+
+```txt
+dialects
+entities
+rules
+actions
+operations
+laws
+passes
+```
+
+The system derives:
+
+```txt
+nodes
+edges
+traits
+refs
+metadata
+diagnostics
+artifacts
+lowerings
+```
+
+The type system verifies:
+
+```txt
+registered dialects
+legal node kinds
+legal edge kinds
+endpoint names
+endpoint targets
+metadata shapes
+pass requirements
+lowering requirements
+operation call arguments
+law target compatibility
+```
+
+The compiler verifies:
+
+```txt
+global invariants
+missing providers
+unsafe client reads
+unguarded actions
+unsupported lowerings
+ambiguous graph facts
+dynamic plugin validity
+```
+
+That is the design I’d aim for: **dialects as typed vocabulary factories, graph steps as composable semantic patches, and the kernel as the generic boundary that keeps everything inferred.**
+
+
+Yes. The ideal version is not “make these exact files a little more generic.” It is more like:
+
+```txt
+low-level runtime kernel
+  stays simple and serializable
+
+public authoring API
+  uses typed witnesses, builders, graph steps, fragments, and pipes
+
+dynamic/plugin boundary
+  decodes into typed-ish runtime values with diagnostics
+```
+
+The current files are mostly **runtime substrate**: artifacts use target/kind strings and broad source back-pointers, bridge helpers mutate readonly maps by casting, scopes use string lookup, kinds are plain const bags, types lose decoded shape in `defineType`, and traits validate target compatibility mostly at runtime.      
+
+An ideal version would make these things **typed semantic witnesses** that compose through the kernel graph.
+
+---
+
+# 1. Ideal `kind.ts`: no global bag of loose kinds
+
+Current `kind.ts` is basically:
+
+```ts
+export const nodeKinds = {
+  ENTITY: { id: "node.kind.entity", label: "Entity" },
+  FIELD: { id: "node.kind.field", label: "Field" },
+  ACTION: { id: "node.kind.action", label: "Action" },
+  // ...
+} as const;
+```
+
+and similar bags for edge kinds and endpoint roles. 
+
+That is useful, but not ideal. It gives literal IDs, but not enough relationship information.
+
+Ideal shape:
+
+```ts
+const domain = defineDialect("domain")((d) => {
+  const entity = d.nodeKind("entity", {
+    metadata: schema<{
+      name: string;
+      pluralName?: string;
+    }>(),
+  });
+
+  const field = d.nodeKind("field", {
+    metadata: schema<{
+      name: string;
+      nullable: boolean;
+    }>(),
+  });
+
+  const ownsField = d.edgeKind("ownsField", {
+    endpoints: {
+      entity: d.endpoint("entity").target(entity).source(),
+      field: d.endpoint("field").target(field).target(),
+    },
+  });
+
+  return {
+    nodes: {
+      entity,
+      field,
+    },
+
+    edges: {
+      ownsField,
+    },
+  };
+});
+```
+
+Now the kind is not just:
+
+```ts
+{ id: string; label: string }
+```
+
+It is a typed witness that knows:
+
+```txt
+node metadata shape
+valid traits
+valid edge endpoints
+valid endpoint targets
+direction
+dialect ownership
+```
+
+Then usage becomes:
+
+```ts
+const User = node(domain.nodes.entity, "User", {
+  metadata: {
+    name: "User",
+    pluralName: "Users",
+  },
+});
+
+const email = node(domain.nodes.field, "User.email", {
+  metadata: {
+    name: "email",
+    nullable: false,
+  },
+});
+
+const graph = kernel.graph.pipe(
+  User,
+  email,
+
+  edge(domain.edges.ownsField, {
+    entity: ref(User),
+    field: ref(email),
+  }),
+);
+```
+
+Bad composition should fail:
+
+```ts
+edge(domain.edges.ownsField, {
+  entity: ref(email),
+  //      ^ type error: expected Entity node ref
+
+  field: ref(User),
+  //    ^ type error: expected Field node ref
+});
+```
+
+That is the ideal: **kinds live inside dialects, and dialects generate typed graph APIs.**
+
+---
+
+# 2. Ideal `type.ts`: typed value factories, not one broad `defineType`
+
+Current `KernelType<Decoded>` has a `Decoded` generic, but `defineType` returns plain `KernelType`, so the decoded type is mostly lost at the factory boundary. 
+
+Current-ish:
+
+```ts
+const email = defineType(typeKinds.EMAIL, "type:email");
+// KernelType, not strongly KernelType<Email>
+```
+
+Ideal:
+
+```ts
+const t = defineTypeSystem("core.types")({
+  string: scalar("string").decoded<string>(),
+  number: scalar("number").decoded<number>(),
+  boolean: scalar("boolean").decoded<boolean>(),
+
+  uuid: scalar("uuid")
+    .decoded<Uuid>()
+    .trait(traits.TYPE.UUID),
+
+  email: scalar("email")
+    .decoded<Email>()
+    .trait(traits.TYPE.EMAIL),
+
+  datetime: scalar("datetime")
+    .decoded<Date>()
+    .trait(traits.TYPE.DATETIME),
+});
+```
+
+Then richer factories:
+
+```ts
+const User = t.object("User", {
+  id: t.uuid,
+  email: t.email,
+  name: t.string,
+  archivedAt: t.optional(t.datetime),
+});
+
+type UserValue = InferDecoded<typeof User>;
+// {
+//   id: Uuid;
+//   email: Email;
+//   name: string;
+//   archivedAt?: Date;
+// }
+```
+
+Ideal type helpers:
+
+```ts
+const Status = t.enum("UserStatus", ["active", "archived"] as const);
+// InferDecoded<typeof Status> = "active" | "archived"
+
+const PublicUser = t.pick(User, {
+  id: true,
+  name: true,
+});
+// InferDecoded<typeof PublicUser> = { id: Uuid; name: string }
+```
+
+Traits should be checked at the type factory:
+
+```ts
+const SecretToken = t.string
+  .brand<"SecretToken">()
+  .trait(traits.TYPE.SECRET)
+  .trait(traits.TYPE.SERVER_ONLY);
+```
+
+Bad trait target:
+
+```ts
+t.email.trait(traits.NODE.ACTION);
+//      ^ type error: node trait cannot apply to type
+```
+
+The ideal API should preserve decoded type through every type combinator:
+
+```txt
+object → InferDecoded object
+array → InferDecoded[]
+optional → T | undefined
+union → union
+brand → branded primitive
+refinement → branded/refined primitive
+```
+
+---
+
+# 3. Ideal `trait.ts`: target-safe traits with payload inference
+
+Current traits have a `target` field and helpers like `traitAppliesTo(...)`, but target compatibility is mostly runtime. 
+
+Ideal trait definition:
+
+```ts
+const serverOnly = defineTrait("serverOnly", {
+  target: ["type", "node"] as const,
+  payload: schema<{
+    reason?: string;
+  }>(),
+});
+
+const destructive = defineTrait("destructive", {
+  target: ["node"] as const,
+  payload: schema<{
+    requiresConfirmation: boolean;
+  }>(),
+});
+
+const writes = defineTrait("writes", {
+  target: ["edge"] as const,
+});
+```
+
+Then application is typed:
+
+```ts
+const deleteUser = node(app.nodes.action, "deleteUser")
+  .trait(destructive, {
+    requiresConfirmation: true,
+  });
+```
+
+Bad payload:
+
+```ts
+deleteUser.trait(destructive, {
+  confirm: true,
+  // ^ type error: expected requiresConfirmation
+});
+```
+
+Bad target:
+
+```ts
+const emailType = t.email.trait(destructive, {
+  requiresConfirmation: true,
+});
+// ^ type error: destructive applies to node, not type
+```
+
+Traits should also be able to refine API capabilities:
+
+```ts
+const action = app.action("deleteUser")
+  .trait(destructive, { requiresConfirmation: true });
+
+action.requiresConfirmation;
+// typed true / available because trait is present
+```
+
+And conflicts should be checked both locally and globally:
+
+```ts
+const clientEvaluable = defineTrait("clientEvaluable", {
+  target: ["expr"],
+  conflictsWith: [serverOnlyExpr],
+});
+
+const expr = defineExpr(...)
+  .trait(clientEvaluable)
+  .trait(serverOnlyExpr);
+// local type error if both known,
+// compiler diagnostic if dynamic/plugin-derived
+```
+
+Ideal principle:
+
+```txt
+trait definition carries target + payload + implications + conflicts
+trait application checks target and payload
+graph passes check global implication/conflict closure
+```
+
+---
+
+# 4. Ideal `scope.ts`: scope as inferred context, not string lookup
+
+Current scope bindings are individually typed, but `ExecutionScope` stores `readonly ScopeBinding[]`, and lookup is by `name: string`, returning `ScopeBinding | undefined`. 
+
+Ideal scope should be a typed record:
+
+```ts
+const actionScope = defineScope("archiveUser")
+  .binding("actor", "actor", Actor)
+  .binding("user", "input", User)
+  .binding("now", "context", t.datetime)
+  .done();
+```
+
+Then:
+
+```ts
+type Ctx = ScopeContext<typeof actionScope>;
+
+ctx.actor;
+// ExprRef<Actor>
+
+ctx.user;
+// ExprRef<User>
+
+ctx.now;
+// ExprRef<Date>
+```
+
+Better: scopes should be created by action/rule builders automatically.
+
+```ts
+const archiveUser = app.action("archiveUser")((ctx, action) =>
+  action
+    .input({
+      actor: Actor,
+      user: User,
+    })
+    .context({
+      now: t.datetime,
+    })
+    .body((body) =>
+      body.pipe(
+        op.set(ctx.user.archivedAt, ctx.now),
+      )
+    )
+);
+```
+
+Here `ctx` is inferred from the action input and context.
+
+Bad binding access:
+
+```ts
+ctx.tenant;
+// ^ type error if tenant was not declared
+```
+
+Bad use of field:
+
+```ts
+op.set(ctx.user.archivedAt, ctx.actor);
+//                         ^ type error: expected DateTime, got Actor
+```
+
+For dynamic lookup, keep a separate API:
+
+```ts
+scope.lookup("actor");
+// dynamic: ScopeBinding | undefined
+```
+
+But the main authored API should be:
+
+```ts
+ctx.actor
+ctx.input.user
+ctx.session
+ctx.tenant
+ctx.before
+ctx.after
+```
+
+not string lookup.
+
+---
+
+# 5. Ideal `artifact.ts`: artifacts typed by target and kind
+
+Current artifacts use:
+
+```ts
+target: ArtifactTarget
+kind: string
+content?: string | Uint8Array | JsonValue
+generatedFrom: ArtifactSource[]
+generatedBy: KernelId<"pass">
+metadata?: ReadonlyMap<string, unknown>
+```
+
+So the artifact target is a union, but `kind`, `content`, metadata, and sources are broad. 
+
+Ideal target/dialect API:
+
+```ts
+const reactTarget = defineTarget("react")((t) => {
+  const component = t.artifactKind("component", {
+    content: tsx(),
+    path: pathTemplate("src/components/{name}.tsx"),
+    metadata: schema<{
+      componentName: string;
+      exports: readonly string[];
+    }>(),
+    sources: [ui.nodes.view, app.nodes.action, app.nodes.rule],
+  });
+
+  const hook = t.artifactKind("hook", {
+    content: typescript(),
+    path: pathTemplate("src/hooks/{name}.ts"),
+    metadata: schema<{
+      hookName: string;
+    }>(),
+  });
+
+  return {
+    artifacts: {
+      component,
+      hook,
+    },
+  };
+});
+```
+
+Then emission:
+
+```ts
+const artifact = emit(reactTarget.artifacts.component, {
+  id: "artifact:react.component.UserList",
+  source: ref(UserListView),
+  generatedBy: passRef(emitReact),
+  path: {
+    name: "UserList",
+  },
+  metadata: {
+    componentName: "UserList",
+    exports: ["UserList"],
+  },
+  content: tsx`
+    export function UserList() {
+      return <div />;
+    }
+  `,
+});
+```
+
+Bad content type:
+
+```ts
+emit(reactTarget.artifacts.component, {
+  content: { json: true },
+  //       ^ type error: React component expects TSX/TypeScript content
+});
+```
+
+Bad source kind:
+
+```ts
+emit(reactTarget.artifacts.component, {
+  source: ref(postgresTable),
+  //      ^ type error if component sources must be UI/app graph refs
+});
+```
+
+Artifact source tracing should be typed:
+
+```ts
+artifact.generatedFrom[0].target;
+// Ref<typeof ui.nodes.view, typeof UserListView>
+```
+
+Artifact queries should be typed:
+
+```ts
+const components = graph.artifacts.ofKind(reactTarget.artifacts.component);
+
+for (const component of components) {
+  component.metadata.componentName;
+  component.content.code;
+}
+```
+
+Generated-from should also be graph-native:
+
+```ts
+edge(core.edges.generatedFrom, {
+  artifact: ref(artifact),
+  source: ref(UserListView),
+});
+```
+
+The artifact object can keep `generatedFrom` inline for serialization, but the graph should know it too.
+
+---
+
+# 6. Ideal `bridge.ts`: no public mutation helpers; use writer phases
+
+Current bridge helpers explicitly cast readonly maps to mutable maps and mutate them in place for dual-write paths. The file comments even say they are bridge-only and should be removed once pass pipelines land. 
+
+Ideal replacement:
+
+```ts
+const graph = kernel.graph.pipe(
+  entity(User),
+  action(archiveUser),
+  rule(canArchiveUser),
+);
+```
+
+For performance-sensitive building, expose an internal `GraphWriter`, not raw mutation helpers:
+
+```ts
+const graph = kernel.graph.build((w) => {
+  w.add(entity(User));
+  w.add(action(archiveUser));
+  w.add(rule(canArchiveUser));
+});
+```
+
+Type shape:
+
+```ts
+type GraphWriter<TKernel, TState> = {
+  add<TStep extends GraphStep<TKernel, any, any>>(
+    step: TStep,
+  ): void;
+
+  node<TNode extends AnyNode>(node: TNode): RefOf<TNode>;
+
+  edge<TEdgeKind extends EdgeKindDef>(
+    kind: TEdgeKind,
+    endpoints: EndpointInputsFor<TEdgeKind>,
+  ): RefOf<EdgeFromKind<TEdgeKind>>;
+};
+```
+
+This lets the implementation mutate internally for speed while the public API remains safe:
+
+```ts
+const graph = kernel.graph.mutable((graph) => {
+  const user = graph.add(entity(User));
+  const action = graph.add(action(archiveUser));
+
+  graph.add(edge(app.edges.writes, {
+    action: ref(action),
+    field: ref(User.archivedAt),
+  }));
+});
+```
+
+The important rule:
+
+```txt
+mutation is an implementation detail
+graph steps are the public API
+```
+
+So `attachNode`, `attachEdge`, `attachExpr` should become internal-only machinery under `GraphWriter`, not user-facing helpers.
+
+---
+
+# 7. Ideal graph-step protocol for all these concepts
+
+Every semantic object should be usable as a graph fragment.
+
+```ts
+const graph = kernel.graph.pipe(
+  t.register(UserType),
+
+  entity(User),
+  field(User.email),
+
+  action(archiveUser),
+  rule(canArchiveUser),
+
+  artifact(reactTarget.artifacts.component, UserListComponent),
+
+  pass(checkGuards),
+  pass(emitReact),
+);
+```
+
+Under the hood:
+
+```ts
+type GraphStep<TKernel, TIn, TOut> = {
+  readonly kind: "graph.step";
+  readonly requires: DialectSet;
+  apply(graph: TypedGraph<TKernel, TIn>): TypedGraph<TKernel, TOut>;
+};
+```
+
+Then these helpers produce steps:
+
+```ts
+type(typeDef)
+trait(traitDef)
+node(kind, value)
+edge(kind, endpoints)
+scope(scopeDef)
+artifact(kind, input)
+pass(passDef)
+fragment(...)
+```
+
+That means the API is composable at the top level instead of having disconnected `defineX` helpers.
+
+---
+
+# 8. Ideal end-to-end design
+
+This is what the “good” version could look like:
+
+```ts
+const core = defineDialect("core")((d) => {
+  const generatedFrom = d.edgeKind("generatedFrom", {
+    endpoints: {
+      artifact: d.endpoint("artifact").target(core.nodes.artifact).source(),
+      source: d.endpoint("source").targetAnyGraphObject().target(),
+    },
+  });
+
+  return {
+    edges: {
+      generatedFrom,
+    },
+  };
+});
+
+const domain = defineDialect("domain")((d) => {
+  const entity = d.nodeKind("entity", {
+    metadata: schema<{ name: string }>(),
+  });
+
+  const field = d.nodeKind("field", {
+    metadata: schema<{ name: string; nullable: boolean }>(),
+  });
+
+  const ownsField = d.edgeKind("ownsField", {
+    endpoints: {
+      entity: d.endpoint("entity").target(entity).source(),
+      field: d.endpoint("field").target(field).target(),
+    },
+  });
+
+  return {
+    nodes: { entity, field },
+    edges: { ownsField },
+  };
+});
+
+const app = defineDialect("app")((d) => {
+  const action = d.nodeKind("action");
+  const rule = d.nodeKind("rule");
+  const field = d.import(domain.nodes.field);
+
+  const guards = d.edgeKind("guards", {
+    endpoints: {
+      rule: d.endpoint("rule").target(rule).source(),
+      action: d.endpoint("action").target(action).target(),
+    },
+  });
+
+  const writes = d.edgeKind("writes", {
+    endpoints: {
+      action: d.endpoint("action").target(action).source(),
+      field: d.endpoint("field").target(field).target(),
+    },
+    metadata: schema<{
+      operation: "set" | "increment" | "append" | "delete";
+      reversible?: boolean;
+    }>(),
+  });
+
+  return {
+    nodes: { action, rule },
+    edges: { guards, writes },
+  };
+});
+
+const react = defineTarget("react")((t) => ({
+  artifacts: {
+    component: t.artifactKind("component", {
+      content: tsx(),
+      path: pathTemplate("src/components/{name}.tsx"),
+      metadata: schema<{ componentName: string }>(),
+    }),
+  },
+}));
+
+const kernel = createKernel({
+  dialects: { core, domain, app },
+  targets: { react },
+});
+
+const User = domain.entity("User")({
+  fields: {
+    id: t.uuid,
+    email: t.email,
+    archivedAt: t.optional(t.datetime),
+  },
+});
+
+const canArchiveUser = app.rule("canArchiveUser")((ctx) =>
+  expr.eq(ctx.actor.organizationId, ctx.user.organizationId)
+);
+
+const archiveUser = app.action("archiveUser")((ctx, action) =>
+  action
+    .input({
+      actor: Actor,
+      user: User,
+    })
+    .guard(canArchiveUser)
+    .writes(User.fields.archivedAt, {
+      operation: "set",
+      reversible: true,
+    })
+);
+
+const graph = kernel.graph.pipe(
+  User,
+  canArchiveUser,
+  archiveUser,
+
+  pass(app.passes.checkGuards),
+  pass(app.passes.deriveAffectedQueries),
+
+  emit(react.artifacts.component, {
+    source: ref(UserListView),
+    path: { name: "UserList" },
+    metadata: {
+      componentName: "UserList",
+    },
+    content: tsx`
+      export function UserList() {
+        return null;
+      }
+    `,
+  }),
+);
+```
+
+What this gives you:
+
+```txt
+dialects define typed vocabulary
+types preserve decoded values
+traits are target-safe and payload-safe
+scopes become inferred ctx objects
+artifacts are target/kind/content/source typed
+bridge mutation disappears behind graph writer/pipe
+graph steps compose everything
+passes verify global semantics
+```
+
+---
+
+# 9. The ideal layering
+
+I would split the kernel into three layers.
+
+## Layer 1: runtime IR
+
+Simple, serializable, broad:
+
+```ts
+RuntimeGraph
+RuntimeNode
+RuntimeEdge
+RuntimeArtifact
+RuntimeType
+RuntimeTrait
+```
+
+This is what you save, load, inspect, and pass between plugins.
+
+## Layer 2: typed witnesses
+
+Factories that create type-rich values:
+
+```ts
+defineDialect(...)
+defineNodeKind(...)
+defineEdgeKind(...)
+defineType(...)
+defineTrait(...)
+defineTarget(...)
+defineArtifactKind(...)
+defineScope(...)
+```
+
+These centralize internal casts and preserve inference.
+
+## Layer 3: composable authoring API
+
+Everything becomes graph steps:
+
+```ts
+kernel.graph.pipe(
+  entity(...),
+  action(...),
+  rule(...),
+  edge(...),
+  scope(...),
+  artifact(...),
+  pass(...),
+);
+```
+
+This is the API users touch.
+
+---
+
+# 10. The core design rule
+
+The current design says:
+
+```txt
+define broad object
+store broad object
+recover meaning later with string checks and casts
+```
+
+The ideal design says:
+
+```txt
+create typed witness
+compose witness into graph step
+kernel carries dialect/target generic
+graph pipe accumulates state
+queries infer from witness
+dynamic data is decoded at boundaries
+```
+
+That is the version I would aim for.
+
+Yes — the new TypeScript compiler changes the design calculus a lot.
+
+But I would phrase it carefully:
+
+```txt
+Fast TypeScript makes “the graph in TypeScript” much more viable.
+
+It does not make TypeScript a formal verification system.
+```
+
+TypeScript 7.0 Beta is the Go/native compiler line, and Microsoft says it is often about 10× faster than TypeScript 6.0, with shared-memory parallelism and structurally identical type-checking semantics to TS 6.0. It is available as `@typescript/native-preview@beta` and run via `tsgo`. ([Microsoft for Developers][1])
+
+That matters for Gen2 because our biggest fear with “let TypeScript see the graph” was compile-time cost and editor collapse. The new compiler gives us a larger type-level budget.
+
+## What this unlocks
+
+We can make the **authoring graph** much more TypeScript-native.
+
+For example:
+
+```ts
+const graph = createGen()
+  .use(domain)
+  .use(app)
+  .use(ui)
+  .graph.pipe(
+    User,
+    canArchiveUser,
+    archiveUser,
+    UserListView,
+  );
+```
+
+and TypeScript can know things like:
+
+```txt
+User exists
+User.fields.email exists
+archiveUser writes User.fields.archivedAt
+canArchiveUser is a Rule<boolean>
+UserListView uses listActiveUsers
+ui behavior target slot is interactive
+```
+
+So yes, we can push more checks into TypeScript:
+
+```txt
+wrong edge endpoint
+wrong field type
+unknown slot
+action writes non-field
+behavior attaches to non-interactive slot
+rule body is not boolean
+operation args mismatch
+trait target mismatch
+artifact metadata mismatch
+unregistered dialect in graph step
+```
+
+That is a big deal.
+
+## But it is not formal verification
+
+TypeScript’s own design goals explicitly say a sound or “provably correct” type system is a non-goal; TypeScript balances correctness and productivity instead. It also uses a fully erasable structural type system. ([GitHub][2])
+
+So TypeScript gives us:
+
+```txt
+excellent static checking
+rich inference
+editor feedback
+compile-time invalid-state prevention
+```
+
+It does not give us:
+
+```txt
+soundness
+proofs
+semantic equivalence
+total correctness
+target correctness
+law correctness
+security guarantees
+runtime data validity
+```
+
+A faster compiler does not change that. It gives us more performance headroom, not new proof semantics.
+
+## The right design is “TypeScript as proof-carrying authoring,” not “TypeScript as the only verifier”
+
+I would use TypeScript for **local structural correctness**.
+
+Examples:
+
+```ts
+edge(app.edges.writes, {
+  action: ref(archiveUser),
+  field: ref(User.fields.archivedAt),
+});
+```
+
+TypeScript can reject:
+
+```ts
+edge(app.edges.writes, {
+  action: ref(User.fields.email),
+  field: ref(archiveUser),
+});
+```
+
+It can also check operation calls:
+
+```ts
+expr.call(AddNumber, expr.literal(t.number, 1), expr.literal(t.number, 2));
+```
+
+and reject:
+
+```ts
+expr.call(AddNumber, expr.literal(t.number, 1), expr.literal(t.string, "two"));
+```
+
+That is compile-time verification of construction rules.
+
+But global properties still need passes:
+
+```txt
+Every action exposed to the client has server enforcement.
+Every at-least-once dispatch has idempotency.
+Every rule used as RLS is SQL-lowerable.
+Every required provider is satisfied in the target boundary.
+Every generated artifact traces back to source graph facts.
+No sensitive field crosses a client boundary.
+A state-machine transition is total/exhaustive.
+```
+
+Those are graph verification problems, not just TypeScript type problems.
+
+## “Entire graph in TypeScript” should mean three artifacts
+
+I would not make the runtime graph itself an enormous type-level object only.
+
+I would use three layers:
+
+```txt
+1. TypeScript authoring graph
+   Rich typed witnesses, builders, .class forms, graph.pipe.
+
+2. Runtime graph IR
+   Simple serializable nodes/edges/traits/refs/artifacts.
+
+3. Generated .d.ts graph witness
+   A compact static view of the graph for editor/checker feedback.
+```
+
+So users write:
+
+```ts
+class User extends domain.entity.class("User", {
+  fields: {
+    id: field(t.uuid),
+    email: field(t.email),
+  },
+}) {}
+```
+
+Gen2 emits/stores:
+
+```json
+{
+  "nodes": [
+    { "id": "entity:User", "kind": "domain.entity" },
+    { "id": "field:User.email", "kind": "domain.field" }
+  ],
+  "edges": [
+    {
+      "kind": "domain.ownsField",
+      "endpoints": {
+        "entity": "entity:User",
+        "field": "field:User.email"
+      }
+    }
+  ]
+}
+```
+
+And optionally generates:
+
+```ts
+declare namespace GraphWitness {
+  export const User: EntityWitness<{
+    id: Uuid;
+    email: Email;
+  }>;
+
+  export const archiveUser: ActionWitness<{
+    writes: [typeof User.fields.archivedAt];
+  }>;
+}
+```
+
+That gives us fast editor/type-checking without making the serialized graph depend on TypeScript’s type system.
+
+## What should move into TypeScript types
+
+With TS 7 speed, I would push more of this into types:
+
+```txt
+Dialect registration
+  graph only accepts steps from registered dialects
+
+Endpoint correctness
+  edge endpoints match required node kinds
+
+Trait application
+  trait target and payload are checked
+
+Operation calls
+  args, output, requirements, effects inferred
+
+Scope contexts
+  ctx.input, ctx.actor, ctx.session, ctx.before, ctx.after
+
+UI slots
+  behavior target requirements match slot traits
+
+Artifact kinds
+  content, metadata, source kinds, path params
+
+Invariant families
+  params infer subject/path/violation shape
+
+State machines
+  transition from/to variants checked
+
+Graph pipe
+  accumulated graph state for named symbols when feasible
+```
+
+This is where TypeScript shines.
+
+## What should stay in graph passes
+
+Do not try to encode these primarily as type-level computation:
+
+```txt
+reachability / graph shaking
+cycle checks
+global provider satisfaction
+SQL lowerability
+client/server leakage
+operation law validity
+equivalence between server rule and DB predicate
+migration diff correctness
+incremental view maintenance safety
+offline replay safety
+deployment resource availability
+AI-imported JSON spec validity
+runtime data validation
+```
+
+These should be `verify`, `derive`, `legalize`, and `lower` passes with typed diagnostics.
+
+TypeScript can help construct the graph correctly. Passes prove or reject global semantic properties at graph scale.
+
+## Does this provide formal verification?
+
+Not by itself.
+
+The closest honest wording is:
+
+```txt
+TypeScript provides static construction verification.
+
+Gen2 passes provide semantic graph verification.
+
+Formal verification would require a proof backend.
+```
+
+If we want actual formal verification, Gen2 could add a proof/solver target:
+
+```txt
+Gen2 graph
+  -> SMT / Z3 constraints
+  -> Alloy model
+  -> TLA+ spec
+  -> Lean theorem skeleton
+  -> property-test generator
+```
+
+Examples:
+
+```txt
+state-machine reachability
+invariant preservation under all actions
+authorization non-bypass
+queue idempotency/retry safety
+migration preserves data constraints
+operation laws over finite domains
+```
+
+That would be real “formal-ish” or formal verification depending on target and proof discipline.
+
+TypeScript is the front-line checker. It is not the proof engine.
+
+## The updated architecture implication
+
+I would revise the mental model to:
+
+```txt
+TypeScript authoring layer:
+  high-inference, witness-rich, compile-time local correctness
+
+Graph IR:
+  simple, serializable, indexed, target-neutral source of truth
+
+Pass verifier:
+  global semantic validation with diagnostics
+
+Optional proof targets:
+  SMT/Alloy/TLA+/Lean/property tests for stronger claims
+```
+
+That is a very strong architecture.
+
+## Practical recommendation
+
+Use the new TS compiler to be more ambitious, but do not overfit the graph to TypeScript.
+
+Good:
+
+```ts
+const graph = kernel.graph.pipe(
+  User,
+  canArchiveUser,
+  archiveUser,
+);
+```
+
+Good:
+
+```ts
+type AppGraph = InferGraph<typeof graph>;
+```
+
+Good:
+
+```ts
+expectTypeOf(
+  graph.edges.ofKind(app.edges.writes).targets("field"),
+).toEqualTypeOf<readonly FieldRef[]>();
+```
+
+Risky:
+
+```ts
+type EntireApplicationProof = ProveAllInvariants<
+  ProveAllTargets<
+    ProveAllSyncPlans<
+      typeof graph
+    >
+  >
+>;
+```
+
+That will become unreadable and brittle even with a faster compiler.
+
+The best split:
+
+```txt
+Use TypeScript to prevent bad graph construction.
+Use Gen2 passes to validate whole-graph semantics.
+Use proof/solver targets for true formal claims.
+```
+
+So yes: the new compiler makes an “entire graph in TypeScript” authoring experience much more realistic. But the formal verification story should be layered, not reduced to TypeScript.
+
+[1]: https://devblogs.microsoft.com/typescript/announcing-typescript-7-0-beta/ "Announcing TypeScript 7.0 Beta - TypeScript"
+[2]: https://github.com/microsoft/TypeScript/wiki/TypeScript-Design-Goals "TypeScript Design Goals · microsoft/TypeScript Wiki · GitHub"
+

@@ -1,7 +1,5 @@
 # Gen2 Revised Core Design Doc
 
-> **SUPERSEDED.** This is an older draft. The maintained version of this design lives at [`docs/revision/revised-core.md`](./docs/revision/revised-core.md) (a superset of this file with review adjustments). For the current plan and live status see [`docs/revised2/PLAN.md`](./docs/revised2/PLAN.md) and [`docs/revised2/CURRENT.md`](./docs/revised2/CURRENT.md). Do not implement from this file.
-
 ## 1. Executive summary
 
 Gen2 should be reframed as a **semantic graph compiler** rather than a full-stack framework with many first-class domain concepts.
@@ -8710,3 +8708,413 @@ Passes compose all of that into:
 ```
 
 So yes: **laws are traits, operations are nodes, operation relationships are edges, and the whole system composes through typed symbols + phantom inference + graph verification.**
+This is **very good** — and in some ways stronger than the previous `revised_phases.md`.
+
+The biggest improvement is that this doc separates two ideas that were still slightly blended before:
+
+```txt
+Kernel = tiny compiler substrate
+Stdlib/dialects = rich app concepts
+```
+
+That is the right direction. The line “Gen2 core should only model things the compiler cannot recover from lower-level graph structure” is exactly the right design rule.
+
+## My read
+
+This document turns Gen2/dIRived from:
+
+```txt
+a full-stack framework with many primitive concepts
+```
+
+into:
+
+```txt
+a typed semantic graph compiler with an app-building standard library
+```
+
+That is a much cleaner foundation.
+
+The strongest part is making **Edge** first-class. That is probably the key architectural correction.
+
+A lot of systems get this wrong: they model entities, actions, rules, views, providers, etc., but relationships live as private arrays or object fields. Your doc correctly says relationships themselves need identity, traits, metadata, constraints, source refs, and derivation history.
+
+That unlocks the whole project:
+
+```txt
+Action writes Field
+Rule reads Field
+View submits Action
+Query derives Key
+Artifact generatedFrom Edge
+Provider satisfies Requirement
+Boundary transports Callable
+```
+
+Once edges are first-class, derivation becomes graph traversal instead of custom subsystem logic.
+
+## The best decision in the doc
+
+I really like this split:
+
+```txt
+Core:
+  Id
+  Type
+  Expr
+  Transform
+  Trait
+  Metadata
+  Node
+  Edge
+  Graph
+  Pass
+
+Standard library:
+  Entity
+  Field
+  Relation
+  Rule
+  Query
+  Action
+  Dispatch
+  StoredValue
+  EntityView
+  Boundary
+  Provider
+  Key
+  ReactiveResource
+  StorageContainer
+  DesignSystem
+  ArtifactEmitter
+  Checker
+```
+
+This makes the system easier to explain and easier to extend. It also prevents “primitive inflation,” where every new feature demands a new top-level compiler concept.
+
+The resulting mental model is strong:
+
+```txt
+Type gives values meaning.
+Expr gives logic inspectable shape.
+Transform gives representations typed movement.
+Node gives semantic objects identity.
+Edge gives topology meaning.
+Trait gives checked semantic claims.
+Metadata gives human/tool annotations.
+Graph gives global context.
+Pass gives evolution, derivation, lowering, and emission.
+```
+
+That is README-worthy.
+
+## My biggest concern
+
+There is a slight contradiction in the doc around **strings vs typed symbols**.
+
+Early sections say internal semantics should avoid magic strings. But the sketch APIs still show things like:
+
+```ts
+graph.nodesWithTrait("node.callable");
+graph.relationshipsOfKind("writes");
+```
+
+and:
+
+```ts
+type Node = {
+  kind: string;
+};
+```
+
+I would fix this before implementation.
+
+Use strings only for external names/debugging. Internally, use typed symbol definitions:
+
+```ts
+const CallableTrait = defineTrait("node.callable");
+const WritesEdgeKind = defineEdgeKind("writes");
+const EntityNodeKind = defineNodeKind("entity");
+
+graph.nodesWithTrait(CallableTrait);
+graph.edgesOfKind(WritesEdgeKind);
+graph.nodesOfKind(EntityNodeKind);
+```
+
+This matters because dIRived’s whole promise depends on durable semantic identity. Raw string kinds will eventually leak into plugins, targets, diagnostics, and agent edits.
+
+## I would keep `SymbolDef` conceptually
+
+The new doc shrinks the core to:
+
+```txt
+Id
+Type
+Expr
+Transform
+Trait
+Metadata
+Node
+Edge
+Graph
+Pass
+```
+
+That is elegant, but I think you still need something like:
+
+```txt
+SymbolDef
+```
+
+Maybe it does not need to be a public primitive, but internally you need typed definitions for:
+
+```txt
+NodeKindDef
+EdgeKindDef
+TraitDef
+TypeKindDef
+ExprKindDef
+PassKindDef
+EndpointRoleDef
+```
+
+Otherwise `kind: string` and `traits: Id<"trait">[]` become too loose.
+
+So I would say:
+
+```txt
+Public mental model:
+  Id, Type, Expr, Transform, Trait, Metadata, Node, Edge, Graph, Pass
+
+Internal kernel machinery:
+  SymbolDef / KindDef / RoleDef
+```
+
+That keeps the explanation small without weakening type safety.
+
+## Diagnostics should not be too “core-adjacent”
+
+The doc classifies `Diagnostic` and `Artifact` as core-adjacent rather than primitive, but the MVP kernel still includes them. That tension is worth resolving.
+
+I agree that `Diagnostic` is not an app semantic primitive like `Node` or `Edge`. But for this project, diagnostics are too important to treat casually.
+
+Diagnostics are the interface between:
+
+```txt
+compiler
+AI repair loop
+developer
+end user
+runtime validation
+deployment system
+generated app
+```
+
+So I would make diagnostics a kernel-supported system, even if not one of the “semantic graph atoms.”
+
+Something like:
+
+```txt
+Semantic core atoms:
+  Id, Type, Expr, Transform, Trait, Metadata, Node, Edge, Graph, Pass
+
+Compiler support systems:
+  Diagnostic, Artifact, SourceMap, Location, Provenance
+```
+
+That gives diagnostics enough weight without claiming they are the same kind of thing as nodes/edges.
+
+## Protocols are missing
+
+The previous plan had `Protocol` as a hard kernel concept. This new doc drops it from the true core.
+
+I think that is risky.
+
+You need the distinction:
+
+```txt
+Trait:
+  This operation is patchable.
+
+Protocol:
+  Here is how a pass asks it to produce/apply/invert a patch.
+```
+
+Traits alone are not enough for generic passes. A pass needs behavior surfaces:
+
+```txt
+CallableProtocol
+ReadableProtocol
+WritableProtocol
+PatchProtocol
+LoweringProtocol
+PredicateAffectProtocol
+ReducerProtocol
+RenderableProtocol
+```
+
+Without protocols, you either put behavior into metadata, node fields, ad hoc target code, or giant switch statements.
+
+So I would add `Protocol` back, at least internally:
+
+```txt
+True core:
+  Id
+  SymbolDef
+  Type
+  Expr
+  Transform
+  Trait
+  Protocol
+  Metadata
+  Node
+  Edge
+  Graph
+  Pass
+```
+
+Or, if you want to keep the public list small:
+
+```txt
+Protocol is part of the pass/dialect API, not the user-facing mental model.
+```
+
+But I would not remove it from the architecture.
+
+## Location and provenance need first-class treatment
+
+The doc includes metadata source spans and edge provenance, which is good. But for an AI app builder, location/provenance are not optional niceties.
+
+You need to trace:
+
+```txt
+user prompt span
+builder call site
+graph node
+graph edge
+derived pass
+lowered target node
+emitted file section
+runtime diagnostic
+```
+
+That is how you explain generated code and repair it safely.
+
+So I would avoid hiding source/location inside generic metadata only. Metadata is passive; location/provenance are compiler-operational.
+
+I would make these support types explicit:
+
+```txt
+Location
+Provenance
+SemanticSourceMap
+DiagnosticTrace
+ArtifactTrace
+```
+
+## The Effect stance is right
+
+The doc’s phrase “Effect-shaped, not Effect-owned” is exactly right.
+
+Effect can heavily influence:
+
+```txt
+Schema
+Transform
+Context.Service
+Layer
+Effect runtime programs
+typed errors
+requirements
+```
+
+But Gen2/dIRived’s IR should stay independent. The doc correctly says `Gen2 Expr = static compiler AST` and `Effect.Effect = possible emitted runtime implementation`.
+
+That distinction is crucial. If expressions become Effect programs, you lose portability, SQL lowering, static dependency extraction, source mapping, and target-agnostic generation.
+
+## The migration appendix is more practical than the hard rebase plan
+
+I actually prefer this doc’s staged migration strategy over a big-bang rebase.
+
+The underlay approach is safer:
+
+```txt
+Existing public API
+  gen.entity(...)
+  gen.rule(...)
+  gen.action(...)
+      ↓
+Stdlib adapters
+      ↓
+Kernel graph
+```
+
+Then dual-write during migration:
+
+```txt
+ctx.entities.push(entity)
+ctx.graph.nodes.add(entityToKernelNode(entity))
+ctx.graph.edges.add(entityToKernelEdges(entity))
+```
+
+That is pragmatic. It lets you keep value while gradually moving the source of truth into the graph.
+
+My only warning: dual-write must be temporary. Add architecture tests so old arrays cannot keep growing forever.
+
+## What I would change before treating this as final
+
+I would revise the core list to something like:
+
+```txt
+Semantic kernel:
+  Id / SemanticRef
+  SymbolDef
+  Type
+  Expr
+  Transform
+  Trait
+  Protocol
+  Metadata
+  Node
+  Edge
+  Graph
+  Pass
+
+Compiler support:
+  Location
+  Provenance
+  Diagnostic
+  Artifact
+  SemanticSourceMap
+```
+
+Then keep the public explanation short:
+
+```txt
+The core is types, expressions, transforms, nodes, edges, traits, and passes over a graph.
+```
+
+That gives you both clarity and enough machinery.
+
+## My verdict
+
+This is the best version of the architecture so far.
+
+It makes three things clear:
+
+1. **Everything meaningful is graph-backed.**
+2. **Edges are as important as nodes.**
+3. **App concepts are stdlib/dialect abstractions, not kernel primitives.**
+
+That is the right foundation for an AI app generator.
+
+The main fixes I would make are:
+
+```txt
+Replace string-first kinds/traits with typed symbol definitions.
+Promote Protocol back into the architecture.
+Treat Diagnostic, Location, Provenance, and Artifact as serious compiler systems.
+Keep the staged underlay migration, but enforce a final no-dual-source-of-truth rule.
+```
+
+With those adjustments, this is a strong enough design doc to guide implementation.

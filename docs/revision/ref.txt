@@ -1,0 +1,790 @@
+Refs are one of the most important pieces of the architecture.
+
+In dIRived/Gen2, a **ref** is a typed, stable handle to a semantic object in the graph.
+
+Not the object itself.
+Not a string name.
+Not a file path.
+Not a runtime pointer.
+
+A ref is the way one graph fact points to another graph fact safely.
+
+```txt
+User
+  has ref: EntityRef<User>
+
+User.email
+  has ref: FieldRef<User, Email>
+
+archiveUser
+  has ref: ActionRef<Input, Output, Errors, Requirements, Effects>
+
+canArchiveUser
+  has ref: RuleRef<Vars, boolean>
+
+listActiveUsers
+  has ref: QueryRef<Input, List<User>>
+```
+
+The README already hints at this with “symbol-first refs,” “typed symbols and refs,” and graph facts like `Edge(GuardedBy): archiveUser -> isAdmin` or `Edge(Writes): archiveUser -> User.archivedAt`.  Refs are what make those edges precise.
+
+## Why refs are needed
+
+Because the compiler graph is full of relationships.
+
+For example:
+
+```txt
+archiveUser is guarded by canArchiveUser
+archiveUser writes User.archivedAt
+listActiveUsers reads User.archivedAt
+UserListView uses listActiveUsers
+ArchiveButton runs archiveUser
+archiveUser emits UserArchived
+sendArchiveEmail handles UserArchived
+Alchemy target needs a queue for that dispatch
+```
+
+Every one of those statements needs to point to another semantic object.
+
+Without refs, you end up with strings:
+
+```ts
+{
+  action: "archiveUser",
+  guard: "canArchiveUser",
+  writes: ["User.archivedAt"],
+  invalidates: ["users.active"]
+}
+```
+
+That is fragile. Strings can be misspelled, renamed incorrectly, collide across dialects, or refer to the wrong thing.
+
+Refs let you do this instead:
+
+```ts
+archiveUser.guard(canArchiveUser.ref)
+
+archiveUser.writes(User.fields.archivedAt.ref)
+
+UserListView.data(listActiveUsers.ref)
+```
+
+Now the compiler knows the exact object, type, dialect, scope, and capabilities being referenced.
+
+## A ref is identity, not display name
+
+A node can have many names:
+
+```txt
+display label: "Active Users"
+export name: listActiveUsers
+route name: /users/active
+database name: users
+internal symbol: query_01HZ...
+```
+
+The ref should not depend on the display label or file name.
+
+A ref is the stable semantic identity.
+
+That means you can rename things without breaking the graph:
+
+```txt
+listActiveUsers -> listVisibleUsers
+```
+
+The display/export name changed, but the semantic ref can stay the same.
+
+That is crucial for an AI app generator because the AI will constantly rename, reorganize, regenerate, and move code around. The graph needs stable object identity underneath all that churn.
+
+## Refs enable typed edges
+
+An edge should not be:
+
+```txt
+from: string
+to: string
+kind: string
+```
+
+It should be typed:
+
+```ts
+type Edge<
+  Kind,
+  From extends Ref<any>,
+  To extends Ref<any>,
+  Payload,
+  Traits
+>
+```
+
+So this is valid:
+
+```txt
+ActionRef -> GuardedBy -> RuleRef
+```
+
+But this should be rejected:
+
+```txt
+FieldRef -> GuardedBy -> QueueRef
+```
+
+Refs let the compiler say:
+
+```txt
+Only actions, queries, boundaries, or UI behaviors can be guarded by rules.
+
+Only actions can write fields.
+
+Only queries can read fields.
+
+Only events can trigger dispatches.
+
+Only interactive UI slots can attach interactive behaviors.
+```
+
+That is the foundation of type-safe graph semantics.
+
+## Refs let expressions stay inspectable
+
+Suppose you write:
+
+```ts
+const canArchiveUser = gen.rule("canArchiveUser", {
+  vars: {
+    actor: User,
+    user: User,
+  },
+  when: ({ actor, user }) =>
+    actor.role.eq("admin").and(user.archivedAt.isNull()),
+});
+```
+
+That rule body should not become an opaque JavaScript function. It should become an expression tree:
+
+```txt
+And
+  Eq
+    FieldAccess actor -> User.role
+    Literal "admin"
+  IsNull
+    FieldAccess user -> User.archivedAt
+```
+
+Those `FieldAccess` nodes need refs:
+
+```txt
+User.role.ref
+User.archivedAt.ref
+```
+
+Because then the compiler can derive:
+
+```txt
+canArchiveUser reads User.role
+canArchiveUser reads User.archivedAt
+canArchiveUser is pure
+canArchiveUser may be SQL-lowerable
+canArchiveUser may be client-safe if those fields are client-safe
+```
+
+Without refs, the expression is just code. With refs, the expression is analyzable semantic structure.
+
+## Refs make derivation possible
+
+The classic example:
+
+```txt
+archiveUser writes User.archivedAt
+listActiveUsers reads User.archivedAt
+```
+
+Because both facts point to the same `FieldRef<User, DateTime | null>`, the compiler can derive:
+
+```txt
+archiveUser may affect listActiveUsers
+```
+
+Then it can inspect the query predicate:
+
+```txt
+listActiveUsers filters where archivedAt IS NULL
+```
+
+And the mutation operation:
+
+```txt
+archiveUser sets archivedAt from null to datetime
+```
+
+So it can derive:
+
+```txt
+remove archived user from active users list
+invalidate active users key if patch cannot be proven
+generate rollback by restoring previous archivedAt
+```
+
+That only works if all these pieces share stable typed refs.
+
+## Refs separate semantics from target code
+
+The same semantic object can lower into many targets.
+
+```txt
+User.email.ref
+  -> TypeScript property: user.email
+  -> SQL column: users.email
+  -> JSON key: "email"
+  -> form field: email input
+  -> OpenAPI schema property
+  -> docs section
+  -> test generator path
+```
+
+The ref is target-independent. The target decides how to name/render/emit it.
+
+That means the graph can remain stable while emitted artifacts change:
+
+```txt
+Next.js target emits one shape
+Python/FastAPI target emits another
+Rust target emits another
+Postgres target emits another
+Alchemy target emits infra resources
+```
+
+Refs are what keep all those emitted artifacts connected to the same semantic source.
+
+## Refs are needed for provenance
+
+Every derived fact should be traceable.
+
+Example:
+
+```txt
+Derived fact:
+  archiveUser invalidates users.active
+
+Because:
+  archiveUser writes User.archivedAt
+  listActiveUsers reads User.archivedAt
+  listActiveUsers has key users.active
+```
+
+Each of those should be represented with refs.
+
+So the compiler can explain:
+
+```txt
+This invalidation was derived from:
+  ActionRef archiveUser
+  FieldRef User.archivedAt
+  QueryRef listActiveUsers
+  KeyRef users.active
+```
+
+That is important for debugging, devtools, AI repair, generated docs, and trust.
+
+## Refs are essential for AI editing
+
+In an AI app builder, the user might say:
+
+> Make managers able to archive users too, but only inside their organization.
+
+The AI should not patch random strings across files. It should patch semantic refs:
+
+```txt
+Find RuleRef canArchiveUser
+Modify predicate expression
+Add read of actor.organizationId
+Add read of user.organizationId
+Update derived lowerings
+Recompute affected diagnostics
+Regenerate affected artifacts
+```
+
+Refs let the AI operate on the app as a graph of stable semantic objects instead of a pile of text.
+
+This is one of the biggest reasons refs matter.
+
+## Refs support graph diffing
+
+If the app changes from version A to version B, you want a semantic diff:
+
+```txt
+Changed RuleRef canArchiveUser
+  old predicate:
+    actor.role == admin
+
+  new predicate:
+    actor.role == admin
+    OR (
+      actor.role == manager
+      AND actor.organizationId == user.organizationId
+    )
+```
+
+Not:
+
+```txt
+Modified 14 lines in auth.ts
+Modified 9 lines in users.tsx
+Modified 3 lines in rls.sql
+Modified 2 tests
+```
+
+The file diff is secondary. The semantic diff is the real product.
+
+Refs make that possible.
+
+## Refs should be typed by kind and value shape
+
+A good ref probably carries type-level information like:
+
+```ts
+EntityRef<
+  Name,
+  Fields,
+  Traits
+>
+
+FieldRef<
+  Entity,
+  FieldName,
+  DecodedType,
+  EncodedType,
+  Traits
+>
+
+RuleRef<
+  Vars,
+  Requirements,
+  Traits
+>
+
+ActionRef<
+  Input,
+  Output,
+  Errors,
+  Requirements,
+  Effects,
+  Traits
+>
+
+QueryRef<
+  Input,
+  Output,
+  Requirements,
+  Traits
+>
+```
+
+So when you pass a ref somewhere, inference follows.
+
+Example:
+
+```ts
+gen.ui.behavior("ArchiveButtonBehavior", {
+  run: archiveUser.ref,
+});
+```
+
+The UI behavior can infer:
+
+```txt
+input type
+output type
+possible errors
+auth requirements
+effects
+client/server placement
+optimistic update plan
+```
+
+That is much stronger than passing `"archiveUser"`.
+
+## Refs should be stable but not necessarily global strings
+
+A ref may have an internal symbol:
+
+```txt
+Symbol("node:user")
+Symbol("field:user.email")
+```
+
+or a structured ID:
+
+```txt
+{
+  graphId: "app_123",
+  dialect: "domain",
+  kind: "field",
+  id: "fld_abc",
+  type: Field<User, Email>
+}
+```
+
+But users should rarely manipulate raw IDs.
+
+They should mostly use refs through builders:
+
+```ts
+User.ref
+User.fields.email.ref
+archiveUser.ref
+canArchiveUser.ref
+```
+
+The raw identity is for the compiler.
+
+## Refs are not the same as imports
+
+An import says:
+
+```txt
+This file depends on that file.
+```
+
+A ref says:
+
+```txt
+This semantic object depends on that semantic object.
+```
+
+Those are different.
+
+One ref might generate many imports.
+One file might contain many refs.
+One ref might lower into no runtime import at all, such as SQL or docs.
+
+That distinction matters if dIRived wants to regenerate code in different languages.
+
+## Refs are not the same as database foreign keys
+
+A database foreign key is a runtime/storage relationship:
+
+```txt
+orders.user_id references users.id
+```
+
+A Gen2 ref is a compiler/semantic relationship:
+
+```txt
+Order.user field maps to User entity
+Action archiveUser writes User.archivedAt
+Rule canArchiveUser reads User.role
+```
+
+A Gen2 ref can lower into a DB foreign key, but it is more general.
+
+## The simple summary
+
+Refs are needed because dIRived is not just generating code. It is maintaining a semantic graph.
+
+The graph needs stable, typed ways to say:
+
+```txt
+this rule reads that field
+this action writes that field
+this UI button runs that action
+this query returns that entity
+this invariant applies to that field
+this diagnostic points to that rule
+this deployment resource satisfies that provider
+```
+
+Strings are too weak for that.
+
+Refs make the graph:
+
+```txt
+typed
+renamable
+inspectable
+derivable
+diffable
+lowerable
+portable
+repairable by AI
+```
+
+So the shortest version is:
+
+> A ref is a typed semantic pointer. It lets the compiler, targets, diagnostics, and AI agent talk about the same application object without relying on fragile names or generated code locations. Without refs, dIRived becomes prompt-to-code. With refs, it becomes prompt-to-IR-to-app.
+
+dIRived refs relate to MLIR in two main ways:
+
+```txt
+MLIR SSA values        ~= local value references inside expressions/functions
+MLIR symbols           ~= stable named references to larger semantic objects
+dIRived refs           ~= typed semantic references to graph objects
+```
+
+So dIRived refs are **inspired by MLIR**, but they would be more application-semantic and more type-rich.
+
+## 1. MLIR has SSA value references
+
+MLIR operations consume operands and produce results. Those results are SSA values: each value has a type and can be used by later operations according to scope/dominance rules. MLIR’s LangRef shows operations as having operands, results, attributes, regions, and locations, and each SSA value is typed. ([MLIR][1])
+
+Example shape:
+
+```mlir
+%result = arith.addi %a, %b : i32
+```
+
+Here:
+
+```txt
+%a, %b, %result
+```
+
+are SSA value references.
+
+In dIRived, this maps to **local expression values**:
+
+```ts
+actor.role.eq("admin").and(user.archivedAt.isNull())
+```
+
+Conceptually:
+
+```txt
+actor
+user
+actor.role
+user.archivedAt
+Eq(...)
+IsNull(...)
+And(...)
+```
+
+These are like MLIR SSA-ish expression references: typed values flowing through an expression graph.
+
+## 2. MLIR also has symbols and SymbolRefAttr
+
+SSA values are not enough for everything. MLIR also has a symbol system. A symbol is a named operation inside a symbol table, and other operations can refer to it symbolically. MLIR’s symbol docs describe symbols as named operations that live in a region defining a symbol table; symbol names must be unique in that table and can be referred to by other operations through symbolic links. ([MLIR][2])
+
+Classic example:
+
+```mlir
+func.func @archive_user(...)
+...
+func.call @archive_user(...)
+```
+
+`@archive_user` is a symbol reference, not an SSA value.
+
+That is closer to dIRived refs for semantic objects like:
+
+```txt
+EntityRef<User>
+FieldRef<User.email>
+RuleRef<canArchiveUser>
+ActionRef<archiveUser>
+QueryRef<listActiveUsers>
+EventRef<UserArchived>
+QueueRef<OfflineCommands>
+```
+
+So:
+
+```txt
+MLIR SymbolRefAttr
+  -> refers to a named IR object such as a function/global/symbol op
+
+dIRived Ref
+  -> refers to a semantic graph object such as an entity, field, rule, action, query, event, UI slot, provider, deployment resource
+```
+
+## 3. MLIR uses symbol references when values cannot be captured directly
+
+This is especially relevant. MLIR has an `IsolatedFromAbove` idea: some regions, like functions, cannot implicitly capture values from outside. External references must come through arguments or symbolic attributes such as `SymbolRefAttr`. The func dialect docs explicitly say functions cannot implicitly capture values defined outside and external references must use arguments or symbolic connections. ([MLIR][3])
+
+That maps very well to dIRived boundaries.
+
+For example, a client UI component should not magically capture server-only context. It should reference capabilities explicitly:
+
+```txt
+UserListView
+  data -> QueryRef<listActiveUsers>
+
+ArchiveButton
+  run -> ActionRef<archiveUser>
+
+archiveUser
+  requires -> ProviderRef<AuthSession>
+```
+
+This prevents hidden dependencies. The graph knows exactly what crosses a boundary.
+
+## 4. The big difference: dIRived refs are more semantic
+
+MLIR refs mostly point to compiler IR things:
+
+```txt
+SSA values
+blocks
+symbols
+attributes
+operations
+regions
+types
+```
+
+dIRived refs would point to application meaning:
+
+```txt
+User entity
+User.email field
+canArchiveUser rule
+archiveUser action
+listActiveUsers query
+UserArchived event
+AuthSession provider
+ArchiveButton UI slot
+Alchemy deployment resource
+```
+
+MLIR asks:
+
+```txt
+What operation produces this value?
+What function does this call reference?
+Is this symbol valid in this symbol table?
+Can this op be lowered?
+```
+
+dIRived asks:
+
+```txt
+What field does this rule read?
+What action writes this field?
+What queries are affected?
+What invariant failed?
+What deployment resource satisfies this provider?
+What UI behavior invokes this action?
+Can this rule lower to SQL, client validation, server guard, or docs?
+```
+
+Same compiler pattern, richer app-level meaning.
+
+## 5. dIRived refs should combine MLIR’s two reference styles
+
+I would model dIRived with both:
+
+```txt
+LocalValueRef
+  For expression-local values, similar to MLIR SSA values.
+
+SymbolRef / NodeRef
+  For stable graph objects, similar to MLIR symbols.
+
+PathRef
+  For nested semantic locations, like User.fields.email or View.slots.archiveButton.
+```
+
+Example:
+
+```ts
+const canArchiveUser = gen.rule("canArchiveUser", {
+  vars: {
+    actor: User,
+    user: User,
+  },
+  when: ({ actor, user }) =>
+    actor.role.eq("admin").and(user.archivedAt.isNull()),
+});
+```
+
+This contains both kinds of refs:
+
+```txt
+RuleRef<canArchiveUser>
+  stable graph ref to the rule
+
+EntityRef<User>
+  stable graph ref to the entity
+
+FieldRef<User.role>
+FieldRef<User.archivedAt>
+  stable graph refs to fields
+
+actor
+user
+  local value refs scoped inside the rule expression
+```
+
+That is very MLIR-like: global-ish symbol references plus local SSA-ish values.
+
+## 6. Why dIRived needs stronger refs than MLIR
+
+MLIR symbol names are often strings in symbol attributes, resolved through symbol tables. dIRived can learn from that, but should make refs **more type-safe at the TypeScript API level**.
+
+For example, this should be valid:
+
+```ts
+archiveUser.guard(canArchiveUser.ref)
+```
+
+But this should be rejected:
+
+```ts
+archiveUser.guard(User.fields.email.ref)
+```
+
+Because an action can be guarded by a rule, not by a field.
+
+So dIRived refs should carry kind and type information:
+
+```ts
+RuleRef<Vars, Requirements, Traits>
+ActionRef<Input, Output, Errors, Effects>
+FieldRef<Entity, FieldName, Decoded, Encoded, Traits>
+QueryRef<Input, Output, Requirements>
+ProviderRef<Value, Lifetime, Placement>
+```
+
+MLIR has strong internal type checking, but dIRived wants that type safety surfaced directly in the builder API.
+
+## 7. The simplest mapping
+
+```txt
+MLIR Operation
+  ~= dIRived Node / Operation / Action / Query / Rule / UI node
+
+MLIR SSA Value
+  ~= dIRived expression-local value
+
+MLIR Symbol
+  ~= dIRived stable named semantic object
+
+MLIR SymbolRefAttr
+  ~= dIRived Ref to another graph object
+
+MLIR SymbolTable
+  ~= dIRived graph namespace / module / package / app graph
+
+MLIR Trait / Interface
+  ~= dIRived Trait / Protocol
+
+MLIR Verifier
+  ~= dIRived verify pass
+
+MLIR Dialect
+  ~= dIRived dialect
+```
+
+The README’s “symbol-first refs,” “typed symbols and refs,” and graph edges like `GuardedBy`, `Writes`, `Reads`, `Invalidates`, and `LowersTo` are very much in this MLIR family of ideas. 
+
+The crisp answer:
+
+> MLIR refs let compiler IR objects refer to SSA values and symbols safely across operations, regions, and dialects. dIRived refs apply the same idea at the application-semantic level: entities, fields, rules, actions, queries, providers, UI slots, diagnostics, and deployment resources all get stable typed references so the compiler can verify, derive, lower, diff, regenerate, and repair the app graph.
+
+[1]: https://mlir.llvm.org/docs/LangRef/?utm_source=chatgpt.com "MLIR Language Reference"
+[2]: https://mlir.llvm.org/docs/SymbolsAndSymbolTables/?utm_source=chatgpt.com "Symbols and Symbol Tables - MLIR - LLVM"
+[3]: https://mlir.llvm.org/docs/Dialects/Func/?utm_source=chatgpt.com "'func' Dialect - MLIR - LLVM"
+

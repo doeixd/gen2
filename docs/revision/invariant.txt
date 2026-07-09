@@ -1,0 +1,2128 @@
+Yes. **Diagnostics should absolutely be their own first-class thing.**
+
+Not merely strings attached to invariants.
+
+In Gen2 terms, a diagnostic should probably be a typed semantic object that can exist independently of the thing that produced it.
+
+```txt id="o0jekr"
+Invariant
+  defines a must-hold contract
+
+Verifier / runtime check
+  evaluates that contract
+
+Diagnostic
+  describes a problem, warning, hint, or explanation
+
+Violation / Finding
+  concrete occurrence of a diagnostic
+```
+
+So I would distinguish:
+
+```txt id="kyyjm5"
+DiagnosticDefinition
+  Reusable typed description of a possible diagnostic.
+
+DiagnosticInstance
+  A concrete occurrence attached to graph/source/runtime location.
+
+DiagnosticEmitter
+  Invariant, verifier, lowering pass, runtime check, target emitter, test, or AI repair pass.
+```
+
+That matters because diagnostics are not only for invariants. They can come from many places:
+
+```txt id="4e1z7b"
+type checking
+graph verification
+dialect verification
+target legalization
+security analysis
+deployment planning
+AI prompt interpretation
+code generation
+runtime validation
+test generation
+sync planning
+migration analysis
+```
+
+For example, all of these are diagnostics:
+
+```txt id="99p0gc"
+Rule is not SQL-lowerable.
+Action writes sensitive field from client boundary.
+Queue has at-least-once delivery but no idempotency.
+UI button invokes action but does not handle its error variant.
+Alchemy target needs a secret binding for SENDGRID_API_KEY.
+Optimistic update cannot be derived because operation is opaque.
+Generated app has two routes with the same path.
+```
+
+Those are not all invariant violations, but they should all flow through the same diagnostic system.
+
+## Recommended model
+
+```ts id="qbi13k"
+const RuleNotSqlLowerable = gen.diagnostic.define(
+  "RULE_NOT_SQL_LOWERABLE",
+  {
+    severity: "error",
+
+    params: {
+      rule: gen.param.node(RuleNodeKind),
+      target: gen.param.target(),
+      reason: gen.param.enum([
+        "opaque_expr",
+        "unsupported_operation",
+        "unsupported_type",
+        "server_only_provider",
+      ]),
+    },
+
+    messages: {
+      user: ({ rule }) =>
+        `The rule "${rule.name}" cannot be used as a database policy.`,
+      developer: ({ rule, reason }) =>
+        `Rule ${rule.ref} is not SQL-lowerable: ${reason}.`,
+      backend: ({ rule, target, reason }) =>
+        `Target ${target.name} rejected lowering of ${rule.ref}: ${reason}.`,
+    },
+
+    metadata: {
+      category: "target_legalization",
+      retryable: false,
+      docs: "rules/sql-lowering",
+    },
+
+    remediation: ({ reason }) =>
+      reason.match({
+        opaque_expr:
+          "Replace opaque logic with Gen2 expression operations, or mark this rule server-only.",
+        unsupported_operation:
+          "Add a SQL lowering for the operation or choose a server runtime guard.",
+      }),
+  }
+);
+```
+
+Then a pass emits an instance:
+
+```ts id="x541cr"
+ctx.emit(RuleNotSqlLowerable, {
+  rule: canArchiveUser,
+  target: Postgres,
+  reason: "unsupported_operation",
+  location: canArchiveUser.location,
+});
+```
+
+That gives you a typed instance:
+
+```ts id="ufx589"
+type RuleNotSqlLowerableDiagnostic = {
+  code: "RULE_NOT_SQL_LOWERABLE";
+  severity: "error";
+  params: {
+    rule: Ref<RuleNode>;
+    target: Ref<TargetNode>;
+    reason:
+      | "opaque_expr"
+      | "unsupported_operation"
+      | "unsupported_type"
+      | "server_only_provider";
+  };
+  location: GraphLocation | SourceLocation | EmittedLocation;
+  messages: {
+    user: SafeMessage;
+    developer: string;
+    backend: string;
+  };
+  remediation?: string;
+  metadata: DiagnosticMetadata;
+};
+```
+
+This is very valuable for an AI app generator because diagnostics are not just errors. They become **repair instructions**.
+
+```txt id="1h2v42"
+Diagnostic:
+  ACTION_WITH_SIDE_EFFECT_REQUIRES_DELIVERY_PLAN
+
+AI repair:
+  Add outbox delivery with at-least-once guarantee and eventId idempotency.
+```
+
+## Diagnostics should be generic
+
+You want diagnostic definitions to be parameterized over the thing they refer to.
+
+```ts id="7cz4sg"
+Diagnostic<Code, Severity, Params, Location, Messages, Metadata>
+```
+
+Examples:
+
+```ts id="nhcz26"
+Diagnostic<
+  "FIELD_REQUIRED",
+  "error",
+  { entity: EntityRef; field: FieldRef },
+  GraphLocation,
+  ValidationMessages,
+  ValidationMetadata
+>
+
+Diagnostic<
+  "QUEUE_REQUIRES_DURABLE_STORAGE",
+  "error",
+  { queue: QueueRef; storage: StorageRef },
+  GraphLocation,
+  DeploymentMessages,
+  DeploymentMetadata
+>
+
+Diagnostic<
+  "OPTIMISTIC_PATCH_NOT_DERIVABLE",
+  "warning",
+  { action: ActionRef; query: QueryRef; reason: PatchReason },
+  GraphLocation,
+  SyncMessages,
+  SyncMetadata
+>
+```
+
+That lets downstream tools know exactly what they are dealing with.
+
+## Diagnostics should be extensible
+
+Each dialect should be able to define diagnostic families.
+
+```txt id="pkir7q"
+core diagnostics
+  unresolved ref
+  type mismatch
+  missing provider
+  invalid placement
+
+rule diagnostics
+  not pure
+  not client-safe
+  not SQL-lowerable
+
+operation diagnostics
+  unsupported operation law
+  unverified law claim
+  non-reversible optimistic mutation
+
+reactivity diagnostics
+  broad invalidation fallback
+  missing stable key
+  patch cannot be derived
+
+dispatch diagnostics
+  retry without idempotency
+  side effect without delivery plan
+
+ui diagnostics
+  behavior attached to non-interactive slot
+  unhandled action error
+  unsafe client field
+
+deployment / Alchemy diagnostics
+  missing secret
+  unsupported resource
+  environment mismatch
+  destructive migration
+```
+
+This lines up with the README’s dialect design, where dialects contribute verifiers, traits, protocols, lowerings, emitters, and semantic vocabulary over the same graph.  Diagnostics should be part of that dialect contribution.
+
+## Should diagnostics be graph nodes?
+
+I would use two levels:
+
+```txt id="4dquub"
+DiagnosticDefinition
+  yes, can be a node/type in the compiler schema
+
+DiagnosticInstance
+  not necessarily a permanent graph node by default,
+  but it should be representable as a typed value/event/finding
+```
+
+In other words:
+
+```txt id="4hy969"
+DiagnosticDefinition = semantic node
+DiagnosticInstance = compiler/runtime finding
+```
+
+But some instances should be persisted into the graph when useful:
+
+```txt id="6oqk6d"
+AI repair loop
+devtools graph
+audit trail
+generated docs
+test expectations
+deployment history
+runtime observability
+```
+
+So maybe:
+
+```ts id="j1mug2"
+gen.diagnostic.define(...)
+```
+
+creates a diagnostic type/family node.
+
+And compiler passes emit:
+
+```ts id="sfnxzl"
+DiagnosticFinding<RuleNotSqlLowerable>
+```
+
+which can be ephemeral or stored.
+
+## Diagnostic locations should be rich
+
+For an AI app generator, location is not just line/column.
+
+You want:
+
+```txt id="df4qne"
+source prompt span
+chat turn
+generated DSL file position
+graph node ref
+edge ref
+expression path
+target lowering pass
+emitted file location
+runtime request id
+deployment environment
+```
+
+A diagnostic might point to multiple places:
+
+```txt id="b9a1tp"
+primary:
+  archiveUser action
+
+related:
+  canArchiveUser rule
+  Postgres RLS target
+  unsupported opaque expression
+```
+
+This is important for explainability and AI repair.
+
+## Diagnostic messages should be audience-specific
+
+Same diagnostic, different surfaces:
+
+```txt id="mmduto"
+user message
+  “This rule cannot be used as a database policy yet.”
+
+developer message
+  “Rule canArchiveUser contains opaque expression node expr_123.”
+
+backend/log message
+  “SQL legalization failed for RuleRef(canArchiveUser): opaque_expr.”
+
+AI repair hint
+  “Replace opaque role check with actor.role.eq('admin').”
+
+docs message
+  “Rules used for RLS must be SQL-lowerable.”
+```
+
+Do not make one string serve all purposes.
+
+## Diagnostic severity should be typed
+
+Not just `"error"` as a loose string. Something like:
+
+```txt id="pwqf7g"
+fatal
+error
+warning
+info
+hint
+remark
+debug
+```
+
+And maybe separate **severity** from **blocking behavior**:
+
+```txt id="9ipbmu"
+severity: "warning"
+blocks: ["production_deploy"]
+allows: ["preview_deploy"]
+```
+
+Example:
+
+```txt id="nt6f5m"
+Missing email provider secret
+  warning in local preview
+  error in production deploy
+```
+
+That is especially important with Alchemy/deployment targets.
+
+## Diagnostics should support machine-readable remediation
+
+This is the killer feature for AI generation.
+
+A diagnostic should not only say what is wrong. It should encode possible fixes.
+
+```ts id="5tic16"
+fixes: [
+  gen.fix.addIdempotency({
+    target: dispatch,
+    strategy: gen.idempotency.eventId(),
+  }),
+
+  gen.fix.changeDelivery({
+    target: dispatch,
+    guarantee: "at_most_once",
+  }),
+]
+```
+
+Then the AI app generator can ask:
+
+```txt id="elel2y"
+Can this diagnostic be auto-fixed?
+Is the fix safe?
+Does it require user confirmation?
+Does it change runtime behavior?
+Does it affect data/deployment?
+```
+
+This turns diagnostics into a compiler-agent protocol.
+
+## Suggested hierarchy
+
+```txt id="fk55lp"
+DiagnosticKind
+  Broad category: type, rule, security, deployment, sync, UI, etc.
+
+DiagnosticDefinition
+  Typed reusable diagnostic schema.
+
+DiagnosticInstance / Finding
+  Concrete emitted diagnostic with params and locations.
+
+DiagnosticMessage
+  Audience-specific rendered text.
+
+DiagnosticMetadata
+  Machine-readable category, severity, target, blocking behavior.
+
+DiagnosticFix
+  Typed possible repair.
+
+DiagnosticTrace
+  Why/how this diagnostic was produced.
+```
+
+## Relationship to invariants
+
+The clean model:
+
+```txt id="vdo7s6"
+Invariant
+  A contract that must hold.
+
+Diagnostic
+  A typed explanation of something wrong or notable.
+
+InvariantViolation
+  A diagnostic emitted because an invariant failed.
+```
+
+So:
+
+```txt id="ffqwul"
+Not every diagnostic is an invariant violation.
+Every invariant violation should produce a diagnostic.
+```
+
+That is the key distinction.
+
+## Final answer
+
+Yes: diagnostics should be their own **type-safe, generic, extensible system**.
+
+They should be usable by invariants, verifiers, target legalizers, emitters, runtime checks, deployment planners, sync planners, tests, docs, and AI repair loops.
+
+In Gen2, diagnostics are not just “error messages.” They are the structured interface between:
+
+```txt id="4t88ha"
+the compiler,
+the generated app,
+the developer,
+the end user,
+the deployment system,
+and the AI agent that repairs the graph.
+```
+
+That makes diagnostics one of the most important primitives in the whole architecture.
+
+
+
+Yes. In Gen2, an **invariant should basically be a typed rule/predicate plus diagnostic and enforcement metadata**.
+
+I would model it as a first-class semantic node, not just a rule with a string attached.
+
+Something like:
+
+```txt id="mloc8r"
+Invariant =
+  predicate expression
+  subject/scope
+  severity
+  diagnostic messages
+  error code
+  enforcement surfaces
+  provenance
+  remediation hints
+  target lowering metadata
+  observability metadata
+```
+
+A rule says:
+
+```txt id="i9w1ey"
+This boolean condition is true or false.
+```
+
+An invariant says:
+
+```txt id="uycyor"
+This condition must hold at this point in the system,
+and if it does not, here is the typed failure object.
+```
+
+So yes: the predicate can reuse the same rule-expression system described in the README, where rules are pure boolean expressions over the universal expression system.  But an invariant carries more operational meaning than a generic rule.
+
+For example:
+
+```ts id="40kgvo"
+const userEmailIsUnique = gen.invariant("userEmailIsUnique", {
+  subject: User,
+  when: ({ user }) =>
+    User.where((u) => u.email.eq(user.email))
+      .count()
+      .lte(1),
+
+  code: gen.error.code("USER_EMAIL_NOT_UNIQUE"),
+
+  message: {
+    user: "That email address is already in use.",
+    developer: "User.email must be globally unique.",
+    backend: "Invariant violation: duplicate User.email.",
+  },
+
+  severity: "error",
+
+  enforce: [
+    gen.enforce.database.uniqueIndex(),
+    gen.enforce.server.guard(),
+    gen.enforce.form.validation(),
+  ],
+});
+```
+
+That creates semantic facts like:
+
+```txt id="lxjo3p"
+Node(Invariant): userEmailIsUnique
+Edge(HasPredicate): userEmailIsUnique -> Expr<boolean>
+Edge(Reads): userEmailIsUnique -> User.email
+Edge(AppliesTo): userEmailIsUnique -> User
+Edge(EmitsDiagnostic): userEmailIsUnique -> USER_EMAIL_NOT_UNIQUE
+Edge(LowersTo): userEmailIsUnique -> DatabaseUniqueIndex
+Edge(LowersTo): userEmailIsUnique -> ServerValidation
+Edge(LowersTo): userEmailIsUnique -> FormValidation
+```
+
+The important part is that the **error is typed too**.
+
+You do not want arbitrary thrown strings. You want typed failure values:
+
+```ts id="s0xweg"
+type InvariantViolation<
+  Code,
+  Subject,
+  Path,
+  Severity,
+  UserMessage,
+  DeveloperMessage,
+  Metadata
+>
+```
+
+Then generated targets can know:
+
+```txt id="indxl2"
+error code
+field path
+entity affected
+operation that failed
+safe user-facing message
+internal/backend message
+HTTP status
+database constraint name
+form field mapping
+retryability
+telemetry tags
+causal operation
+```
+
+I would separate messages by audience:
+
+```txt id="vp1z2p"
+userMessage
+  Safe to show in UI.
+
+developerMessage
+  Useful in logs, tests, docs, devtools.
+
+backendMessage
+  Operational message for server logs.
+
+debugMessage
+  Optional, dev-only, not client-safe.
+
+remediation
+  What the user or developer can do.
+
+docs
+  Link or generated documentation reference.
+```
+
+And I would separate **call stack** from the invariant itself.
+
+The invariant definition should not contain a call stack. A call stack is runtime occurrence metadata:
+
+```txt id="69lqqu"
+Invariant definition:
+  "A user email must be unique."
+
+Violation occurrence:
+  "archiveUser -> updateUserEmail -> database write failed here."
+```
+
+So model it like this:
+
+```txt id="o7upq9"
+Invariant
+  static semantic object
+
+InvariantViolation
+  runtime/error object produced when invariant fails
+
+ViolationTrace
+  runtime provenance: action, query, boundary, target, call stack, request id
+```
+
+Example:
+
+```ts id="lrb5ey"
+const violation = gen.error.invariantViolation(userEmailIsUnique, {
+  subject: User.ref(input.userId),
+  path: User.fields.email,
+  operation: updateUserEmail,
+  cause: "database_constraint",
+  trace: gen.trace.runtime(),
+});
+```
+
+For type safety, the invariant should know its subject and failure shape:
+
+```ts id="zq63rg"
+const EmailUnique = gen.invariant("EmailUnique", {
+  subject: User,
+  path: User.fields.email,
+  code: gen.error.code("USER_EMAIL_NOT_UNIQUE"),
+  predicate: ...
+});
+```
+
+Then any generated UI or API target can infer:
+
+```txt id="u2ryon"
+Subject: User
+Field path: User.email
+Error code: USER_EMAIL_NOT_UNIQUE
+User message type: localized safe string
+Backend message type: internal string
+HTTP mapping: 409 Conflict
+Form mapping: email field
+Database mapping: unique constraint
+```
+
+That gives you a very nice compiler story:
+
+```txt id="jvcud9"
+Invariant is pure and SQL-lowerable
+  -> emit database constraint / RLS / CHECK / UNIQUE / FK
+
+Invariant is pure and client-safe
+  -> emit form validation / disabled states / UI hints
+
+Invariant requires server-only data
+  -> emit server validation only
+
+Invariant is not fully lowerable
+  -> emit runtime guard and diagnostic
+
+Invariant is opaque
+  -> require explicit reads/writes/effects and use broad fallback
+```
+
+I would distinguish several kinds of invariants:
+
+```txt id="bcdxid"
+Type invariant
+  value must be email, uuid, positive integer, non-empty string
+
+Entity invariant
+  User.email is unique
+
+Relation invariant
+  Project.ownerId must reference an active User
+
+State invariant
+  Order.status cannot move from cancelled to shipped
+
+Operation invariant
+  archiveUser requires user.archivedAt is null before write
+
+System invariant
+  at-least-once dispatch must have idempotency
+
+Security invariant
+  client boundary must not expose sensitive field
+
+Deployment invariant
+  queue with durable=true must lower to persistent storage
+```
+
+That lets the compiler enforce different things at different phases.
+
+For example:
+
+```txt id="fcko92"
+Type invariants
+  checked at input parsing, form validation, schema emit
+
+Entity invariants
+  checked in database constraints and server validation
+
+Operation invariants
+  checked before/after action execution
+
+System invariants
+  checked during graph verification
+
+Deployment invariants
+  checked during Alchemy lowering
+```
+
+My recommended definition:
+
+```ts id="8i2r7g"
+const invariant = gen.invariant("ActiveUserHasEmail", {
+  subject: User,
+
+  predicate: ({ user }) =>
+    user.archivedAt.isNull().implies(user.email.isSome()),
+
+  code: gen.error.code("ACTIVE_USER_EMAIL_REQUIRED"),
+
+  messages: {
+    user: "Active users must have an email address.",
+    developer:
+      "User.email must be present whenever User.archivedAt is null.",
+    backend:
+      "Invariant ActiveUserHasEmail failed for User.",
+  },
+
+  severity: "error",
+
+  path: User.fields.email,
+
+  expose: {
+    client: true,
+    logs: true,
+    telemetry: true,
+  },
+
+  lowerings: {
+    database: "check_if_possible",
+    server: "always",
+    client: "if_client_safe",
+    tests: "generate",
+    docs: "generate",
+  },
+
+  metadata: {
+    category: "validation",
+    retryable: false,
+    httpStatus: 422,
+  },
+});
+```
+
+Then the failure type could be:
+
+```ts id="6xiy5m"
+type ActiveUserHasEmailViolation = {
+  kind: "InvariantViolation";
+  code: "ACTIVE_USER_EMAIL_REQUIRED";
+  invariant: typeof invariant.ref;
+  subject: Ref<typeof User>;
+  path: typeof User.fields.email;
+  severity: "error";
+  userMessage: LocalizedMessage;
+  backendMessage: string;
+  metadata: {
+    category: "validation";
+    retryable: false;
+    httpStatus: 422;
+  };
+};
+```
+
+The bigger design point:
+
+> A rule is reusable boolean meaning.
+> An invariant is a rule promoted into a must-hold contract with typed failure semantics.
+
+That distinction will be very important for generated apps, because the AI can create not just logic but **safe, explainable failure behavior**.
+
+It also gives you excellent downstream derivations:
+
+```txt id="bb370c"
+Invariant
+  -> form validation
+  -> database constraint
+  -> API error schema
+  -> OpenAPI response
+  -> generated tests
+  -> docs
+  -> telemetry event
+  -> user-visible error
+  -> admin/devtools explanation
+```
+
+So yes: make invariants type-safe predicate nodes with typed diagnostics. Messages, error codes, field paths, severity, audience, target lowerings, provenance, and runtime violation traces should all be modeled explicitly.
+
+MLIR has a useful split here: invariants are mostly enforced through traits/interfaces/verifiers, while errors are reported as structured diagnostics attached to IR locations. I’ll anchor this in the official docs and then map it back to Gen2.
+
+Thought for 15s
+
+MLIR’s model is close to what you’re describing, but it is more compiler-oriented than app/user-error-oriented.
+
+MLIR separates:
+
+Invariant definition
+  -> encoded in op/type/attribute constraints, traits, interfaces, or verifier code
+
+Invariant checking
+  -> verifier runs over IR
+
+Failure reporting
+  -> diagnostic attached to a source/location
+
+In MLIR, invariants are usually not first-class runtime objects with user messages, backend messages, error codes, remediation metadata, etc. They are mostly validity rules for IR.
+
+For example, MLIR operation definitions use ODS/TableGen as a “single source of truth” for operation facts, including operands, attributes, results, constraints, builders, verifiers, parsers, printers, and generated utilities.
+
+The invariant mechanisms are roughly:
+
+ODS constraints
+  Declarative constraints on operands, attributes, results, regions, etc.
+
+Traits
+  Reusable properties/invariants, e.g. same operand/result type, commutative, terminator, no side effects.
+
+Interfaces
+  Generic semantic contracts that passes can query without knowing the exact op.
+
+Custom verifier
+  C++ code for invariants too specific or complex for declarative constraints.
+
+Region verifier
+  Separate verifier for invariants that need to inspect nested operations.
+
+MLIR’s own docs say traits often describe verification constraints on valid IR and allow complex invariants to be captured and checked. Traits are also described as reusable properties/constraints across operations, attributes, types, etc. Interfaces let analyses and transformations operate generically across dialects without hardcoding knowledge of every operation.
+
+The verifier ordering is also instructive. MLIR verifies structural traits first, then ODS-generated verifyInvariants, then trait/interface verifiers, then custom op verifiers. If the op has regions, it has a second phase for region-aware verifiers after nested operations are verified.
+
+That maps beautifully to Gen2:
+
+Gen2 type/shape constraints
+  ~= MLIR ODS constraints
+
+Gen2 traits/laws
+  ~= MLIR traits
+
+Gen2 protocols
+  ~= MLIR interfaces
+
+Gen2 verify passes
+  ~= MLIR verifier
+
+Gen2 dialect-specific checks
+  ~= custom op/type/region verifiers
+
+Gen2 target legalization
+  ~= later compiler legality checks
+
+Where MLIR is especially relevant for your design is diagnostics.
+
+An MLIR diagnostic has four core pieces:
+
+source location
+severity
+diagnostic arguments
+metadata
+
+Severity can be error, note, remark, or warning; metadata is attached for diagnostic handlers/filtering and is not part of the printed message. Diagnostics are emitted through DiagnosticEngine, but operations usually use convenience methods like emitError, emitWarning, emitRemark, or emitOpError; emitOpError prefixes the diagnostic with the operation name.
+
+That means MLIR’s diagnostic model is closer to:
+
+Diagnostic {
+  location
+  severity
+  message arguments
+  metadata
+  optional notes
+}
+
+than to:
+
+Invariant {
+  predicate
+  userMessage
+  backendMessage
+  errorCode
+  remediation
+  httpStatus
+  telemetry metadata
+}
+
+For Gen2, I would copy MLIR’s structure, but make it more application-aware.
+
+MLIR-style:
+
+op verifier fails
+  -> emit diagnostic at op location
+
+Gen2-style:
+
+invariant/rule verifier fails
+  -> emit typed diagnostic
+  -> attach source graph location
+  -> attach user/developer/backend messages
+  -> attach error code
+  -> attach target surfaces
+  -> attach remediation
+  -> optionally lower into runtime error schema
+
+So your instinct is right, but Gen2 should probably go further than MLIR.
+
+MLIR invariants are mostly about IR well-formedness:
+
+This op must have one region.
+This operand type must equal the result type.
+This attribute must be valid.
+This terminator must be present.
+This symbol reference must resolve.
+
+Gen2 invariants would cover both IR well-formedness and application semantics:
+
+This action must be guarded.
+This client boundary must not expose sensitive fields.
+This operation must be idempotent if used with at-least-once delivery.
+This rule must be SQL-lowerable if emitted as RLS.
+This user-facing form must handle this invariant violation.
+This mutation must have a rollback plan if optimistic.
+
+MLIR’s testing story is also worth copying. MLIR has diagnostic verification tests where expected diagnostics are embedded in .mlir files, useful for checking malformed IR, operation invariants, and analysis results. Gen2 could have the equivalent:
+
+expectGraphDiagnostic(graph, {
+  code: "GEN2_RULE_NOT_SQL_LOWERABLE",
+  location: canArchiveUser.ref,
+  severity: "error",
+});
+
+My recommendation for Gen2:
+
+1. Separate invariant definitions from diagnostic occurrences.
+
+2. Make invariant predicates use the same typed expression/rule system.
+
+3. Make diagnostics first-class typed graph/runtime objects.
+
+4. Attach locations everywhere:
+   source prompt span, generated DSL location, graph node ref, emitted file location.
+
+5. Use MLIR-style verifier layering:
+   structural -> type -> trait/law -> dialect -> cross-graph -> target legalization.
+
+6. Keep metadata machine-readable, not just strings.
+
+A Gen2 invariant could look like:
+
+const AtLeastOnceNeedsIdempotency = gen.invariant(
+  "AtLeastOnceNeedsIdempotency",
+  {
+    subject: gen.dialect.dispatch.Dispatch,
+
+    when: ({ dispatch }) =>
+      dispatch.delivery.guarantee
+        .eq("at_least_once")
+        .implies(dispatch.idempotency.isPresent()),
+
+    diagnostic: {
+      code: "DISPATCH_AT_LEAST_ONCE_REQUIRES_IDEMPOTENCY",
+      severity: "error",
+      user: "This background job needs an idempotency strategy before it can be safely retried.",
+      developer:
+        "Dispatches using at-least-once delivery must declare an idempotency plan.",
+      backend:
+        "Invalid dispatch graph: at-least-once delivery without idempotency.",
+      remediation:
+        "Add gen.idempotency.eventId(), inputHash(), or a custom idempotency key.",
+    },
+  }
+);
+
+That is very MLIR-inspired, but more app-generator-friendly.
+
+The shortest answer:
+
+MLIR encodes invariants through declarative op/type constraints, traits, interfaces, and custom verifiers. When an invariant fails, it emits a location-aware diagnostic with severity, message arguments, and metadata. Gen2 should copy that architecture, but make invariants and diagnostics richer, typed, user-facing, and target-lowerable because generated apps need runtime/API/UI error semantics, not only compiler errors.
+
+That fits Gen2’s typed graph/dialect/pass architecture well.
+
+
+I’ll ground this in MLIR’s own docs/source because the distinction between diagnostics, verifiers, traits, and invariants is pretty specific.
+
+Thought for 25s
+
+MLIR separates invariants from diagnostics.
+
+The rough model is:
+
+Invariant / constraint:
+  "What must be true for this IR to be valid?"
+
+Verifier:
+  Code generated or written to check that invariant.
+
+Diagnostic:
+  Structured compiler message emitted when verification fails.
+
+MLIR does not usually model invariants as first-class “rule nodes with user/backend messages.” Instead, invariants live in a few places.
+
+1. ODS constraints
+
+MLIR operations are often defined with ODS, the Operation Definition Specification, using TableGen. ODS lets you declare facts about an operation: operands, results, attributes, traits, constraints, builders, parser/printer, and verifier hooks. MLIR’s docs explicitly describe ODS as a “single source of truth” for operation facts and say it can generate verification, builders, accessors, parsing, printing, and analysis helpers.
+
+Example shape:
+
+def MyOp : Op<"my_op", [
+  SameOperandsAndResultType,
+  Pure
+]> {
+  let arguments = (ins AnyTensor:$input);
+  let results = (outs AnyTensor:$output);
+}
+
+That says, semantically:
+
+MyOp must have input/output type agreement.
+MyOp has no side effects.
+
+Those constraints become generated verifier code.
+
+2. Traits
+
+Traits encode reusable properties or constraints of operations, attributes, or types. MLIR docs say traits can describe properties like “no side effects” or “output has the same type as input,” and the LangRef says traits often describe verification constraints on valid IR.
+
+So a trait is a bit like a reusable invariant/law marker:
+
+SameOperandsAndResultType
+Commutative
+Terminator
+IsolatedFromAbove
+HasParent<ModuleOp>
+
+This maps pretty directly to your Gen2 idea of operation traits/laws.
+
+3. Declarative constraints / predicates
+
+ODS constraints can be built from predicates. MLIR has CPred as an atomic predicate, plus combinators like And, Or, and Neg. The docs describe constraints as central to operation verification and matching, and say a constraint may apply to a single attribute/result/operand, multiple operands/results, or the operation itself.
+
+Example from the MLIR style of thinking:
+
+def HasSomeProperty :
+  AttrConstraint<CPred<"HasSomeProperty($_self)">,
+                 "has some property">;
+
+So yes: MLIR has something predicate-like. But the predicate is usually a TableGen/C++ verifier predicate, not an IR-level semantic rule expression.
+
+4. Custom verifiers
+
+For anything ODS cannot express, an op can define custom verifier methods:
+
+let hasVerifier = 1;
+let hasRegionVerifier = 1;
+
+MLIR generates method declarations like LogicalResult verify() / verifyRegions(), and you implement additional checks in C++. The verification order is structured: structural traits first, then ODS-generated verifyInvariants, then trait/interface verifiers, then custom verifiers; region verifiers run later after nested operations are verified.
+
+That is very relevant for Gen2. You probably want a similar staged system:
+
+structural verification
+type verification
+trait/law verification
+local node verification
+region/body verification
+global graph verification
+target legalization verification
+5. MLIR verifier discipline: mostly local invariants
+
+This is a key MLIR lesson.
+
+MLIR’s developer guide says verifiers should generally verify local aspects of an operation and should not follow def-use chains or inspect non-local producer/user relationships. It also says that when an invariant fails, the IR is considered invalid and compilation aborts; passes assume valid input and must produce valid output.
+
+That means MLIR distinguishes:
+
+Local validity:
+  This op is structurally/type-wise valid.
+
+Analysis facts:
+  This op's operand was produced by a constant with value 10.
+
+Optimization facts:
+  This can be folded / canonicalized / lowered.
+
+Undefined behavior:
+  Some bad runtime cases may be legal IR but semantically undefined.
+
+For Gen2, I would copy the principle but adapt it:
+
+Node verifier:
+  local structure and type invariants
+
+Graph verifier:
+  global semantic invariants
+
+Target verifier/legalizer:
+  "Can this be emitted to Postgres/React/Alchemy/etc.?"
+
+Business invariant:
+  first-class domain contract with typed violation metadata
+6. Diagnostics
+
+MLIR diagnostics are structured compiler messages. A diagnostic has:
+
+source location
+severity: error / note / remark / warning
+arguments used to build the message
+metadata
+attached notes
+
+The docs state that diagnostics contain source location, severity, diagnostic arguments, and metadata; metadata can be used by handlers for filtering and is not part of the output message.
+
+MLIR operations have helper methods:
+
+op->emitError(...)
+op->emitWarning(...)
+op->emitRemark(...)
+op->emitOpError(...)
+
+emitOpError() prefixes the message with the operation name.
+
+Notes are attached to a primary diagnostic:
+
+op->emitError("...").attachNote(noteLoc) << "...";
+
+MLIR also has debugging options to attach the current operation or stack trace to diagnostics, useful for verifier failures.
+
+7. Tests expect diagnostics
+
+MLIR has diagnostic tests using -verify-diagnostics, where test files contain comments like:
+
+// expected-error@+1 {{invalid predicate attribute specification: "foo"}}
+%result = arith.cmpf "foo", %a, %a : f32
+
+The testing guide says diagnostic tests are used for verifying operation invariants, checking analysis results, and detecting malformed IR.
+
+This is another thing Gen2 should steal: generated examples/tests that assert exact diagnostics.
+
+The important comparison for Gen2
+
+MLIR’s model is roughly:
+
+Constraint / trait / verifier
+  -> emits diagnostic
+  -> invalid IR
+  -> compiler stops
+
+Gen2 probably wants:
+
+Invariant node
+  -> predicate / rule expression
+  -> typed violation object
+  -> diagnostics
+  -> possible generated runtime errors
+  -> possible UI validation
+  -> possible DB constraint
+  -> possible API error schema
+  -> possible tests/docs/telemetry
+
+So Gen2 should be more semantic and user-facing than MLIR.
+
+MLIR diagnostics are compiler diagnostics. They are not designed around:
+
+safe user message
+backend log message
+HTTP status
+form field path
+business error code
+localization key
+retryability
+telemetry category
+public/private exposure
+
+For Gen2, those should absolutely be modeled.
+
+A good Gen2 design would combine both:
+
+const ActiveUserHasEmail = gen.invariant("ActiveUserHasEmail", {
+  subject: User,
+
+  predicate: ({ user }) =>
+    user.archivedAt.isNull().implies(user.email.isSome()),
+
+  code: gen.error.code("ACTIVE_USER_EMAIL_REQUIRED"),
+
+  messages: {
+    user: "Active users must have an email address.",
+    developer: "User.email must be present when User.archivedAt is null.",
+    backend: "Invariant ActiveUserHasEmail failed.",
+  },
+
+  path: User.fields.email,
+
+  severity: "error",
+
+  lowerTo: [
+    gen.lowering.serverValidation(),
+    gen.lowering.formValidation.ifClientSafe(),
+    gen.lowering.databaseCheck.ifSqlLowerable(),
+    gen.lowering.test(),
+    gen.lowering.docs(),
+  ],
+});
+
+Then separately:
+
+Local verifier:
+  Does this invariant have a boolean predicate?
+  Does the predicate only reference variables in scope?
+  Is the error code unique?
+  Is the path valid for the subject?
+
+Graph verifier:
+  Is this invariant enforced everywhere required?
+  Does a mutation that can violate it have a guard/check?
+  Is the DB lowering equivalent to the server predicate?
+
+Target verifier:
+  Can this predicate lower to SQL?
+  Can this message be exposed to the client?
+  Can this error shape lower to OpenAPI?
+
+My conclusion:
+
+MLIR treats invariants as verifier-enforced constraints over IR validity, and diagnostics as structured compiler messages. Gen2 should borrow that machinery, but promote business invariants into first-class typed semantic nodes with typed failure/diagnostic metadata.
+
+That gives you MLIR-style rigor, but with application-level meaning.
+
+Yes. Invariants should be **generic, inferable, extensible semantic objects**, not a closed set of hardcoded checks.
+
+The right model is probably:
+
+```txt
+Invariant family
+  A reusable, parameterized invariant definition.
+
+Invariant instance
+  A concrete application of that invariant to specific nodes/types/fields/actions.
+
+Invariant violation
+  A typed diagnostic/error value produced when the invariant fails.
+```
+
+So instead of only having:
+
+```ts
+gen.invariant("UserEmailRequired", ...)
+```
+
+you also want reusable invariant builders like:
+
+```ts
+gen.invariant.family("RequiredField", ...)
+gen.invariant.family("UniqueField", ...)
+gen.invariant.family("TransitionAllowed", ...)
+gen.invariant.family("AtLeastOnceRequiresIdempotency", ...)
+gen.invariant.family("ClientBoundaryNoSensitiveFields", ...)
+```
+
+Then users, plugins, and dialect authors can define their own invariant types.
+
+## Example: generic field invariant
+
+```ts
+const RequiredField = gen.invariant.family("RequiredField", {
+  params: {
+    entity: gen.param.entity(),
+    field: gen.param.fieldOf("entity"),
+  },
+
+  infer: ({ entity, field }) => ({
+    subject: entity,
+    path: field,
+    valueType: field.type,
+  }),
+
+  predicate: ({ subject, field }) =>
+    subject.field(field).isPresent(),
+
+  diagnostic: ({ entity, field }) => ({
+    code: gen.error.code(`${entity.name}_${field.name}_REQUIRED`),
+    user: `${field.label} is required.`,
+    developer: `${entity.name}.${field.name} must be present.`,
+    severity: "error",
+  }),
+});
+```
+
+Then:
+
+```ts
+const UserEmailRequired = RequiredField({
+  entity: User,
+  field: User.fields.email,
+});
+```
+
+The compiler can infer:
+
+```txt
+Subject: User
+Field path: User.email
+Field type: Email
+Violation code: USER_EMAIL_REQUIRED
+Client form target: email input
+Server validation target: User write
+Database target: NOT NULL, if storage-lowerable
+```
+
+That is the kind of thing Gen2 should be excellent at because its graph already centers typed entities, fields, rules, expressions, operations, traits, protocols, and passes. 
+
+## Invariant families vs invariant instances
+
+I would make this distinction explicit.
+
+```txt
+InvariantFamily<TParams, TSubject, TPredicate, TViolation>
+  Generic invariant template.
+
+InvariantInstance<TFamily, TResolvedParams, TSubject, TViolation>
+  Concrete invariant attached to the graph.
+```
+
+For example:
+
+```txt
+Family:
+  Unique<Field>
+
+Instance:
+  User.email is unique
+```
+
+or:
+
+```txt
+Family:
+  AtLeastOnceDeliveryRequiresIdempotency<Dispatch>
+
+Instance:
+  sendEmailWhenUserArchived must declare idempotency
+```
+
+That gives you reuse without losing type safety.
+
+## Inference should flow from parameters
+
+You want the user to write as little as possible:
+
+```ts
+gen.invariant.unique(User.fields.email)
+```
+
+and have Gen2 infer:
+
+```txt
+entity = User
+field = email
+field type = Email
+storage column = users.email
+database constraint kind = unique
+form field = email
+HTTP error = 409 Conflict
+safe user message = "That email is already in use."
+```
+
+The generic invariant should be parameterized over semantic capabilities, not just raw TypeScript types.
+
+For example, `UniqueField` should not accept any value. It should require something like:
+
+```txt
+FieldRef<T>
+  must belong to Entity
+  must be comparable
+  must be storage-lowerable if database enforcement is requested
+  must have stable encoded representation
+```
+
+So the constraint is semantic:
+
+```ts
+const UniqueField = gen.invariant.family("UniqueField", {
+  params: {
+    field: gen.param.field({
+      traits: [Comparable, Persisted, HasStableEncoding],
+    }),
+  },
+  ...
+});
+```
+
+That is better than saying “any `string` field can be unique.” The invariant cares about graph capabilities.
+
+## Invariants should be extensible by dialects
+
+Each dialect should be able to contribute invariants.
+
+```txt
+domain dialect
+  required field
+  unique field
+  relation cardinality
+  aggregate consistency
+
+operation dialect
+  operation input/output compatibility
+  transition legality
+  patch reversibility
+
+rule dialect
+  rule purity
+  client-safety
+  SQL-lowerability
+
+dispatch dialect
+  retry requires idempotency
+  side effect requires delivery plan
+  at-least-once requires dedupe
+
+queue dialect
+  durable queue requires durable storage
+  encrypted queue required for sensitive payloads
+
+boundary dialect
+  client boundary cannot expose sensitive server-only data
+  payload must be serializable
+
+ui dialect
+  behavior target must be interactive
+  form field must handle invariant violations
+
+deployment / Alchemy dialect
+  required resources must be declared
+  secret bindings must exist per environment
+```
+
+That aligns with the README’s dialect model, where dialects contribute node kinds, edge kinds, type kinds, operations, traits, protocols, verifiers, lowerings, and emitters. 
+
+## Users should be able to define custom invariant types
+
+For an AI app generator, this is important. Many app-specific business rules will not fit built-ins.
+
+Example:
+
+```ts
+const BookingDoesNotOverlap = gen.invariant.family("BookingDoesNotOverlap", {
+  params: {
+    booking: gen.param.entity(),
+    start: gen.param.field({ type: gen.type.datetime() }),
+    end: gen.param.field({ type: gen.type.datetime() }),
+    resource: gen.param.field(),
+  },
+
+  predicate: ({ booking, start, end, resource }) =>
+    booking.noOther((other) =>
+      other.field(resource).eq(booking.field(resource))
+        .and(other.field(start).lt(booking.field(end)))
+        .and(other.field(end).gt(booking.field(start)))
+    ),
+
+  diagnostic: {
+    code: gen.error.code("BOOKING_OVERLAPS_EXISTING_BOOKING"),
+    user: "This time overlaps with an existing booking.",
+    developer: "Bookings for the same resource must not overlap.",
+    severity: "error",
+    httpStatus: 409,
+  },
+
+  lowerings: {
+    postgres: gen.lowering.exclusionConstraint().whenSupported(),
+    server: gen.lowering.runtimeCheck(),
+    client: gen.lowering.asyncValidation(),
+    tests: gen.lowering.propertyTests(),
+  },
+});
+```
+
+Then a generated booking app can instantiate it:
+
+```ts
+BookingDoesNotOverlap({
+  booking: Reservation,
+  start: Reservation.fields.startsAt,
+  end: Reservation.fields.endsAt,
+  resource: Reservation.fields.roomId,
+});
+```
+
+That is exactly the kind of app-specific invariant an AI generator should be able to synthesize.
+
+## The type shape should include capabilities
+
+A good invariant type might look conceptually like this:
+
+```ts
+type InvariantFamily<
+  Params,
+  Subject,
+  Predicate extends Expr<boolean>,
+  Violation,
+  Requirements,
+  Effects,
+  Traits,
+  Lowerings
+> = ...
+```
+
+Where:
+
+```txt
+Params
+  Generic parameters needed to instantiate the invariant.
+
+Subject
+  Entity, action, dispatch, field, boundary, UI slot, deployment resource, etc.
+
+Predicate
+  Typed expression that must hold.
+
+Violation
+  Typed failure object.
+
+Requirements
+  Context needed to check it.
+
+Effects
+  Usually none for pure invariants, but runtime checks may require reads.
+
+Traits
+  pure, client-safe, SQL-lowerable, storage-lowerable, async-checkable, etc.
+
+Lowerings
+  Database constraint, server validation, form validation, deployment check, tests, docs.
+```
+
+This allows the compiler to say:
+
+```txt
+This invariant is valid.
+This invariant is valid but only server-checkable.
+This invariant cannot lower to SQL.
+This invariant cannot run on the client because it reads sensitive data.
+This invariant needs an async uniqueness check.
+This invariant needs an index to be efficient.
+```
+
+## Custom invariant “kinds” are useful too
+
+You probably want both:
+
+```txt
+invariant.family(...)
+  Create reusable parameterized invariant templates.
+
+invariant.kind(...)
+  Create a new category of invariant with custom verifier/lowering behavior.
+```
+
+For example:
+
+```ts
+const SecurityInvariant = gen.invariant.kind("SecurityInvariant", {
+  defaultSeverity: "error",
+  defaultExposeToClient: false,
+  requiredMetadata: {
+    threatCategory: gen.type.enum(["auth", "privacy", "injection"]),
+  },
+});
+```
+
+Then:
+
+```ts
+const NoSensitiveClientLeak = SecurityInvariant.family(
+  "NoSensitiveClientLeak",
+  ...
+);
+```
+
+That gives plugins room to define richer invariant classes.
+
+## My recommended hierarchy
+
+```txt
+Rule
+  Reusable typed boolean expression.
+
+Invariant
+  Must-hold rule with enforcement + diagnostics.
+
+InvariantFamily
+  Generic reusable invariant constructor.
+
+InvariantKind
+  Extensible category of invariants with shared behavior.
+
+InvariantViolation
+  Typed runtime/compiler diagnostic produced when an invariant fails.
+
+InvariantLowering
+  Target-specific enforcement strategy.
+```
+
+The crisp distinction:
+
+```txt
+Rule = boolean meaning.
+Invariant = contractual meaning.
+Invariant family = reusable contractual pattern.
+Invariant kind = extensible invariant category.
+Violation = typed failure occurrence.
+Lowering = how a target enforces it.
+```
+
+## The important design principle
+
+Do not make invariants “just callbacks.”
+
+This is weak:
+
+```ts
+gen.invariant("foo", (x) => boolean)
+```
+
+This is strong:
+
+```ts
+gen.invariant("foo", {
+  params,
+  subject,
+  predicate: typed Expr<boolean>,
+  diagnostics,
+  traits,
+  lowerings,
+  verifier,
+  metadata,
+});
+```
+
+Because then Gen2 can derive:
+
+```txt
+validation
+database constraints
+RLS guards
+server checks
+client form errors
+OpenAPI errors
+tests
+docs
+telemetry
+deployment diagnostics
+AI repair suggestions
+```
+
+So yes: invariants should absolutely be flexible over types/generics, have strong inference, be extensible by dialects and users, and support custom invariant families/kinds. That turns invariants into a reusable semantic system instead of a bag of validation functions.
+
+
+This doc is very aligned with the ideal design. It is basically saying: **diagnostics and invariants should not be bolted onto the compiler; they should be part of the semantic system.**
+
+I agree with the direction strongly.
+
+The key idea in the doc is this split:
+
+```txt
+Invariant
+  defines a must-hold contract
+
+Verifier / runtime check
+  evaluates that contract
+
+Diagnostic
+  describes a problem, warning, hint, or explanation
+
+Violation / Finding
+  concrete occurrence of a diagnostic
+```
+
+That distinction is exactly right. The doc also correctly says not every diagnostic is an invariant violation, but every invariant violation should produce a diagnostic. 
+
+## What is good about the design
+
+The strongest part is making diagnostics first-class and typed.
+
+Instead of this:
+
+```ts
+return ["Rule is not SQL-lowerable"];
+```
+
+you want this:
+
+```ts
+ctx.emit(diagnostics.RuleNotSqlLowerable, {
+  rule: ref(canArchiveUser),
+  target: ref(Postgres),
+  reason: "unsupported_operation",
+  location: canArchiveUser.location,
+});
+```
+
+That gives downstream systems something machine-readable:
+
+```txt
+code
+severity
+params
+graph location
+source location
+target
+reason
+remediation
+safe user message
+developer message
+backend log message
+possible fixes
+```
+
+That matters a lot for Gen2 because diagnostics are not just compiler output. They become an interface between:
+
+```txt
+compiler passes
+generated app
+developer
+end user
+deployment system
+AI repair loop
+```
+
+The doc captures that well. 
+
+## The invariant distinction is right
+
+The doc’s definition is also good:
+
+```txt
+Rule = boolean meaning
+Invariant = contractual meaning
+Violation = typed failure occurrence
+Lowering = how a target enforces it
+```
+
+That is the clean model.
+
+A rule might say:
+
+```ts
+actor.role.eq("admin")
+```
+
+An invariant says:
+
+```txt
+This condition must hold for this subject at this phase/surface,
+and if it fails, emit this typed violation/diagnostic.
+```
+
+So this is the right shape:
+
+```ts
+const ActiveUserHasEmail = gen.invariant("ActiveUserHasEmail", {
+  subject: User,
+
+  predicate: ({ user }) =>
+    user.archivedAt.isNull().implies(user.email.isSome()),
+
+  code: gen.error.code("ACTIVE_USER_EMAIL_REQUIRED"),
+
+  messages: {
+    user: "Active users must have an email address.",
+    developer: "User.email must be present when User.archivedAt is null.",
+    backend: "Invariant ActiveUserHasEmail failed.",
+  },
+
+  path: User.fields.email,
+
+  severity: "error",
+
+  lowerTo: [
+    gen.lowering.serverValidation(),
+    gen.lowering.formValidation.ifClientSafe(),
+    gen.lowering.databaseCheck.ifSqlLowerable(),
+    gen.lowering.test(),
+    gen.lowering.docs(),
+  ],
+});
+```
+
+That makes invariants usable for validation, database constraints, OpenAPI error schemas, docs, tests, telemetry, and UI error messages.
+
+## The MLIR comparison is useful
+
+The doc’s MLIR framing is good, with one important Gen2-specific upgrade.
+
+MLIR mostly has:
+
+```txt
+constraint / trait / verifier
+  -> diagnostic
+  -> invalid IR
+  -> compiler stops
+```
+
+Gen2 needs:
+
+```txt
+invariant / rule / verifier
+  -> typed diagnostic
+  -> optional runtime violation
+  -> target-specific enforcement
+  -> generated user/developer/backend messages
+  -> AI repair hint
+  -> docs/tests/telemetry
+```
+
+So Gen2 should borrow MLIR’s rigor:
+
+```txt
+ODS-style constraints
+traits
+interfaces/protocols
+custom verifiers
+staged verifier ordering
+location-aware diagnostics
+diagnostic tests
+```
+
+But Gen2 should go beyond MLIR by modeling application-facing failure behavior.
+
+That is the right adaptation.
+
+## I would add one more distinction: diagnostic definition vs violation type
+
+The doc already hints at this, but I would make it explicit in the library:
+
+```ts
+const RuleNotSqlLowerable = diagnostic.define("RULE_NOT_SQL_LOWERABLE", {
+  severity: "error",
+
+  params: {
+    rule: param.node(app.nodes.rule),
+    target: param.target(),
+    reason: param.enum([
+      "opaque_expr",
+      "unsupported_operation",
+      "unsupported_type",
+      "server_only_provider",
+    ]),
+  },
+
+  messages: {
+    user: ({ rule }) =>
+      `The rule "${rule.name}" cannot be used as a database policy.`,
+    developer: ({ rule, reason }) =>
+      `Rule ${rule.ref} is not SQL-lowerable: ${reason}.`,
+  },
+
+  remediation: ({ reason }) => {
+    switch (reason) {
+      case "opaque_expr":
+        return "Replace opaque logic with typed Gen2 expression operations.";
+      case "unsupported_operation":
+        return "Add a SQL lowering for this operation or use a server guard.";
+    }
+  },
+});
+```
+
+Then an emitted finding is separate:
+
+```ts
+ctx.emit(RuleNotSqlLowerable, {
+  rule: ref(canArchiveUser),
+  target: ref(postgres),
+  reason: "unsupported_operation",
+  location: graph.loc(canArchiveUser),
+});
+```
+
+So the type hierarchy should be:
+
+```txt
+DiagnosticDefinition
+  reusable typed diagnostic schema
+
+DiagnosticFinding
+  compiler/runtime occurrence
+
+InvariantDefinition
+  typed must-hold contract
+
+InvariantInstance
+  concrete application of an invariant family
+
+InvariantViolation
+  finding produced by invariant failure
+```
+
+## Invariant families are a very strong idea
+
+The doc’s “generic invariant family” concept is important.
+
+Instead of only writing one-off invariants:
+
+```ts
+gen.invariant("UserEmailRequired", ...)
+```
+
+you want reusable families:
+
+```ts
+const RequiredField = gen.invariant.family("RequiredField", {
+  params: {
+    entity: gen.param.entity(),
+    field: gen.param.fieldOf("entity"),
+  },
+
+  predicate: ({ subject, field }) =>
+    subject.field(field).isPresent(),
+
+  diagnostic: ({ entity, field }) => ({
+    code: `${entity.name}_${field.name}_REQUIRED`,
+    user: `${field.label} is required.`,
+    developer: `${entity.name}.${field.name} must be present.`,
+    severity: "error",
+  }),
+});
+```
+
+Then:
+
+```ts
+const UserEmailRequired = RequiredField({
+  entity: User,
+  field: User.fields.email,
+});
+```
+
+That is exactly the right level of abstraction for an AI app compiler. The AI can synthesize app-specific invariants, but common patterns like required fields, unique fields, transition legality, boundary safety, queue idempotency, and deployment requirements can be reusable typed families.
+
+## How I would integrate this with the ideal API
+
+I’d add a `diagnostic` and `invariant` dialect or core module.
+
+```ts
+const diagnostics = defineDialect("diagnostic")((d) => {
+  const diagnosticDefinition = d.nodeKind("diagnosticDefinition");
+  const finding = d.nodeKind("finding");
+
+  const emittedBy = d.edgeKind("emittedBy", {
+    endpoints: {
+      finding: d.endpoint("finding").target(finding).source(),
+      emitter: d.endpoint("emitter").targetAnyGraphObject().target(),
+    },
+  });
+
+  const pointsTo = d.edgeKind("pointsTo", {
+    endpoints: {
+      finding: d.endpoint("finding").target(finding).source(),
+      subject: d.endpoint("subject").targetAnyGraphObject().target(),
+    },
+  });
+
+  return {
+    nodes: { diagnosticDefinition, finding },
+    edges: { emittedBy, pointsTo },
+  };
+});
+```
+
+And an invariant dialect:
+
+```ts
+const invariants = defineDialect("invariant")((d) => {
+  const invariant = d.nodeKind("invariant");
+  const family = d.nodeKind("invariantFamily");
+  const violation = d.import(diagnostics.nodes.finding);
+
+  const hasPredicate = d.edgeKind("hasPredicate", {
+    endpoints: {
+      invariant: d.endpoint("invariant").target(invariant).source(),
+      expr: d.endpoint("expr").target(expr.nodes.expression).target(),
+    },
+  });
+
+  const emitsDiagnostic = d.edgeKind("emitsDiagnostic", {
+    endpoints: {
+      invariant: d.endpoint("invariant").target(invariant).source(),
+      diagnostic: d.endpoint("diagnostic").target(diagnostics.nodes.diagnosticDefinition).target(),
+    },
+  });
+
+  return {
+    nodes: { invariant, family },
+    edges: { hasPredicate, emitsDiagnostic },
+  };
+});
+```
+
+Then user-facing APIs:
+
+```ts
+const EmailUnique = invariant.unique(User.fields.email, {
+  code: "USER_EMAIL_NOT_UNIQUE",
+  messages: {
+    user: "That email address is already in use.",
+    developer: "User.email must be globally unique.",
+  },
+  lowerTo: [
+    database.uniqueIndex(),
+    server.validation(),
+    form.asyncValidation(),
+  ],
+});
+```
+
+And graph composition:
+
+```ts
+const graph = kernel.graph.pipe(
+  User,
+  EmailUnique,
+  pass(invariants.passes.verify),
+  pass(postgres.passes.lowerInvariants),
+);
+```
+
+## What I would be careful about
+
+The only danger is making invariants too heavy for simple validation.
+
+So I would provide layered ergonomics:
+
+Simple:
+
+```ts
+User.fields.email.required();
+User.fields.email.unique();
+```
+
+Medium:
+
+```ts
+invariant.required(User.fields.email, {
+  message: "Email is required.",
+});
+```
+
+Full:
+
+```ts
+invariant.define("ActiveUserHasEmail", {
+  subject: User,
+  predicate: ...,
+  diagnostic: ...,
+  lowerTo: ...,
+});
+```
+
+All three should normalize to the same canonical invariant model.
+
+## My verdict
+
+This doc is not a detour; it is a missing pillar of the ideal design.
+
+The library should have:
+
+```txt
+typed diagnostics
+typed findings
+typed invariant families
+typed invariant instances
+typed violation/error shapes
+rich locations
+audience-specific messages
+machine-readable remediation
+target-specific lowerings
+diagnostic tests
+```
+
+And the rule should be:
+
+```txt
+Rules express boolean meaning.
+Invariants express must-hold contracts.
+Diagnostics explain notable/failing conditions.
+Violations/findings are concrete occurrences.
+```
+
+That fits perfectly with the typed dialect / graph-step / pass architecture.
+
+
