@@ -178,5 +178,5 @@ export const relationCheckPass = {
   name: "relation.check",
   phase: "check" as const,
   description: "Validates domain-relation edges against integrity, cardinality, and FK rules.",
-  reads: [DOMAIN_RELATION_EDGE_KIND.id],
+  reads: [DOMAIN_RELATION_EDGE_KIND.id] as readonly string[],
 };

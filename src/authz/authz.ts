@@ -356,8 +356,8 @@ const policyClass = <E extends Entity = Entity>(input: PolicyInput<E>): PolicyCl
 };
 
 export interface DefinePolicy {
-  <E extends Entity = Entity>(builder: (b: PolicyBuilder<E>) => Policy<E>): Policy<E>;
   <E extends Entity = Entity>(input: PolicyInput<E>): Policy<E>;
+  <E extends Entity = Entity>(builder: (b: PolicyBuilder<E>) => Policy<E>): Policy<E>;
   /**
    * Curried-name facade form (Track K §K2): pre-bind the policy name,
    * then supply the rest as an object.

@@ -9,7 +9,8 @@
  */
 
 import { type Diagnostic, diagnostic } from "../core/index.ts";
-import type { Entity, Field, FieldOf, InferField } from "../entity/index.ts";
+import { entityToSemanticType, isEntity } from "../core/entity-to-semantic.ts";
+import type { Entity, Field, FieldOf, InferEntity, InferField } from "../entity/index.ts";
 import type { GraphFragment } from "../kernel/index.ts";
 import type { Relation } from "../relation/index.ts";
 import type { SemanticType } from "../types/index.ts";
@@ -109,15 +110,23 @@ export type RuleClass<R extends Rule> = (abstract new () => R) & {
 
 // --- Builder types ---------------------------------------------------------
 
-export type RuleVarRecord = Record<string, SemanticType>;
+export type RuleVarRecord = Record<string, SemanticType | Entity>;
 
 export type VarTypes<Vars extends RuleVarRecord> = {
-  [K in keyof Vars]: Vars[K] extends SemanticType<infer Ts> ? Ts : unknown;
+  [K in keyof Vars]: Vars[K] extends SemanticType<infer Ts>
+    ? Ts
+    : Vars[K] extends Entity
+      ? InferEntity<Vars[K]>
+      : unknown;
 };
 
 export type RuleVarContext<Vars extends RuleVarRecord> = {
   readonly var: {
-    [K in keyof Vars]: Vars[K] extends SemanticType<infer Ts> ? RuleVarExpr<Ts> : RuleVarExpr;
+    [K in keyof Vars]: Vars[K] extends SemanticType<infer Ts>
+      ? RuleVarExpr<Ts>
+      : Vars[K] extends Entity
+        ? RuleVarExpr<InferEntity<Vars[K]>>
+        : RuleVarExpr;
   };
 };
 
@@ -150,7 +159,10 @@ export const createRuleBuilder = (): RuleBuilder<never, {}> => {
     },
     vars<V extends RuleVarRecord>(v: V) {
       for (const [key, semType] of Object.entries(v)) {
-        currentVars.push({ name: key, semanticType: semType as SemanticType });
+        currentVars.push({
+          name: key,
+          semanticType: isEntity(semType) ? entityToSemanticType(semType) : semType,
+        });
       }
       return this as unknown as RuleBuilder<never, V>;
     },

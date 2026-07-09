@@ -239,7 +239,7 @@ export interface Entity<
   /** State-machine transition graphs governing enum fields. */
   readonly transitions: readonly TransitionGraph[];
   /** Composable graph fragment for the entity node, field nodes, and ownership/type edges. */
-  readonly fragment?: AnyGraphStep;
+  readonly fragment: AnyGraphStep;
 }
 
 // ---------------------------------------------------------------------------
@@ -351,7 +351,7 @@ const defineEntityImpl = <const Name extends string, const F extends FieldsRecor
   name: Name,
   fields: F,
   options: EntityDefinitionOptions = {},
-): EntityFromInput<Name, F> & { readonly fragment: AnyGraphStep } => {
+): EntityFromInput<Name, F> => {
   // Use a mutable builder so fields can reference the entity from the start
   // without post-hoc mutation.
   const entity: MutableEntity = {
@@ -387,13 +387,13 @@ const defineEntityImpl = <const Name extends string, const F extends FieldsRecor
   entity.fieldList = fieldList;
 
   // Cast: we know fieldByName matches the keys of F by construction.
-  return entity as unknown as EntityFromInput<Name, F> & { readonly fragment: AnyGraphStep };
+  return entity as unknown as EntityFromInput<Name, F>;
 };
 
 const entityClass = <const Name extends string, const F extends FieldsRecord>(
   name: Name,
   input: { readonly fields: F } & EntityDefinitionOptions,
-): EntityClass<EntityFromInput<Name, F> & { readonly fragment: AnyGraphStep }> => {
+): EntityClass<EntityFromInput<Name, F>> => {
   const entity = defineEntityImpl(name, input.fields, input);
   abstract class EntityFacade {}
   Object.defineProperties(EntityFacade, {
@@ -409,9 +409,7 @@ const entityClass = <const Name extends string, const F extends FieldsRecord>(
     fragment: { get: () => entity.fragment },
     $infer: { value: undefined },
   });
-  return EntityFacade as EntityClass<
-    EntityFromInput<Name, F> & { readonly fragment: AnyGraphStep }
-  >;
+  return EntityFacade as EntityClass<EntityFromInput<Name, F>>;
 };
 
 export const defineEntity = Object.assign(defineEntityImpl, {
