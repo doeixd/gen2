@@ -9,8 +9,13 @@
 import type { Artifact } from "../../core/artifacts.ts";
 import { diagnostic } from "../../core/diagnostics.ts";
 import { definePlugin } from "../../core/plugin.ts";
+import { defineTargetInputKind } from "../../core/target.ts";
 import { makeArtifact } from "../../core/artifacts.ts";
 import type { ReactiveGraph } from "../reactivity.ts";
+
+const REACTIVE_GRAPH_INPUT = defineTargetInputKind<"reactive_graph", ReactiveGraph>(
+  "reactive_graph",
+);
 
 /**
  * Generates Effect-Atom TypeScript artifacts from a reactive graph.
@@ -273,9 +278,9 @@ export const createEffectAtomTargetPlugin = () =>
       targets: [
         {
           name: "effect-atom",
-          accepts_inputs: ["reactive_graph"],
+          accepts_inputs: REACTIVE_GRAPH_INPUT.accepts_inputs,
           generate: (input) => {
-            if (input.kind !== "reactive_graph" || !input.value) {
+            if (!REACTIVE_GRAPH_INPUT.is(input)) {
               return [
                 makeArtifact({
                   path: "effect-atom/error.txt",
@@ -284,7 +289,7 @@ export const createEffectAtomTargetPlugin = () =>
                 }),
               ];
             }
-            const { artifacts } = generateEffectAtomArtifacts(input.value as ReactiveGraph);
+            const { artifacts } = generateEffectAtomArtifacts(input.value);
             return artifacts;
           },
         },

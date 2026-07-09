@@ -21,19 +21,19 @@
 import {
   acceptTargetInput,
   definePlugin,
+  defineTargetInputKind,
   type Helper,
   makeArtifact,
-  makeTargetInput,
   type Plugin,
   type GenContext,
   type Artifact,
-  type TargetInputRecord,
   type Target,
+  targetInputsOfKind,
 } from "../core/index.ts";
 import type { Entity, Field } from "../entity/index.ts";
 
 const TARGET_NAME = "standard-schema:entity";
-const INPUT_KIND = "entity";
+const ENTITY_INPUT = defineTargetInputKind<"entity", Entity>("entity");
 
 export interface StandardSchemaAdapterOptions {
   /** Output directory prefix. Defaults to `"schemas"`. */
@@ -152,9 +152,7 @@ const findTarget = (ctx: GenContext): Target | undefined =>
   ctx.targets.find((t) => t.name === TARGET_NAME);
 
 const inputAlreadyAttached = (target: Target, entity: Entity): boolean =>
-  target.inputs.some(
-    (i) => i.kind === INPUT_KIND && (i.value as { entity?: Entity })?.entity === entity,
-  );
+  targetInputsOfKind(target.inputs, ENTITY_INPUT).some((input) => input.value === entity);
 
 export const defineStandardSchemaAdapter = (
   options: StandardSchemaAdapterOptions = {},
@@ -170,10 +168,7 @@ export const defineStandardSchemaAdapter = (
         const c = ctx as GenContext;
         const target = findTarget(c);
         if (!target || inputAlreadyAttached(target, entity)) return;
-        acceptTargetInput(
-          target,
-          makeTargetInput({ name: entity.name, kind: INPUT_KIND, value: { entity } }),
-        );
+        acceptTargetInput(target, ENTITY_INPUT.make({ name: entity.name, value: entity }));
       };
       return {
         fromEntity: attach,
@@ -192,11 +187,10 @@ export const defineStandardSchemaAdapter = (
       targets: [
         {
           name: TARGET_NAME,
-          accepts_inputs: [INPUT_KIND],
+          accepts_inputs: ENTITY_INPUT.accepts_inputs,
           generate: (input): readonly Artifact[] => {
-            const i = input as TargetInputRecord;
-            const entity = (i.value as { entity?: Entity })?.entity;
-            if (!entity) return [];
+            if (!ENTITY_INPUT.is(input)) return [];
+            const entity = input.value;
             return [
               makeArtifact({
                 path: `${outDir}/${fileNameFor(entity)}.ts`,

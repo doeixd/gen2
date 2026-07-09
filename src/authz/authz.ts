@@ -9,18 +9,21 @@
  */
 
 import { type Diagnostic, diagnostic } from "../core/index.ts";
-import type { Entity, Field } from "../entity/index.ts";
+import type { Entity, Field, FieldOf, InferFieldOwner } from "../entity/index.ts";
 import type { Getter, Mutator } from "../api/index.ts";
 import type { Relation } from "../relation/index.ts";
 import type { Rule } from "../rules/index.ts";
 import { extractRuleDependencies } from "../rules/index.ts";
+import type { GraphFragment } from "../kernel/index.ts";
 import {
   defineAccessSurfaceBinding,
+  type AccessSurface,
   type AccessSurfaceBinding,
   type AccessSurfaceOf,
   type DenyBehavior,
 } from "./surface.ts";
 import { checkPlacement } from "./placement.ts";
+import { policyToGraphFragment } from "./kernel.ts";
 
 // --- Authz-specific diagnostics ---------------------------------------------
 
@@ -72,34 +75,59 @@ export type AuthConditionKind =
   | "OrCondition";
 
 /** Loose input shape for an AuthCondition, used by validation functions. */
-export interface AuthConditionInput {
+export interface AuthConditionInput<E extends Entity = Entity> {
+  readonly kind: AuthConditionKind;
+  readonly role?: string;
+  readonly owner_field?: FieldOf<E>;
+  readonly target_relation?: Relation;
+  readonly relation_field?: Field;
+  readonly left?: AuthConditionInput<E>;
+  readonly right?: AuthConditionInput<E>;
+}
+
+/** Dynamic policy input for decoded/plugin IR that has not crossed typed authoring checks. */
+export interface DynamicAuthConditionInput {
   readonly kind: AuthConditionKind;
   readonly role?: string;
   readonly owner_field?: Field;
   readonly target_relation?: Relation;
   readonly relation_field?: Field;
-  readonly left?: AuthConditionInput;
-  readonly right?: AuthConditionInput;
+  readonly left?: DynamicAuthConditionInput;
+  readonly right?: DynamicAuthConditionInput;
 }
 
 /** Discriminated auth condition — each kind carries exactly its required fields. */
-export type AuthCondition =
+export type AuthCondition<E extends Entity = Entity> =
   | { readonly kind: "AllowAuthenticated" }
   | { readonly kind: "AllowPublic" }
   | { readonly kind: "AllowRole"; readonly role: string }
-  | { readonly kind: "AllowOwner"; readonly owner_field: Field }
+  | { readonly kind: "AllowOwner"; readonly owner_field: FieldOf<E> }
   | {
       readonly kind: "AllowRelation";
       readonly target_relation: Relation;
       readonly relation_field?: Field;
     }
-  | { readonly kind: "OrCondition"; readonly left: AuthCondition; readonly right: AuthCondition };
+  | {
+      readonly kind: "OrCondition";
+      readonly left: AuthCondition<E>;
+      readonly right: AuthCondition<E>;
+    };
+
+export interface PolicyActionInput<E extends Entity = Entity> {
+  readonly action_name: string;
+  readonly condition: AuthConditionInput<E>;
+}
+
+export interface DynamicPolicyActionInput {
+  readonly action_name: string;
+  readonly condition: DynamicAuthConditionInput;
+}
 
 /** A rule binding an action name to a condition within a policy. */
 export interface PolicyRule {
   readonly action_name: string;
   readonly condition: AuthConditionInput;
-  readonly policy: Policy;
+  readonly policy: Policy<any>;
 }
 
 /** Variable binding metadata for actor, resource, and action in a policy. */
@@ -117,6 +145,8 @@ export interface Policy<E extends Entity = Entity> {
   readonly name: string;
   readonly target_entity: E;
   readonly actions: PolicyRule[];
+  /** Composable graph fragment for the policy node and auth dialect edges. */
+  readonly fragment: GraphFragment;
   /** Optional rule predicate that the policy uses for authorization decisions. */
   readonly predicate?: Rule;
   /** Optional typed access surface bindings (AUTHZ2+). When present, these augment or replace string-based actions. */
@@ -125,6 +155,17 @@ export interface Policy<E extends Entity = Entity> {
   readonly variable_bindings?: PolicyVariableBindings;
 }
 
+export type PolicyClass<P extends Policy> = (abstract new () => P) & {
+  readonly policy: P;
+  readonly name: P["name"];
+  readonly target_entity: P["target_entity"];
+  readonly actions: P["actions"];
+  readonly fragment: P["fragment"];
+  readonly predicate: P["predicate"];
+  readonly access_surface_bindings: P["access_surface_bindings"];
+  readonly variable_bindings: P["variable_bindings"];
+};
+
 /** Describes the desired lowering target for a policy (SQL, server check, client metadata). */
 export interface TranslationTarget {
   readonly kind: "sql_predicate" | "server_runtime_check" | "client_metadata" | "none";
@@ -132,7 +173,7 @@ export interface TranslationTarget {
 
 /** Links a policy to a translation target and translatability status. */
 export interface PolicyTranslation {
-  readonly policy: Policy;
+  readonly policy: Policy<any>;
   readonly target: TranslationTarget;
   readonly translated_expression?: string;
   readonly translatable: boolean;
@@ -140,7 +181,7 @@ export interface PolicyTranslation {
 
 /** Describes how a policy is exposed to clients and whether it is safe to do so. */
 export interface ClientPolicyExposure {
-  readonly policy: Policy;
+  readonly policy: Policy<any>;
   readonly exposed_actions: readonly string[];
   readonly server_only_fields_hidden: boolean;
   readonly safe_to_expose: boolean;
@@ -216,7 +257,7 @@ export const createPolicyBuilder = <E extends Entity = Entity>(): PolicyBuilder<
 const definePolicyImpl = <E extends Entity = Entity>(input: {
   name: string;
   target_entity: E;
-  actions?: readonly Omit<PolicyRule, "policy">[];
+  actions?: readonly PolicyActionInput<E>[];
   predicate?: Rule;
   access_surface_bindings?: readonly AccessSurfaceBinding[];
   surfaces?: readonly { surface: AccessSurfaceOf<E>; deny?: DenyBehavior }[];
@@ -227,12 +268,15 @@ const definePolicyImpl = <E extends Entity = Entity>(input: {
     name: input.name,
     target_entity: input.target_entity,
     actions: [],
+    get fragment() {
+      return policyToGraphFragment(policy);
+    },
     predicate: input.predicate,
     access_surface_bindings: input.access_surface_bindings,
     variable_bindings: input.variable_bindings,
   };
   for (const a of input.actions ?? []) {
-    policy.actions.push({ ...a, policy });
+    policy.actions.push({ ...a, policy } as unknown as PolicyRule);
   }
   if (input.surfaces) {
     const bindings = input.surfaces.map((s) =>
@@ -245,36 +289,106 @@ const definePolicyImpl = <E extends Entity = Entity>(input: {
   return policy;
 };
 
-export function definePolicy<E extends Entity = Entity>(
-  builder: (b: PolicyBuilder<E>) => Policy<E>,
-): Policy<E>;
-export function definePolicy<E extends Entity = Entity>(input: {
+export const defineDynamicPolicy = <E extends Entity = Entity>(input: {
   name: string;
   target_entity: E;
-  actions?: readonly Omit<PolicyRule, "policy">[];
+  actions?: readonly DynamicPolicyActionInput[];
+  predicate?: Rule;
+  access_surface_bindings?: readonly AccessSurfaceBinding[];
+  surfaces?: readonly { surface: AccessSurface; deny?: DenyBehavior }[];
+  variable_bindings?: PolicyVariableBindings;
+}): Policy<E> => {
+  const policy: Policy<E> = {
+    name: input.name,
+    target_entity: input.target_entity,
+    actions: [],
+    get fragment() {
+      return policyToGraphFragment(policy);
+    },
+    predicate: input.predicate,
+    access_surface_bindings: input.access_surface_bindings,
+    variable_bindings: input.variable_bindings,
+  };
+  for (const a of input.actions ?? []) {
+    policy.actions.push({ ...a, policy } as unknown as PolicyRule);
+  }
+  if (input.surfaces) {
+    const bindings = input.surfaces.map((s) =>
+      defineAccessSurfaceBinding({ surface: s.surface, policy, deny: s.deny }),
+    );
+    (
+      policy as { access_surface_bindings?: readonly AccessSurfaceBinding[] }
+    ).access_surface_bindings = bindings;
+  }
+  return policy;
+};
+
+/** Input shape for `definePolicy({ … })` and `definePolicy(name)({ … })`. */
+export interface PolicyInput<E extends Entity = Entity> {
+  name: string;
+  target_entity: E;
+  actions?: readonly PolicyActionInput<E>[];
   predicate?: Rule;
   access_surface_bindings?: readonly AccessSurfaceBinding[];
   surfaces?: readonly { surface: AccessSurfaceOf<E>; deny?: DenyBehavior }[];
   variable_bindings?: PolicyVariableBindings;
-}): Policy<E>;
-export function definePolicy<E extends Entity = Entity>(
-  inputOrBuilder:
-    | ((b: PolicyBuilder<E>) => Policy<E>)
-    | {
-        name: string;
-        target_entity: E;
-        actions?: readonly Omit<PolicyRule, "policy">[];
-        predicate?: Rule;
-        access_surface_bindings?: readonly AccessSurfaceBinding[];
-        surfaces?: readonly { surface: AccessSurfaceOf<E>; deny?: DenyBehavior }[];
-        variable_bindings?: PolicyVariableBindings;
-      },
-): Policy<E> {
-  if (typeof inputOrBuilder === "function") {
-    return inputOrBuilder(createPolicyBuilder<E>());
-  }
-  return definePolicyImpl(inputOrBuilder);
 }
+
+/** Continuation type for the curried-name form. */
+type PolicyCurriedNameContinuation = <E extends Entity = Entity>(
+  rest: Omit<PolicyInput<E>, "name">,
+) => Policy<E>;
+
+const policyClass = <E extends Entity = Entity>(input: PolicyInput<E>): PolicyClass<Policy<E>> => {
+  const policy = definePolicyImpl(input);
+  abstract class PolicyFacade {}
+  Object.defineProperties(PolicyFacade, {
+    policy: { value: policy },
+    name: { value: policy.name },
+    target_entity: { value: policy.target_entity },
+    actions: { value: policy.actions },
+    fragment: { get: () => policy.fragment },
+    predicate: { value: policy.predicate },
+    access_surface_bindings: { value: policy.access_surface_bindings },
+    variable_bindings: { value: policy.variable_bindings },
+  });
+  return PolicyFacade as PolicyClass<Policy<E>>;
+};
+
+export interface DefinePolicy {
+  <E extends Entity = Entity>(builder: (b: PolicyBuilder<E>) => Policy<E>): Policy<E>;
+  <E extends Entity = Entity>(input: PolicyInput<E>): Policy<E>;
+  /**
+   * Curried-name facade form (Track K §K2): pre-bind the policy name,
+   * then supply the rest as an object.
+   *
+   * ```ts
+   * definePolicy("ProjectAccess")({ target_entity: Project });
+   * // equivalent to
+   * definePolicy({ name: "ProjectAccess", target_entity: Project });
+   * ```
+   */
+  (name: string): PolicyCurriedNameContinuation;
+  readonly class: typeof policyClass;
+}
+
+function definePolicyFacade<E extends Entity = Entity>(
+  arg: ((b: PolicyBuilder<E>) => Policy<E>) | PolicyInput<E> | string,
+): Policy<E> | PolicyCurriedNameContinuation {
+  if (typeof arg === "string") {
+    const name = arg;
+    return (<F extends Entity = Entity>(rest: Omit<PolicyInput<F>, "name">): Policy<F> =>
+      definePolicyImpl({ name, ...rest } as PolicyInput<F>)) as PolicyCurriedNameContinuation;
+  }
+  if (typeof arg === "function") {
+    return arg(createPolicyBuilder<E>());
+  }
+  return definePolicyImpl(arg);
+}
+
+export const definePolicy = Object.assign(definePolicyFacade, {
+  class: policyClass,
+}) as DefinePolicy;
 
 /**
  * Creates an AllowAuthenticated condition.
@@ -311,10 +425,22 @@ export const allowRole = (role: string): Extract<AuthCondition, { kind: "AllowRo
  * @param field - The field identifying the owner.
  * @returns An AuthCondition of kind AllowOwner.
  */
-export const allowOwner = (field: Field): Extract<AuthCondition, { kind: "AllowOwner" }> => ({
+export const allowOwner = <F extends Field<any, Entity, any>>(
+  field: F,
+): Extract<AuthCondition<InferFieldOwner<F>>, { kind: "AllowOwner" }> => ({
   kind: "AllowOwner",
-  owner_field: field,
+  owner_field: field as unknown as FieldOf<InferFieldOwner<F>>,
 });
+
+export const allowOwnerFor =
+  <E extends Entity>(entity: E) =>
+  (field: FieldOf<E>): Extract<AuthCondition<E>, { kind: "AllowOwner" }> => {
+    void entity;
+    return {
+      kind: "AllowOwner",
+      owner_field: field,
+    };
+  };
 
 /**
  * Creates an AllowRelation condition.

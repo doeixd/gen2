@@ -2,18 +2,217 @@
 /**
  * Rule-derived reactivity — Levels 1–4 invalidation, IVM, and diagnostics.
  *
- * See atom_plan.md § Rule-Derived Reactivity.
+ * Graph-native derivation (R7): invalidation derives from WRITES/READS edge
+ * overlap rather than ad-hoc AST walking.
+ *
+ * See atom_plan.md § Rule-Derived Reactivity,
+ * docs/revision/revised_phases.md §R7.
  */
 
 import { type Diagnostic, diagnostic, type GenContext } from "../core/index.ts";
 import type { Field, Entity } from "../entity/index.ts";
 import type { ActionFunction } from "../function/index.ts";
-import type { Rule, RuleExpr } from "../rules/index.ts";
-import { extractRuleDependencies } from "../rules/index.ts";
+import type { Rule } from "../rules/index.ts";
+import { extractRuleDependencies, extractRuleDependenciesFromGraph } from "../rules/index.ts";
+import type { KernelExpr, KernelGraph } from "../kernel/index.ts";
+import { defineGraphPattern, edgeKinds, endpointRoles, nodeKinds } from "../kernel/index.ts";
+import { GUARDS_ACTION_EDGE_KIND, POLICY_USES_RULE_EDGE_KIND } from "../dialects/auth.ts";
+import {
+  RULE_DECLARES_VAR_EDGE_KIND,
+  RULE_HAS_BODY_EDGE_KIND,
+  RULE_NODE_KIND,
+  RULE_READS_EDGE_KIND,
+} from "../dialects/core/expr-rule.ts";
+import {
+  ACTION_NODE_KIND,
+  ACTION_WRITES_FIELD_EDGE_KIND,
+  QUERY_READS_EDGE_KIND,
+} from "../dialects/callable.ts";
+import { FIELD_NODE_KIND } from "../dialects/domain/entity-field-relation.ts";
 import type { ReactiveKeyPattern } from "./reactivity.ts";
-import { anyKey } from "./reactivity.ts";
+import { anyKey, defineKeyFamily } from "./reactivity.ts";
+import { findKeyFamilyByNameOnGraph } from "./kernel.ts";
 
-// --- Write-set extraction --------------------------------------------------
+const policyUsesPolicyRoleId = POLICY_USES_RULE_EDGE_KIND.endpoints[0]!.id;
+const policyUsesRuleRoleId = POLICY_USES_RULE_EDGE_KIND.endpoints[1]!.id;
+
+// --- Bridge helpers --------------------------------------------------------
+
+export interface GraphActionSummary {
+  readonly kind: "action";
+  readonly nodeId: string;
+  readonly name: string;
+  readonly writeFields: Set<string>;
+  readonly hasCondition: boolean;
+}
+
+export interface GraphQuerySummary {
+  readonly kind: "query";
+  readonly nodeId: string;
+  readonly name: string;
+  readonly readFields: Set<string>;
+  readonly keyFamily?: { name: string; kind: string };
+}
+
+export interface GraphRuleSummary {
+  readonly kind: "rule";
+  readonly name: string;
+  readonly nodeId: string;
+  readonly entities: readonly Entity[];
+  readonly fields: readonly Field[];
+  readonly variables: readonly string[];
+  readonly body?: KernelExpr;
+}
+
+const operationIdOf = (expr: KernelExpr): string | undefined =>
+  (expr as KernelExpr & { readonly operation?: { readonly id?: string } }).operation?.id;
+
+const resolveExpr = (graph: KernelGraph, expr: KernelExpr): KernelExpr =>
+  graph.exprs.get(expr.id) ?? expr;
+
+const walkExpr = (
+  graph: KernelGraph,
+  expr: KernelExpr,
+  visit: (expr: KernelExpr) => void,
+): void => {
+  const resolved = resolveExpr(graph, expr);
+  visit(resolved);
+  for (const arg of resolved.args) {
+    walkExpr(graph, arg.value, visit);
+  }
+};
+
+const ruleBodyExpr = (graph: KernelGraph, ruleNodeId: string): KernelExpr | undefined => {
+  for (const edge of graph.edges.values()) {
+    if (edge.kind.id !== RULE_HAS_BODY_EDGE_KIND.id) continue;
+    const ruleEp = edge.endpoints.find(
+      (ep) => ep.role.id === RULE_HAS_BODY_EDGE_KIND.endpoints[0]!.id,
+    );
+    if (!ruleEp || ruleEp.target.kind !== "node" || ruleEp.target.id !== ruleNodeId) continue;
+    const bodyEp = edge.endpoints.find(
+      (ep) => ep.role.id === RULE_HAS_BODY_EDGE_KIND.endpoints[1]!.id,
+    );
+    if (!bodyEp || bodyEp.target.kind !== "expr" || !bodyEp.target.id) continue;
+    return graph.exprs.get(bodyEp.target.id);
+  }
+  return undefined;
+};
+
+const declaredVarKinds = (graph: KernelGraph, ruleNodeId: string): readonly string[] => {
+  const kinds: string[] = [];
+  for (const edge of graph.edges.values()) {
+    if (edge.kind.id !== RULE_DECLARES_VAR_EDGE_KIND.id) continue;
+    const ruleEp = edge.endpoints.find(
+      (ep) => ep.role.id === RULE_DECLARES_VAR_EDGE_KIND.endpoints[0]!.id,
+    );
+    if (!ruleEp || ruleEp.target.kind !== "node" || ruleEp.target.id !== ruleNodeId) continue;
+    const varEp = edge.endpoints.find(
+      (ep) => ep.role.id === RULE_DECLARES_VAR_EDGE_KIND.endpoints[1]!.id,
+    );
+    if (!varEp || varEp.target.kind !== "node" || !varEp.target.id) continue;
+    const kind = graph.nodes.get(varEp.target.id)?.metadata?.custom?.semantic_type_kind;
+    if (typeof kind === "string") kinds.push(kind);
+  }
+  return kinds;
+};
+
+const summarizeRuleNode = (
+  graph: KernelGraph,
+  node: { readonly id: string; readonly name?: string },
+): GraphRuleSummary | undefined => {
+  if (!node.name) return undefined;
+  const deps = extractRuleDependenciesFromGraph(graph, node.id);
+  return {
+    kind: "rule",
+    name: node.name,
+    nodeId: node.id,
+    entities: deps.entities,
+    fields: deps.fields,
+    variables: deps.variables,
+    body: ruleBodyExpr(graph, node.id),
+  };
+};
+
+/**
+ * Find all query functions guarded by policies that require the given rule.
+ *
+ * Walks the graph:
+ *   rule ← REQUIRES — policy ← GUARDS — query
+ */
+const findQueriesForRuleOnGraph = (graph: KernelGraph, ruleNodeId: string): GraphQuerySummary[] => {
+  const queries: GraphQuerySummary[] = [];
+  const seen = new Set<string>();
+
+  // Find policies that REQUIRES this rule.
+  const policyNodeIds = new Set<string>();
+  for (const edge of graph.edges.values()) {
+    if (edge.kind.id !== edgeKinds.REQUIRES.id && edge.kind.id !== POLICY_USES_RULE_EDGE_KIND.id) {
+      continue;
+    }
+    const targetEp = edge.endpoints.find(
+      (ep) => ep.role.id === endpointRoles.TARGET.id || ep.role.id === policyUsesRuleRoleId,
+    );
+    if (!targetEp || targetEp.target.kind !== "node" || targetEp.target.id !== ruleNodeId) {
+      continue;
+    }
+    const sourceEp = edge.endpoints.find(
+      (ep) => ep.role.id === endpointRoles.SOURCE.id || ep.role.id === policyUsesPolicyRoleId,
+    );
+    if (sourceEp && sourceEp.target.kind === "node" && sourceEp.target.id) {
+      policyNodeIds.add(sourceEp.target.id);
+    }
+  }
+
+  // Find queries that GUARDS those policies.
+  for (const edge of graph.edges.values()) {
+    if (edge.kind.id !== GUARDS_ACTION_EDGE_KIND.id) continue;
+    const targetEp = edge.endpoints.find(
+      (ep) => ep.role.id === GUARDS_ACTION_EDGE_KIND.endpoints[1]!.id,
+    );
+    if (
+      !targetEp ||
+      targetEp.target.kind !== "node" ||
+      !targetEp.target.id ||
+      !policyNodeIds.has(targetEp.target.id)
+    ) {
+      continue;
+    }
+    const sourceEp = edge.endpoints.find(
+      (ep) => ep.role.id === GUARDS_ACTION_EDGE_KIND.endpoints[0]!.id,
+    );
+    if (!sourceEp || sourceEp.target.kind !== "node" || !sourceEp.target.id) continue;
+    const queryNode = graph.nodes.get(sourceEp.target.id);
+    if (!queryNode) continue;
+
+    // Graph-native query summary
+    const queryName = queryNode.name ?? queryNode.id;
+    const readFields = queryReadFieldsFromGraph(graph, queryNode.id);
+    // Read keyFamily from the typed `QueryNodeCustom.query` payload
+    // (PLAN.md §0.5 #8 — no `_bridge*` slot).
+    const queryCustom = queryNode.metadata?.custom as
+      | { readonly query?: { reactivity?: { key?: { family?: { name: string; kind?: string } } } } }
+      | undefined;
+    const queryFamily = queryCustom?.query?.reactivity?.key?.family;
+    const keyFamily = queryFamily
+      ? { name: queryFamily.name, kind: queryFamily.kind ?? "key_family" }
+      : undefined;
+
+    if (!seen.has(queryName)) {
+      seen.add(queryName);
+      queries.push({
+        kind: "query",
+        nodeId: queryNode.id,
+        name: queryName,
+        readFields,
+        keyFamily,
+      });
+    }
+  }
+
+  return queries;
+};
+
+// --- Write-set extraction (kept for action object access) ------------------
 
 interface WriteSet {
   readonly entities: readonly Entity[];
@@ -38,48 +237,93 @@ const extractWriteSet = (action: ActionFunction): WriteSet => {
   return { entities: [...entities], fields: [...fields], hasCondition };
 };
 
-// --- Overlap detection -----------------------------------------------------
+// --- Graph-native overlap detection ----------------------------------------
 
-const writeSetOverlapsRule = <Name extends string, Vars = unknown>(
-  writeSet: WriteSet,
-  rule: Rule<Name, Vars>,
-): boolean => {
-  const deps = extractRuleDependencies(rule);
-  for (const e of writeSet.entities) {
-    if (deps.entities.includes(e)) return true;
-  }
-  for (const f of writeSet.fields) {
-    if (deps.fields.includes(f)) return true;
-  }
-  return false;
-};
-
-// --- Rule structure analysis -----------------------------------------------
-
-const isSimpleEqualityRule = <Name extends string, Vars = unknown>(
-  rule: Rule<Name, Vars>,
-): boolean => {
-  const { body } = rule;
-  return body.kind === "rule.eq";
-};
-
-const ruleHasExists = (expr: RuleExpr): boolean => {
-  if (expr.kind === "rule.exists") return true;
-  if (expr.kind === "rule.and" || expr.kind === "rule.or") {
-    return expr.terms.some((t) => ruleHasExists(t));
-  }
-  if (expr.kind === "rule.not") {
-    return ruleHasExists(expr.term);
+/**
+ * Returns true if any of the action's WRITES edges flag a `has_condition`
+ * in their typed payload (`ActionWritesFieldCustom`).
+ */
+const actionHasConditionFromGraph = (graph: KernelGraph, actionNodeId: string): boolean => {
+  for (const edge of graph.edges.values()) {
+    if (edge.kind.id !== ACTION_WRITES_FIELD_EDGE_KIND.id) continue;
+    const sourceEp = edge.endpoints.find(
+      (ep) => ep.role.id === ACTION_WRITES_FIELD_EDGE_KIND.endpoints[0]!.id,
+    );
+    if (!sourceEp || sourceEp.target.kind !== "node" || sourceEp.target.id !== actionNodeId) {
+      continue;
+    }
+    const custom = edge.metadata?.custom as { has_condition?: boolean } | undefined;
+    if (custom?.has_condition) return true;
   }
   return false;
 };
 
-// --- Cross-store detection -------------------------------------------------
+/**
+ * Return the set of field IDs written by an action, derived from WRITES edges
+ * in the graph.
+ */
+const actionWriteFieldsFromGraph = (graph: KernelGraph, actionNodeId: string): Set<string> => {
+  const written = new Set<string>();
+  for (const edge of graph.edges.values()) {
+    if (edge.kind.id !== ACTION_WRITES_FIELD_EDGE_KIND.id) continue;
+    const sourceEp = edge.endpoints.find(
+      (ep) => ep.role.id === ACTION_WRITES_FIELD_EDGE_KIND.endpoints[0]!.id,
+    );
+    if (!sourceEp || sourceEp.target.kind !== "node" || sourceEp.target.id !== actionNodeId) {
+      continue;
+    }
+    const targetEp = edge.endpoints.find(
+      (ep) => ep.role.id === ACTION_WRITES_FIELD_EDGE_KIND.endpoints[1]!.id,
+    );
+    if (!targetEp) continue;
+    const fieldId = targetEp.target.id ?? targetEp.target.name;
+    if (fieldId) written.add(fieldId);
+  }
+  return written;
+};
 
-const storesForRuleDeps = <Name extends string, Vars = unknown>(
-  rule: Rule<Name, Vars>,
-): Set<string> => {
-  const deps = extractRuleDependencies(rule);
+/**
+ * Return the set of field IDs read by a query, derived from QUERY_READS edges
+ * in the graph.
+ */
+const queryReadFieldsFromGraph = (graph: KernelGraph, queryNodeId: string): Set<string> => {
+  const read = new Set<string>();
+  for (const edge of graph.edges.values()) {
+    if (edge.kind.id !== QUERY_READS_EDGE_KIND.id) continue;
+    const sourceEp = edge.endpoints.find(
+      (ep) => ep.role.id === QUERY_READS_EDGE_KIND.endpoints[0]!.id,
+    );
+    if (!sourceEp || sourceEp.target.kind !== "node" || sourceEp.target.id !== queryNodeId) {
+      continue;
+    }
+    const targetEp = edge.endpoints.find(
+      (ep) => ep.role.id === QUERY_READS_EDGE_KIND.endpoints[1]!.id,
+    );
+    if (!targetEp) continue;
+    const fieldId = targetEp.target.id ?? targetEp.target.name;
+    if (fieldId) read.add(fieldId);
+  }
+  return read;
+};
+
+// --- Rule structure analysis ----------------------------------------------
+
+const isSimpleEqualityRule = (rule: GraphRuleSummary): boolean =>
+  rule.body ? operationIdOf(rule.body) === "op.eq" : false;
+
+const ruleHasExists = (graph: KernelGraph, rule: GraphRuleSummary): boolean => {
+  if (!rule.body) return false;
+  let hasExists = false;
+  walkExpr(graph, rule.body, (expr) => {
+    if (operationIdOf(expr) === "op.exists") hasExists = true;
+  });
+  return hasExists;
+};
+
+// --- Cross-store detection (graph-native) ----------------------------------
+
+const storesForRuleDepsFromGraph = (graph: KernelGraph, ruleNodeId: string): Set<string> => {
+  const deps = extractRuleDependenciesFromGraph(graph, ruleNodeId);
   const stores = new Set<string>();
   for (const e of deps.entities) {
     if (e.store_name) stores.add(e.store_name);
@@ -87,19 +331,16 @@ const storesForRuleDeps = <Name extends string, Vars = unknown>(
   return stores;
 };
 
-// --- Time-dependent detection ----------------------------------------------
+// --- Time-dependent detection (graph-native + bridge) ----------------------
 
 const isTemporalType = (typeName: string): boolean =>
   typeName === "datetime" || typeName === "timestamp" || typeName === "date";
 
-const ruleIsTimeDependent = <Name extends string, Vars = unknown>(
-  rule: Rule<Name, Vars>,
-): boolean => {
-  for (const v of rule.vars) {
-    if (isTemporalType(v.semanticType.kind)) return true;
+const ruleIsTimeDependentFromGraph = (graph: KernelGraph, rule: GraphRuleSummary): boolean => {
+  for (const kind of declaredVarKinds(graph, rule.nodeId)) {
+    if (isTemporalType(kind)) return true;
   }
-  const deps = extractRuleDependencies(rule);
-  for (const f of deps.fields) {
+  for (const f of rule.fields) {
     if (isTemporalType(f.semantic_type.kind)) return true;
   }
   return false;
@@ -110,17 +351,24 @@ const ruleIsTimeDependent = <Name extends string, Vars = unknown>(
 export type InvalidationPrecision = "broad" | "matched" | "exact" | "patchable";
 export type InvalidationConfidence = "conservative" | "proven";
 
-const deriveInvalidationPrecision = <Name extends string, Vars = unknown>(
-  writeSet: WriteSet,
-  rule: Rule<Name, Vars>,
+/**
+ * Identity key for a Field as it appears as an edge endpoint target:
+ * `target.id ?? target.name`. `FieldRef.id` is the stable id when
+ * declared; `FieldRef.name` is just the field name. Mirrors the
+ * extraction logic in `actionWriteFieldsFromGraph` /
+ * `ruleReadFieldsFromGraph` so cross-comparisons line up.
+ */
+const fieldKey = (field: Field): string => field.id ?? field.name;
+
+const deriveInvalidationPrecision = (
+  writeSet: { readonly fields: readonly string[]; readonly hasCondition: boolean },
+  rule: GraphRuleSummary,
 ): { precision: InvalidationPrecision; confidence: InvalidationConfidence } => {
   // Level 4 — patchable: simple equality rule, mutation only touches that field
   if (isSimpleEqualityRule(rule)) {
-    const deps = extractRuleDependencies(rule);
-    const ruleFields = deps.fields;
-    if (ruleFields.length === 1) {
-      const onlyField = ruleFields[0]!;
-      if (writeSet.fields.length === 1 && writeSet.fields[0] === onlyField) {
+    if (rule.fields.length === 1) {
+      const onlyFieldKey = fieldKey(rule.fields[0]!);
+      if (writeSet.fields.length === 1 && writeSet.fields[0] === onlyFieldKey) {
         return { precision: "patchable", confidence: "proven" };
       }
     }
@@ -139,15 +387,15 @@ const deriveInvalidationPrecision = <Name extends string, Vars = unknown>(
 
 export interface RuleKeyDependency {
   readonly kind: "rule_key_dependency";
-  readonly rule: Rule;
+  readonly rule: GraphRuleSummary;
   readonly keyFamily: import("./reactivity.ts").KeyFamily;
   readonly fields: readonly Field[];
 }
 
 export interface DerivedInvalidationPlan {
   readonly kind: "derived_invalidation_plan";
-  readonly mutation: ActionFunction;
-  readonly affectedRules: readonly Rule[];
+  readonly mutation: ActionFunction | GraphActionSummary;
+  readonly affectedRules: readonly GraphRuleSummary[];
   readonly invalidates: readonly ReactiveKeyPattern[];
   readonly precision: InvalidationPrecision;
   readonly appliedPrecision: InvalidationPrecision;
@@ -156,36 +404,102 @@ export interface DerivedInvalidationPlan {
 
 export interface IvmMaintenancePlan {
   readonly kind: "ivm_maintenance_plan";
-  readonly rule: Rule;
+  readonly rule: GraphRuleSummary;
   readonly maintainedRelation: string;
   readonly deltaMode: "insert" | "delete" | "update" | "unsupported";
 }
 
 export interface RulePatchPlan {
   readonly kind: "rule_patch_plan";
-  readonly rule: Rule;
-  readonly mutation: ActionFunction;
+  readonly rule: GraphRuleSummary | Rule;
+  readonly mutation: ActionFunction | GraphActionSummary;
   readonly keyFamily?: import("./reactivity.ts").KeyFamily;
   readonly operation: "insert" | "update" | "delete" | "key_patch";
   readonly provenance: "proven" | "conservative";
   readonly field?: Field;
 }
 
-// --- Derivation ------------------------------------------------------------
+// --- Derivation (graph-native rule iteration) ------------------------------
 
-export const deriveRuleInvalidationPlans = (ctx: GenContext): DerivedInvalidationPlan[] => {
+/**
+ * Source-shape pattern for rule-driven invalidation.
+ *
+ * Matches the canonical chain
+ *
+ *   Action ──[writes]──> Field <──[reads]── Rule
+ *
+ * Each match binds one (action, field, rule) triple. Grouping matches by
+ * `action` and de-duping by `rule` gives the (action, rule) pairs whose
+ * write/read sets overlap on at least one field — i.e. the candidate set
+ * `deriveRuleInvalidationPlansFromGraph` used to compute via nested
+ * `actionOverlapsRuleOnGraph` checks.
+ *
+ * PLAN §5 (Next Up): symmetric to `RLS_POLICY_PATTERN` — declaring source
+ * shapes as data, with the kernel's pattern matcher handling lookup.
+ */
+export const RULE_INVALIDATION_SOURCE_PATTERN = defineGraphPattern({
+  nodes: {
+    action: ACTION_NODE_KIND,
+    field: FIELD_NODE_KIND,
+    rule: RULE_NODE_KIND,
+  },
+  edges: {
+    actionWritesField: {
+      kind: ACTION_WRITES_FIELD_EDGE_KIND,
+      endpoints: { action: "action", field: "field" },
+    },
+    ruleReadsField: {
+      kind: RULE_READS_EDGE_KIND,
+      endpoints: { rule: "rule", read: "field" },
+    },
+  },
+});
+
+/**
+ * Derive rule-driven invalidation plans by walking the graph alone.
+ *
+ * Track R §R6 — the showcase derivation. Source matching of
+ * (action, rule) pairs flows through `RULE_INVALIDATION_SOURCE_PATTERN`;
+ * precision, confidence, and key-family bookkeeping run per-action.
+ */
+export const deriveRuleInvalidationPlansFromGraph = (
+  graph: KernelGraph,
+): DerivedInvalidationPlan[] => {
+  // Group pattern matches by action id; collect distinct rule ids per action.
+  const candidatesByAction = new Map<string, Set<string>>();
+  for (const match of RULE_INVALIDATION_SOURCE_PATTERN.materialize(graph)) {
+    const actionId = match.bindings.action.id;
+    const ruleId = match.bindings.rule.id;
+    let rules = candidatesByAction.get(actionId);
+    if (!rules) {
+      rules = new Set<string>();
+      candidatesByAction.set(actionId, rules);
+    }
+    rules.add(ruleId);
+  }
+
   const plans: DerivedInvalidationPlan[] = [];
 
-  for (const action of ctx.action_functions) {
-    const writeSet = extractWriteSet(action);
-    const affectedRules: Rule[] = [];
+  for (const [actionNodeId, ruleNodeIds] of candidatesByAction) {
+    const actionNode = graph.nodes.get(actionNodeId);
+    if (!actionNode || actionNode.kind.id !== nodeKinds.ACTION.id) continue;
+
+    const actionName = actionNode.name ?? actionNode.id;
+    const writeFields = actionWriteFieldsFromGraph(graph, actionNode.id);
+    const hasCondition = actionHasConditionFromGraph(graph, actionNode.id);
+    const writeSet = { fields: [...writeFields], hasCondition };
+
+    const affectedRules: GraphRuleSummary[] = [];
     const invalidates: ReactiveKeyPattern[] = [];
     const seenFamilies = new Set<string>();
     let overallPrecision: InvalidationPrecision = "broad";
     let overallConfidence: InvalidationConfidence = "conservative";
 
-    for (const rule of ctx.rules) {
-      if (!writeSetOverlapsRule(writeSet, rule)) continue;
+    for (const ruleNodeId of ruleNodeIds) {
+      const ruleNode = graph.nodes.get(ruleNodeId);
+      if (!ruleNode || ruleNode.kind.id !== nodeKinds.RULE.id) continue;
+      const rule = summarizeRuleNode(graph, ruleNode);
+      if (!rule) continue;
       affectedRules.push(rule);
 
       const { precision, confidence } = deriveInvalidationPrecision(writeSet, rule);
@@ -197,25 +511,28 @@ export const deriveRuleInvalidationPlans = (ctx: GenContext): DerivedInvalidatio
         overallConfidence = confidence;
       }
 
-      for (const policy of ctx.policies) {
-        if (policy.predicate !== rule) continue;
-
-        for (const query of ctx.query_functions) {
-          if (!query.auth || query.auth.policy_name !== policy.name) continue;
-          const declaredKey = query.reactivity?.key;
-          if (!declaredKey) continue;
-          const family = declaredKey.family;
-          if (seenFamilies.has(family.name)) continue;
-          seenFamilies.add(family.name);
-          invalidates.push(anyKey(family));
-        }
+      for (const query of findQueriesForRuleOnGraph(graph, ruleNodeId)) {
+        const declaredKey = query.keyFamily;
+        if (!declaredKey) continue;
+        if (seenFamilies.has(declaredKey.name)) continue;
+        seenFamilies.add(declaredKey.name);
+        const family =
+          findKeyFamilyByNameOnGraph(graph, declaredKey.name) ?? defineKeyFamily(declaredKey.name);
+        invalidates.push(anyKey(family));
       }
     }
 
     if (affectedRules.length > 0) {
+      const graphAction: GraphActionSummary = {
+        kind: "action",
+        nodeId: actionNode.id,
+        name: actionName,
+        writeFields,
+        hasCondition,
+      };
       plans.push({
         kind: "derived_invalidation_plan",
-        mutation: action,
+        mutation: graphAction,
         affectedRules,
         invalidates,
         precision: overallPrecision,
@@ -228,32 +545,34 @@ export const deriveRuleInvalidationPlans = (ctx: GenContext): DerivedInvalidatio
   return plans;
 };
 
-// --- Monotonicity analysis -------------------------------------------------
+/** GenContext-shaped wrapper for callers still threading a full ctx. */
+export const deriveRuleInvalidationPlans = (ctx: GenContext): DerivedInvalidationPlan[] =>
+  deriveRuleInvalidationPlansFromGraph(ctx.graph);
 
-const isMonotonicRule = (expr: RuleExpr): boolean => {
-  switch (expr.kind) {
-    case "rule.eq":
-    case "rule.compare":
-      return true;
-    case "rule.and":
-      return expr.terms.every(isMonotonicRule);
-    case "rule.or":
-      return false; // Disjunction breaks monotonicity for IVM
-    case "rule.not":
-      return false; // Negation breaks monotonicity for IVM
-    case "rule.exists":
-      return false; // Exists breaks monotonicity for IVM
-    default:
-      return true;
-  }
+// --- Monotonicity analysis (bridge metadata) -------------------------------
+
+const isMonotonicRule = (graph: KernelGraph, rule: GraphRuleSummary): boolean => {
+  if (!rule.body) return true;
+  let monotonic = true;
+  walkExpr(graph, rule.body, (expr) => {
+    const opId = operationIdOf(expr);
+    if (opId === "op.or" || opId === "op.not" || opId === "op.exists") {
+      monotonic = false;
+    }
+  });
+  return monotonic;
 };
 
-// --- IVM -------------------------------------------------------------------
+// --- IVM (graph-native rule iteration) -------------------------------------
 
-export const deriveIvmPlans = (ctx: GenContext): readonly IvmMaintenancePlan[] => {
+export const deriveIvmPlansFromGraph = (graph: KernelGraph): readonly IvmMaintenancePlan[] => {
   const plans: IvmMaintenancePlan[] = [];
-  for (const rule of ctx.rules) {
-    if (!isMonotonicRule(rule.body)) {
+  for (const node of graph.nodes.values()) {
+    if (node.kind.id !== nodeKinds.RULE.id) continue;
+    const rule = summarizeRuleNode(graph, node);
+    if (!rule) continue;
+
+    if (!isMonotonicRule(graph, rule)) {
       plans.push({
         kind: "ivm_maintenance_plan",
         rule,
@@ -273,23 +592,16 @@ export const deriveIvmPlans = (ctx: GenContext): readonly IvmMaintenancePlan[] =
   return plans;
 };
 
-// --- Checker ---------------------------------------------------------------
+export const deriveIvmPlans = (ctx: GenContext): readonly IvmMaintenancePlan[] =>
+  deriveIvmPlansFromGraph(ctx.graph);
 
-export const checkRuleReactivity = (ctx: GenContext): readonly Diagnostic[] => {
+// --- Checker (graph-native rule iteration) ---------------------------------
+
+export const checkRuleReactivityOnGraph = (graph: KernelGraph): readonly Diagnostic[] => {
   const out: Diagnostic[] = [];
-  const plans = deriveRuleInvalidationPlans(ctx);
+  const plans = deriveRuleInvalidationPlansFromGraph(graph);
 
   for (const plan of plans) {
-    for (const rule of plan.affectedRules) {
-      out.push(
-        diagnostic({
-          severity: "info",
-          code: "rules-reactivity:mutation-writes-rule-dependency",
-          message: `Mutation "${plan.mutation.name}" writes fields/entities read by rule "${rule.name}"`,
-        }),
-      );
-    }
-
     if (plan.precision === "broad" && plan.invalidates.length > 0) {
       out.push(
         diagnostic({
@@ -313,8 +625,11 @@ export const checkRuleReactivity = (ctx: GenContext): readonly Diagnostic[] => {
   }
 
   // Cross-store rule dependency
-  for (const rule of ctx.rules) {
-    const stores = storesForRuleDeps(rule);
+  for (const node of graph.nodes.values()) {
+    if (node.kind.id !== nodeKinds.RULE.id) continue;
+    const rule = summarizeRuleNode(graph, node);
+    if (!rule) continue;
+    const stores = storesForRuleDepsFromGraph(graph, rule.nodeId);
     if (stores.size > 1) {
       out.push(
         diagnostic({
@@ -327,8 +642,11 @@ export const checkRuleReactivity = (ctx: GenContext): readonly Diagnostic[] => {
   }
 
   // Time-dependent rules
-  for (const rule of ctx.rules) {
-    if (ruleIsTimeDependent(rule)) {
+  for (const node of graph.nodes.values()) {
+    if (node.kind.id !== nodeKinds.RULE.id) continue;
+    const rule = summarizeRuleNode(graph, node);
+    if (!rule) continue;
+    if (ruleIsTimeDependentFromGraph(graph, rule)) {
       out.push(
         diagnostic({
           severity: "warning",
@@ -340,8 +658,11 @@ export const checkRuleReactivity = (ctx: GenContext): readonly Diagnostic[] => {
   }
 
   // Complex dependency reduces precision (exists is complex)
-  for (const rule of ctx.rules) {
-    if (ruleHasExists(rule.body)) {
+  for (const node of graph.nodes.values()) {
+    if (node.kind.id !== nodeKinds.RULE.id) continue;
+    const rule = summarizeRuleNode(graph, node);
+    if (!rule) continue;
+    if (ruleHasExists(graph, rule)) {
       out.push(
         diagnostic({
           severity: "info",
@@ -352,26 +673,8 @@ export const checkRuleReactivity = (ctx: GenContext): readonly Diagnostic[] => {
     }
   }
 
-  // Affected-set-unknown for unscoped mutations
-  for (const action of ctx.action_functions) {
-    const writeSet = extractWriteSet(action);
-    if (!writeSet.hasCondition) {
-      for (const rule of ctx.rules) {
-        if (writeSetOverlapsRule(writeSet, rule)) {
-          out.push(
-            diagnostic({
-              severity: "warning",
-              code: "rules-reactivity:affected-set-unknown",
-              message: `Mutation "${action.name}" has no limiting condition; affected set for rule "${rule.name}" is unknown`,
-            }),
-          );
-        }
-      }
-    }
-  }
-
   // IVM delta support
-  const ivmPlans = deriveIvmPlans(ctx);
+  const ivmPlans = deriveIvmPlansFromGraph(graph);
   for (const plan of ivmPlans) {
     if (plan.deltaMode === "unsupported") {
       out.push(
@@ -396,7 +699,10 @@ export const checkRuleReactivity = (ctx: GenContext): readonly Diagnostic[] => {
   return out;
 };
 
-// --- Patch plan derivation --------------------------------------------------
+export const checkRuleReactivity = (ctx: GenContext): readonly Diagnostic[] =>
+  checkRuleReactivityOnGraph(ctx.graph);
+
+// --- Patch plan derivation (graph-native rule iteration) --------------------
 
 /**
  * Derives explicit patch plans for rule-derived invalidations.
@@ -410,8 +716,8 @@ export const deriveRulePatchPlans = (ctx: GenContext): readonly RulePatchPlan[] 
   const seen = new Set<string>();
 
   const addPlan = (input: {
-    readonly rule: Rule;
-    readonly mutation: ActionFunction;
+    readonly rule: GraphRuleSummary | Rule;
+    readonly mutation: ActionFunction | GraphActionSummary;
     readonly field: Field;
     readonly keyFamily?: import("./reactivity.ts").KeyFamily;
     readonly provenance: "proven" | "conservative";
@@ -434,9 +740,8 @@ export const deriveRulePatchPlans = (ctx: GenContext): readonly RulePatchPlan[] 
     if (invPlan.precision !== "patchable") continue;
 
     for (const rule of invPlan.affectedRules) {
-      const deps = extractRuleDependencies(rule);
-      if (deps.fields.length !== 1) continue;
-      const field = deps.fields[0];
+      if (rule.fields.length !== 1) continue;
+      const field = rule.fields[0];
       if (!field) continue;
 
       if (invPlan.invalidates.length > 0) {
@@ -451,9 +756,9 @@ export const deriveRulePatchPlans = (ctx: GenContext): readonly RulePatchPlan[] 
         }
       } else {
         // Derive key family from the rule's entity when no policy-query chain exists
-        const entity = deps.entities[0];
+        const entity = rule.entities[0];
         if (entity) {
-          const family = ctx.key_families.find((kf) => kf.name === entity.name);
+          const family = findKeyFamilyByNameOnGraph(ctx.graph, entity.name);
           if (family) {
             addPlan({
               rule,
@@ -468,16 +773,24 @@ export const deriveRulePatchPlans = (ctx: GenContext): readonly RulePatchPlan[] 
     }
   }
 
-  for (const action of ctx.action_functions) {
+  for (const actionNode of ctx.graph.nodes.values()) {
+    if (actionNode.kind.id !== nodeKinds.ACTION.id) continue;
+    const actionCustom = actionNode.metadata?.custom as
+      | { readonly action?: ActionFunction }
+      | undefined;
+    const action = actionCustom?.action;
+    if (!action) continue;
     const writeSet = extractWriteSet(action);
     if (writeSet.fields.length !== 1) continue;
     const field = writeSet.fields[0];
     if (!field) continue;
 
-    for (const rule of ctx.rules) {
+    for (const node of ctx.graph.nodes.values()) {
+      if (node.kind.id !== nodeKinds.RULE.id) continue;
+      const rule = summarizeRuleNode(ctx.graph, node);
+      if (!rule) continue;
       if (!isSimpleEqualityRule(rule)) continue;
-      const deps = extractRuleDependencies(rule);
-      if (deps.fields.length === 1 && deps.fields[0] === field) {
+      if (rule.fields.length === 1 && rule.fields[0] === field) {
         addPlan({ rule, mutation: action, field, provenance: "proven" });
       }
     }

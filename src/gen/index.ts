@@ -75,6 +75,7 @@ import {
   createBoundaryNamespace,
   createObligationsNamespace,
   createTargetsNamespace,
+  createPreviewNamespace,
 } from "./namespaces.ts";
 import { createUiNamespace } from "./ui-backends.ts";
 
@@ -154,6 +155,7 @@ const buildGenNamespace = <C extends GenConfig = GenConfig>(
   boundary: createBoundaryNamespace<C>(ctx),
   obligations: createObligationsNamespace<C>(ctx),
   targets: createTargetsNamespace<C>(ctx),
+  preview: createPreviewNamespace<C>(ctx),
   location: createStorageLocationNamespace<C>(),
   expr: createExpressionNamespace<C>(),
   store: bindStore(ctx),
@@ -202,6 +204,7 @@ const buildGenNamespace = <C extends GenConfig = GenConfig>(
     define: bindEditor(ctx),
     auto: editorMod.autoEditor,
     fieldOverride: editorMod.fieldOverride,
+    fieldOverrideFor: editorMod.fieldOverrideFor,
     section: editorMod.editorSection,
     nested: editorMod.nestedEditor,
     command: editorMod.editorCommand,
@@ -223,8 +226,10 @@ const buildGenNamespace = <C extends GenConfig = GenConfig>(
     define: bindDefineList(ctx),
     auto: listMod.autoList,
     column: listMod.listColumn,
+    columnFor: listMod.listColumnFor,
     offsetPagination: listMod.offsetPagination,
     cursorPagination: listMod.cursorPagination,
+    cursorPaginationFor: listMod.cursorPaginationFor,
     action: listMod.listAction,
     bulkAction: listMod.listBulkAction,
   },
@@ -261,7 +266,7 @@ export const createGen = <
   input: { plugins?: P } & Partial<GenConfig> = {},
 ): CreateGenResult<C, GenWithPluginHelpers<C, P>> => {
   const ctx = createGenContext(input);
-  lifecycleMod.registerBuiltInModuleCheckers(ctx);
+  lifecycleMod.registerBuiltInPasses(ctx);
   const gen = buildGenNamespace<C>(ctx, input);
   mergePluginHelpers<C>(ctx, gen);
   return { ctx, gen: gen as GenWithPluginHelpers<C, P> };

@@ -15,7 +15,7 @@ import {
   type TargetInputRecord,
   makeTargetInput,
 } from "../core/index.ts";
-import type { Entity, Field } from "../entity/index.ts";
+import type { Entity, Field, FieldOf } from "../entity/index.ts";
 import type { SemanticType } from "../types/index.ts";
 
 /**
@@ -298,9 +298,9 @@ export interface FieldMapping<T = unknown> {
 /**
  * Aggregated field mappings for a target entity.
  */
-export interface Mapping {
+export interface Mapping<E extends Entity = any> {
   /** The entity whose fields are mapped. */
-  readonly target_entity: Entity;
+  readonly target_entity: E;
   /** Individual field mappings. */
   readonly field_mappings: readonly FieldMapping[];
 }
@@ -308,11 +308,11 @@ export interface Mapping {
 /**
  * A subset of fields selected from a Mapping.
  */
-export interface Projection {
+export interface Projection<E extends Entity = any> {
   /** The source mapping. */
-  readonly mapping: Mapping;
+  readonly mapping: Mapping<E>;
   /** Fields included in the projection. */
-  readonly fields: readonly Field[];
+  readonly fields: readonly FieldOf<E>[];
 }
 
 /**
@@ -447,10 +447,10 @@ export const fieldMapping = <T = unknown>(input: {
  * const mapping = defineMapping(User, [emailMapping, idMapping]);
  * ```
  */
-export const defineMapping = (
-  target_entity: Entity,
+export const defineMapping = <const E extends Entity>(
+  target_entity: E,
   field_mappings: readonly FieldMapping[],
-): Mapping => ({ target_entity, field_mappings });
+): Mapping<E> => ({ target_entity, field_mappings });
 
 /**
  * Creates a Projection by selecting a subset of fields from a Mapping.
@@ -459,7 +459,10 @@ export const defineMapping = (
  * @param fields - The projected fields.
  * @returns A Projection record.
  */
-export const defineProjection = (mapping: Mapping, fields: readonly Field[]): Projection => ({
+export const defineProjection = <const E extends Entity>(
+  mapping: Mapping<E>,
+  fields: readonly FieldOf<E>[],
+): Projection<E> => ({
   mapping,
   fields,
 });
@@ -787,19 +790,19 @@ export const bidirectionalTransform = <T = unknown>(input: {
  * union.
  */
 export interface ReadFieldSpec<E extends Entity = Entity> {
-  readonly field: E["fields"][keyof E["fields"]];
+  readonly field: FieldOf<E>;
   readonly source: MappingSource;
 }
 
 /** A mapping spec entry: a field of `E` paired with a typed write target. */
 export interface WriteFieldSpec<E extends Entity = Entity> {
-  readonly field: E["fields"][keyof E["fields"]];
+  readonly field: FieldOf<E>;
   readonly target: MappingTarget;
 }
 
 /** A mapping spec entry covering both read and write paths for a single field of `E`. */
 export interface MixedFieldSpec<E extends Entity = Entity> {
-  readonly field: E["fields"][keyof E["fields"]];
+  readonly field: FieldOf<E>;
   readonly source?: MappingSource;
   readonly target?: MappingTarget;
   readonly transform?: ReversibleTransform;
@@ -808,7 +811,7 @@ export interface MixedFieldSpec<E extends Entity = Entity> {
 
 /** Spec for a single reversibly-mapped field of `E`. */
 export interface ReversibleFieldSpec<E extends Entity = Entity> {
-  readonly field: E["fields"][keyof E["fields"]];
+  readonly field: FieldOf<E>;
   readonly source: MappingSource;
   readonly target: MappingTarget;
   readonly transform: ReversibleTransform;
@@ -905,7 +908,7 @@ export const readMapping = <E extends Entity, Specs extends readonly ReadFieldSp
   fields: Specs & {
     readonly [K in keyof Specs]: EnforceReadFieldSpec<Specs[K]>;
   },
-): Mapping =>
+): Mapping<E> =>
   defineMapping(
     target_entity,
     (fields as readonly ReadFieldSpec<E>[]).map((f) =>
@@ -922,7 +925,7 @@ export const writeMapping = <E extends Entity, Specs extends readonly WriteField
   fields: Specs & {
     readonly [K in keyof Specs]: EnforceWriteFieldSpec<Specs[K]>;
   },
-): Mapping =>
+): Mapping<E> =>
   defineMapping(
     target_entity,
     (fields as readonly WriteFieldSpec<E>[]).map((f) =>
@@ -939,7 +942,7 @@ export const mixedMapping = <E extends Entity, Specs extends readonly MixedField
   fields: Specs & {
     readonly [K in keyof Specs]: EnforceMixedFieldSpec<Specs[K]>;
   },
-): Mapping =>
+): Mapping<E> =>
   defineMapping(
     target_entity,
     (fields as readonly MixedFieldSpec<E>[]).map((f) => {
@@ -966,7 +969,7 @@ export const reversibleMapping = <
   fields: Specs & {
     readonly [K in keyof Specs]: EnforceReversibleFieldSpec<Specs[K]>;
   },
-): Mapping =>
+): Mapping<E> =>
   defineMapping(
     target_entity,
     (fields as readonly ReversibleFieldSpec<E>[]).map((f) => ({

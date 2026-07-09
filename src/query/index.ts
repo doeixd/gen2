@@ -4,3 +4,5 @@
  * @module
  */
 export * from "./query.ts";
+export * from "./kernel.ts";
+export * from "./passes.ts";

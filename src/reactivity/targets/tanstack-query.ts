@@ -11,8 +11,13 @@
 import type { Artifact } from "../../core/artifacts.ts";
 import { diagnostic, type Diagnostic } from "../../core/diagnostics.ts";
 import { definePlugin } from "../../core/plugin.ts";
+import { defineTargetInputKind } from "../../core/target.ts";
 import { makeArtifact } from "../../core/artifacts.ts";
 import type { ReactiveGraph } from "../reactivity.ts";
+
+const REACTIVE_GRAPH_INPUT = defineTargetInputKind<"reactive_graph", ReactiveGraph>(
+  "reactive_graph",
+);
 
 const KEY_FAMILY_PREFIX = "key:";
 
@@ -248,9 +253,9 @@ export const createTanstackQueryTargetPlugin = () =>
       targets: [
         {
           name: "tanstack-query",
-          accepts_inputs: ["reactive_graph"],
+          accepts_inputs: REACTIVE_GRAPH_INPUT.accepts_inputs,
           generate: (input) => {
-            if (input.kind !== "reactive_graph" || !input.value) {
+            if (!REACTIVE_GRAPH_INPUT.is(input)) {
               return [
                 makeArtifact({
                   path: "tanstack-query/error.txt",
@@ -259,7 +264,7 @@ export const createTanstackQueryTargetPlugin = () =>
                 }),
               ];
             }
-            const { artifacts } = generateTanstackQueryArtifacts(input.value as ReactiveGraph);
+            const { artifacts } = generateTanstackQueryArtifacts(input.value);
             return artifacts;
           },
         },

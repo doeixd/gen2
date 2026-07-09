@@ -14,7 +14,12 @@ import type {
   QueryFunction,
   StaticFunction,
 } from "../function/index.ts";
-import { buildPatchDelete, buildPatchInsert, buildPatchUpdate } from "../function/index.ts";
+import {
+  buildPatchDelete,
+  buildPatchInsert,
+  buildPatchUpdate,
+  getQueryFunctionsFromGraph,
+} from "../function/index.ts";
 import {
   diagnostic,
   hasTrait,
@@ -30,12 +35,19 @@ import {
 } from "../core/index.ts";
 import type { FallbackPlan } from "../rules/placement.ts";
 import type { Event, Subscription } from "../events/index.ts";
+import {
+  getEventsFromGraph,
+  getEventEmissionsFromGraph,
+  getSubscriptionsFromGraph,
+} from "../events/kernel.ts";
 import type { Form } from "../ui/index.ts";
 import type { AppRoute } from "../router/index.ts";
 import type { StateResource } from "../state/index.ts";
 import type { SemanticType } from "../types/index.ts";
 import { object, json } from "../types/semantic.ts";
 import type { EnhancementPlan } from "../core/index.ts";
+import { nodeKinds } from "../kernel/index.ts";
+import { getKeyFamiliesFromGraph, findKeyFamilyByNameOnGraph } from "./kernel.ts";
 
 export const defineTrackingScope = <O = unknown>(
   name: string,
@@ -71,6 +83,13 @@ export interface KeyFamily<Payload extends KeyPayload = KeyPayload> {
   readonly description?: string;
   readonly _payload?: Payload;
 }
+
+const getActionFromNode = (node: {
+  metadata?: { custom?: Record<string, unknown> };
+}): ActionFunction | undefined => {
+  const custom = node.metadata?.custom as { readonly action?: ActionFunction } | undefined;
+  return custom?.action;
+};
 
 export interface ReactiveRegistry<
   Families extends Record<string, KeyFamily> = Record<string, KeyFamily>,
@@ -991,7 +1010,7 @@ export const deriveDefaultOptimisticPlan = <In = unknown, Out = unknown>(
   const op = ops[0]!;
   if (op.kind === "invalidate_op") return undefined;
 
-  const query = findEntityQuery(op.target, ctx.query_functions);
+  const query = findEntityQuery(op.target, getQueryFunctionsFromGraph(ctx.graph));
   if (query === undefined) return undefined;
 
   const values = [...op.values.entries()];
@@ -1248,11 +1267,11 @@ export const deriveReactiveGraph = (ctx: GenContext): ReactiveGraph => {
   const nodes = new Map<string, ReactiveGraphNode>();
   const edges: ReactiveGraphEdge[] = [];
 
-  for (const family of ctx.key_families) {
+  for (const family of getKeyFamiliesFromGraph(ctx.graph)) {
     addNode(nodes, { id: keyFamilyGraphId(family), kind: "key_family", name: family.name });
   }
 
-  for (const query of ctx.query_functions) {
+  for (const query of getQueryFunctionsFromGraph(ctx.graph)) {
     addNode(nodes, { id: queryId(query), kind: "query_function", name: query.name });
     const declaredKey = query.reactivity?.key;
     if (declaredKey !== undefined) {
@@ -1270,7 +1289,7 @@ export const deriveReactiveGraph = (ctx: GenContext): ReactiveGraph => {
     if (declaredKey === undefined) {
       const readDeps = deriveQueryReadDependencies(query);
       for (const dep of readDeps) {
-        const family = ctx.key_families.find((kf) => kf.name === dep.entity.name);
+        const family = findKeyFamilyByNameOnGraph(ctx.graph, dep.entity.name);
         if (
           family &&
           !edges.some(
@@ -1293,7 +1312,10 @@ export const deriveReactiveGraph = (ctx: GenContext): ReactiveGraph => {
     }
   }
 
-  for (const action of ctx.action_functions) {
+  for (const actionNode of ctx.graph.nodes.values()) {
+    if (actionNode.kind !== nodeKinds.ACTION) continue;
+    const action = getActionFromNode(actionNode);
+    if (!action) continue;
     addNode(nodes, { id: actionId(action), kind: "action_function", name: action.name });
     for (const operation of action.body.operations) {
       if (operation.kind === "invalidate_op") {
@@ -1529,7 +1551,7 @@ export const deriveReactiveGraph = (ctx: GenContext): ReactiveGraph => {
     });
   }
 
-  for (const event of ctx.events) {
+  for (const event of getEventsFromGraph(ctx.graph)) {
     addNode(nodes, { id: eventId(event), kind: "event", name: event.name });
     for (const action of event.emitted_by) {
       addNode(nodes, {
@@ -1545,7 +1567,7 @@ export const deriveReactiveGraph = (ctx: GenContext): ReactiveGraph => {
     }
   }
 
-  for (const emission of ctx.event_emissions) {
+  for (const emission of getEventEmissionsFromGraph(ctx.graph)) {
     addNode(nodes, {
       id: eventId(emission.event),
       kind: "event",
@@ -1563,7 +1585,7 @@ export const deriveReactiveGraph = (ctx: GenContext): ReactiveGraph => {
     });
   }
 
-  for (const subscription of ctx.subscriptions) {
+  for (const subscription of getSubscriptionsFromGraph(ctx.graph)) {
     addNode(nodes, {
       id: subscriptionId(subscription),
       kind: "subscription",
@@ -1746,20 +1768,26 @@ export const deriveReactiveGraph = (ctx: GenContext): ReactiveGraph => {
   }
 
   // ARCH1: Plugin-defined nodes participate via traits and lowering
-  for (const node of ctx.nodes) {
-    const nodeId = node.id ?? `node:${node.name ?? node.kind}`;
+  for (const graphNode of ctx.graph.nodes.values()) {
+    if (graphNode.kind !== nodeKinds.STATIC) continue;
+    const staticCustom = graphNode.metadata?.custom as
+      | { readonly node?: import("../core/node.ts").StaticNode }
+      | undefined;
+    const bridgeNode = staticCustom?.node;
+    if (!bridgeNode) continue;
+    const nodeId = bridgeNode.id ?? `node:${bridgeNode.name ?? bridgeNode.kind}`;
     // Only add if not already present from a concrete kind handler
     if (!nodes.has(nodeId)) {
       addNode(nodes, {
         id: nodeId,
         kind: "tracking_scope", // Reuse tracking_scope as a generic plugin node container
-        name: node.name ?? node.kind,
-        traits: node.traits as readonly string[],
+        name: bridgeNode.name ?? bridgeNode.kind,
+        traits: bridgeNode.traits as readonly string[],
       });
     }
 
     // If the node is lowerable, expand its lowered children into the graph
-    const lowerable = node as import("../core/node.ts").LowerableNode;
+    const lowerable = bridgeNode as import("../core/node.ts").LowerableNode;
     if (lowerable.lowersTo !== undefined) {
       for (const lowered of lowerable.lowersTo) {
         const loweredId = lowered.id ?? `node:${lowered.name ?? lowered.kind}`;
@@ -2001,7 +2029,7 @@ export const deriveConservativeInvalidations = <Payload extends KeyPayload = Key
   const writes = deriveActionWriteDependencies(action);
   const invalidations: DerivedInvalidation<Payload>[] = [];
   for (const write of writes) {
-    const family = ctx.key_families.find((kf) => kf.name === write.entity.name);
+    const family = findKeyFamilyByNameOnGraph(ctx.graph, write.entity.name);
     if (family) {
       invalidations.push({
         kind: "derived_invalidation",
@@ -2037,7 +2065,13 @@ const enrichGraphNode = (node: ReactiveGraphNode, ctx: GenContext): ReactiveGrap
       break;
     }
     case "query_function": {
-      const query = ctx.query_functions.find((q) => q.ref?.id === node.id || q.name === node.name);
+      let query: QueryFunction | undefined;
+      for (const q of getQueryFunctionsFromGraph(ctx.graph)) {
+        if (q.ref?.id === node.id || q.name === node.name) {
+          query = q;
+          break;
+        }
+      }
       if (query) {
         enrichment.traits = query.traits;
         enrichment.stable_id = query.ref?.id ?? query.id;
@@ -2047,14 +2081,17 @@ const enrichGraphNode = (node: ReactiveGraphNode, ctx: GenContext): ReactiveGrap
       break;
     }
     case "action_function": {
-      const action = ctx.action_functions.find(
-        (a) => a.ref?.id === node.id || a.name === node.name,
-      );
-      if (action) {
-        enrichment.traits = action.traits;
-        enrichment.stable_id = action.ref?.id ?? action.id;
-        enrichment.symbol = action.symbol;
-        enrichment.call_plan = action.callPlan;
+      for (const actionNode of ctx.graph.nodes.values()) {
+        if (actionNode.kind !== nodeKinds.ACTION) continue;
+        if (actionNode.name !== node.name) continue;
+        const action = getActionFromNode(actionNode);
+        if (action) {
+          enrichment.traits = action.traits;
+          enrichment.stable_id = action.ref?.id ?? action.id;
+          enrichment.symbol = action.symbol;
+          enrichment.call_plan = action.callPlan;
+        }
+        break;
       }
       break;
     }
@@ -2084,9 +2121,11 @@ const enrichGraphNode = (node: ReactiveGraphNode, ctx: GenContext): ReactiveGrap
       break;
     }
     case "key_family": {
-      const family = ctx.key_families.find((f) => f.ref.id === node.id || f.name === node.name);
-      if (family) {
-        enrichment.stable_id = family.ref.id;
+      for (const family of getKeyFamiliesFromGraph(ctx.graph)) {
+        if (family.ref.id === node.id || family.name === node.name) {
+          enrichment.stable_id = family.ref.id;
+          break;
+        }
       }
       break;
     }
@@ -2187,7 +2226,7 @@ export const deriveSingleFlightPlan = (ctx: GenContext, graph: ReactiveGraph): S
 
   // Collect all loader queries that can be bundled
   const bundledQueries: BundledQuery[] = [];
-  for (const query of ctx.query_functions) {
+  for (const query of getQueryFunctionsFromGraph(ctx.graph)) {
     const declaredKey = query.reactivity?.key;
     if (declaredKey) {
       bundledQueries.push({

@@ -6,7 +6,8 @@
  * See spec/ui.allium :: FormSurface.
  */
 
-import type { Field } from "../entity/index.ts";
+import { entityToSemanticType } from "../core/index.ts";
+import type { Entity, Field, FieldOf, InferField } from "../entity/index.ts";
 import type { ActionFunction, ErrorType } from "../function/index.ts";
 import type { SemanticType } from "../types/index.ts";
 import type {
@@ -185,6 +186,23 @@ export const formField = <Ts = unknown, E = unknown>(
     editableWhen,
   );
 
+export const formFieldFor =
+  <Ent extends Entity>(entity: Ent) =>
+  <F extends FieldOf<Ent>, E = unknown>(
+    source_field: F,
+    widget?: Widget<E>,
+    label?: string,
+    editableWhen?: import("../rules/index.ts").Rule,
+  ): FormField<InferField<F>, E> => {
+    void entity;
+    return formField<InferField<F>, E>(
+      source_field as Field<InferField<F>>,
+      widget,
+      label,
+      editableWhen,
+    );
+  };
+
 /**
  * Central mapping from a domain field to a UI control, context-aware and
  * platform-aware. This is the single source of truth used by forms, editors,
@@ -226,7 +244,7 @@ export const buildForm = <
 >(
   name: string,
   source_function: ActionFunction<any, Out, Err, Req, Eff, Cap>,
-  submit_result: SemanticType<Out>,
+  submit_result: SemanticType<any> | Entity,
   options?: {
     fields?: readonly FormField<unknown, E>[];
     slots?: readonly Slot<E>[];
@@ -255,7 +273,7 @@ export const buildForm = <
     source_function,
     fields,
     slots,
-    submit_result,
+    entityToSemanticType<Out>(submit_result),
     options?.error_mapping,
   );
 };

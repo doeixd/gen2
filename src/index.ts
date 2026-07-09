@@ -25,6 +25,7 @@ export * from "./gen.ts";
 export * from "./db/index.ts";
 export * from "./adapters/index.ts";
 export * as kernel from "./kernel/index.ts";
+export * as dialects from "./dialects/index.ts";
 
 // Module re-exports for users who want to import directly from a sub-module.
 export * as core from "./core/index.ts";
@@ -56,3 +57,4 @@ export * as plan from "./plan/index.ts";
 export * as context from "./context/index.ts";
 export * as requirements from "./requirements/index.ts";
 export * as state from "./state/index.ts";
+export * as fx from "./fx/index.ts";

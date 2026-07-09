@@ -21,7 +21,9 @@ import {
   type MetadataEntry,
   type Ref,
 } from "../core/index.ts";
+import type { AnyGraphStep } from "../kernel/index.ts";
 import type { SemanticType, Trait, TypedExpression } from "../types/index.ts";
+import { entityToGraphFragment } from "./kernel.ts";
 
 /** Mutable builder variant of Entity used only during construction. */
 type MutableEntity = {
@@ -69,7 +71,14 @@ export interface FieldPresenceCondition {
 }
 
 /** Extract the TypeScript type from a Field. */
-export type InferField<F extends Field> = F extends Field<infer Ts> ? Ts : never;
+export type InferField<F extends Field> = F extends Field<infer Ts, any, any> ? Ts : never;
+
+/** Extract the owner entity witness from a Field. */
+export type InferFieldOwner<F extends Field> =
+  F extends Field<any, infer Owner, any> ? Owner : never;
+
+/** Extract the literal field name from a Field. */
+export type InferFieldName<F extends Field> = F extends Field<any, any, infer Name> ? Name : never;
 
 /**
  * Extract the TypeScript interface shape from an Entity.
@@ -81,7 +90,7 @@ export type InferField<F extends Field> = F extends Field<infer Ts> ? Ts : never
  * ```
  */
 export type InferEntity<E extends Entity> = {
-  [K in keyof E["fields"]]: E["fields"][K] extends Field<infer Ts> ? Ts : never;
+  [K in keyof E["fields"]]: E["fields"][K] extends Field<infer Ts, any, any> ? Ts : never;
 };
 
 /**
@@ -93,12 +102,16 @@ export type InferEntity<E extends Entity> = {
  * type F2 = InferFieldFromInput<{ type: SemanticType<number> }>; // Field<number>
  * ```
  */
-export type InferFieldFromInput<T> =
+export type InferFieldFromInput<
+  T,
+  Owner extends Entity<any, any> = Entity,
+  Name extends string = string,
+> =
   T extends SemanticType<infer Ts>
-    ? Field<Ts>
+    ? Field<Ts, Owner, Name>
     : T extends { type: SemanticType<infer Ts> }
-      ? Field<Ts>
-      : Field<unknown>;
+      ? Field<Ts, Owner, Name>
+      : Field<unknown, Owner, Name>;
 
 /**
  * A named attribute of an Entity with type, constraints, and a typed Ref.
@@ -117,15 +130,19 @@ export type InferFieldFromInput<T> =
  * };
  * ```
  */
-export interface Field<Ts = unknown> {
+export interface Field<
+  Ts = unknown,
+  Owner extends Entity<any, any> = any,
+  Name extends string = string,
+> {
   /** Phantom type parameter linking this field to its TypeScript equivalent. */
   readonly _ts?: Ts;
   /** Human-readable name of the field (e.g., `"email"`). */
-  readonly name: string;
+  readonly name: Name;
   /** Stable persisted identity for this field, when explicitly declared. */
   readonly id?: FieldId;
   /** The {@link Entity} that owns this field. */
-  readonly owning_entity: Entity;
+  readonly owning_entity: Owner;
   /** Semantic type governing runtime behaviour and storage representation. */
   readonly semantic_type: SemanticType<Ts>;
   /** Whether the field may contain `null`. */
@@ -145,7 +162,7 @@ export interface Field<Ts = unknown> {
   /** Target-specific physical/external name, distinct from semantic identity. */
   readonly external_name?: string;
   /** Auto-populated FieldRef for typed citation in expressions and queries. */
-  readonly ref: FieldRef<Entity, string, Ts>;
+  readonly ref: FieldRef<Owner, Name, Ts>;
 }
 
 /**
@@ -198,26 +215,31 @@ export interface TransitionGraph {
  * });
  * ```
  */
-export interface Entity {
+export interface Entity<
+  Name extends string = string,
+  Fields = Readonly<Record<string, Field<any, any, any>>>,
+> {
   /** Stable persisted identity for this entity, when explicitly declared. */
   readonly id?: EntityId;
   /** Domain name of the entity (e.g., `"User"`, `"BlogPost"`). */
-  readonly name: string;
+  readonly name: Name;
   /** Auto-populated EntityRef for typed citation and registry lookup. */
-  readonly ref: EntityRef<Entity>;
+  readonly ref: EntityRef<Entity<Name, Fields>>;
   /**
    * Field lookup by name. Matches spec.md's `User.fields.id` user-facing API.
    * Treated as immutable after construction.
    */
-  readonly fields: Readonly<Record<string, Field>>;
+  readonly fields: Fields;
   /** Field iteration order. Same Field instances as `fields`, in declaration order. */
-  readonly fieldList: readonly Field[];
+  readonly fieldList: readonly Field<any, any, any>[];
   /** Optional backing store / table name override. */
   readonly store_name?: string;
   /** Arbitrary metadata entries attached at definition time. */
   readonly metadata: readonly MetadataEntry[];
   /** State-machine transition graphs governing enum fields. */
   readonly transitions: readonly TransitionGraph[];
+  /** Composable graph fragment for the entity node, field nodes, and ownership/type edges. */
+  readonly fragment?: AnyGraphStep;
 }
 
 // ---------------------------------------------------------------------------
@@ -250,6 +272,63 @@ export type FieldShapeInput =
 /** Record of field names to their input shapes. */
 export type FieldsRecord = Readonly<Record<string, FieldShapeInput>>;
 
+export type EntityFieldsFromInput<Name extends string, F extends FieldsRecord> = {
+  readonly [K in keyof F]: InferFieldFromInput<
+    F[K],
+    Entity<Name, EntityFieldsFromInput<Name, F>>,
+    K & string
+  >;
+};
+
+export type EntityFromInput<Name extends string, F extends FieldsRecord> = Entity<
+  Name,
+  EntityFieldsFromInput<Name, F>
+>;
+
+export type FieldOf<E extends Entity> =
+  E["fields"][keyof E["fields"]] extends Field<any, any, any>
+    ? E["fields"][keyof E["fields"]]
+    : Field;
+
+export interface EntityDefinitionOptions {
+  readonly id?: EntityId;
+  readonly store_name?: string;
+  readonly metadata?: readonly MetadataEntry[];
+}
+
+export type SemanticTypeEntityFactory<Types> = {
+  <const Name extends string, const F extends FieldsRecord>(
+    name: Name,
+    fields: F,
+    options?: EntityDefinitionOptions,
+  ): EntityFromInput<Name, F>;
+  <const Name extends string, const F extends FieldsRecord>(
+    name: Name,
+    fields: (types: Types) => F,
+    options?: EntityDefinitionOptions,
+  ): EntityFromInput<Name, F>;
+  <const Name extends string>(
+    name: Name,
+  ): <const F extends FieldsRecord>(
+    fields: F | ((types: Types) => F),
+    options?: EntityDefinitionOptions,
+  ) => EntityFromInput<Name, F>;
+};
+
+export type EntityClass<E extends Entity> = (abstract new () => E) & {
+  readonly entity: E;
+  readonly id: E["id"];
+  readonly name: E["name"];
+  readonly ref: E["ref"];
+  readonly fields: E["fields"];
+  readonly fieldList: E["fieldList"];
+  readonly store_name: E["store_name"];
+  readonly metadata: E["metadata"];
+  readonly transitions: E["transitions"];
+  readonly fragment: E["fragment"];
+  readonly $infer: { readonly value: InferEntity<E> };
+};
+
 /**
  * Materializes an Entity. Fields are constructed with a back-reference to the
  * entity (via `owning_entity`), and a Ref of kind "FieldRef" is attached so
@@ -268,11 +347,11 @@ export type FieldsRecord = Readonly<Record<string, FieldShapeInput>>;
  * }, { store_name: "users" });
  * ```
  */
-export const defineEntity = <const F extends FieldsRecord>(
-  name: string,
+const defineEntityImpl = <const Name extends string, const F extends FieldsRecord>(
+  name: Name,
   fields: F,
-  options: { id?: EntityId; store_name?: string; metadata?: readonly MetadataEntry[] } = {},
-): Entity & { readonly fields: { readonly [K in keyof F]: InferFieldFromInput<F[K]> } } => {
+  options: EntityDefinitionOptions = {},
+): EntityFromInput<Name, F> & { readonly fragment: AnyGraphStep } => {
   // Use a mutable builder so fields can reference the entity from the start
   // without post-hoc mutation.
   const entity: MutableEntity = {
@@ -290,6 +369,9 @@ export const defineEntity = <const F extends FieldsRecord>(
     store_name: options.store_name,
     metadata: options.metadata ?? [],
     transitions: [],
+    get fragment() {
+      return entityToGraphFragment(this as Entity);
+    },
   };
 
   const fieldByName: Record<string, Field> = {};
@@ -305,14 +387,82 @@ export const defineEntity = <const F extends FieldsRecord>(
   entity.fieldList = fieldList;
 
   // Cast: we know fieldByName matches the keys of F by construction.
-  return entity as unknown as Entity & {
-    readonly fields: { readonly [K in keyof F]: InferFieldFromInput<F[K]> };
-  };
+  return entity as unknown as EntityFromInput<Name, F> & { readonly fragment: AnyGraphStep };
 };
 
-function makeField<Ts = unknown>(
-  entity: Entity,
-  name: string,
+const entityClass = <const Name extends string, const F extends FieldsRecord>(
+  name: Name,
+  input: { readonly fields: F } & EntityDefinitionOptions,
+): EntityClass<EntityFromInput<Name, F> & { readonly fragment: AnyGraphStep }> => {
+  const entity = defineEntityImpl(name, input.fields, input);
+  abstract class EntityFacade {}
+  Object.defineProperties(EntityFacade, {
+    entity: { value: entity },
+    id: { value: entity.id },
+    name: { value: entity.name },
+    ref: { value: entity.ref },
+    fields: { value: entity.fields },
+    fieldList: { value: entity.fieldList },
+    store_name: { value: entity.store_name },
+    metadata: { value: entity.metadata },
+    transitions: { value: entity.transitions },
+    fragment: { get: () => entity.fragment },
+    $infer: { value: undefined },
+  });
+  return EntityFacade as EntityClass<
+    EntityFromInput<Name, F> & { readonly fragment: AnyGraphStep }
+  >;
+};
+
+export const defineEntity = Object.assign(defineEntityImpl, {
+  class: entityClass,
+});
+
+/**
+ * Creates an entity factory scoped to a semantic type registry.
+ *
+ * This keeps field declarations close to the type vocabulary without losing
+ * literal entity or field names.
+ *
+ * @example
+ * ```ts
+ * const entity = defineEntityUsingSemanticTypes(gen.types);
+ * const User = entity("User", ({ uuid, string }) => ({
+ *   id: uuid(),
+ *   email: string(),
+ * }));
+ * ```
+ */
+export const defineEntityUsingSemanticTypes = <const Types>(
+  types: Types,
+): SemanticTypeEntityFactory<Types> => {
+  const factory = <const Name extends string, const F extends FieldsRecord>(
+    name: Name,
+    fields?: F | ((types: Types) => F),
+    options?: EntityDefinitionOptions,
+  ) => {
+    if (fields === undefined) {
+      return (curriedFields: F | ((types: Types) => F), curriedOptions?: EntityDefinitionOptions) =>
+        defineEntity(
+          name,
+          typeof curriedFields === "function" ? curriedFields(types) : curriedFields,
+          curriedOptions,
+        );
+    }
+
+    return defineEntity(name, typeof fields === "function" ? fields(types) : fields, options);
+  };
+
+  return factory as SemanticTypeEntityFactory<Types>;
+};
+
+function makeField<
+  Ts = unknown,
+  Owner extends Entity<any, any> = Entity,
+  const Name extends string = string,
+>(
+  entity: Owner,
+  name: Name,
   shape:
     | SemanticType<Ts>
     | {
@@ -326,7 +476,7 @@ function makeField<Ts = unknown>(
         renamedFrom?: readonly string[];
         external_name?: string;
       },
-): Field<Ts> {
+): Field<Ts, Owner, Name> {
   const shapeObj = shape as object;
   const opts =
     "type" in shapeObj
@@ -343,7 +493,7 @@ function makeField<Ts = unknown>(
         })
       : { type: shape as SemanticType<Ts> };
   const semantic_type = opts.type;
-  const f: Field<Ts> = {
+  const f: Field<Ts, Owner, Name> = {
     name,
     id: opts.id,
     owning_entity: entity,
@@ -361,7 +511,7 @@ function makeField<Ts = unknown>(
       owner: { kind: "Entity", name: entity.name },
       name,
       value_type: semantic_type.name,
-    }) as FieldRef<Entity, string, Ts>,
+    }) as FieldRef<Owner, Name, Ts>,
   };
   return f;
 }

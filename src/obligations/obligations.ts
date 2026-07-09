@@ -9,6 +9,8 @@
 
 import type { Diagnostic, GenContext } from "../core/index.ts";
 import { diagnostic } from "../core/index.ts";
+import { getActionFunctionsFromGraph } from "../function/kernel.ts";
+import { getReactionsFromGraph } from "../reaction/kernel.ts";
 
 export type ObligationKind =
   | "policy_test"
@@ -96,7 +98,7 @@ export const deriveObligationGraph = (ctx: GenContext): ObligationGraph => {
   }
 
   // Actions with invalidation → mutation invalidation tests
-  for (const action of ctx.action_functions) {
+  for (const action of getActionFunctionsFromGraph(ctx.graph)) {
     if (action.reactivity && action.reactivity.invalidates.length > 0) {
       obligations.push(
         defineSemanticObligation({
@@ -160,7 +162,7 @@ export const deriveObligationGraph = (ctx: GenContext): ObligationGraph => {
   }
 
   // Reactions → reaction delivery tests
-  for (const reaction of ctx.reactions) {
+  for (const reaction of getReactionsFromGraph(ctx.graph)) {
     obligations.push(
       defineSemanticObligation({
         name: `reaction-delivery-${reaction.name}`,

@@ -1,5 +1,17 @@
 export * from "./reactivity.ts";
 export * from "./rule-derived.ts";
+export {
+  keyFamilyToKernelNode,
+  keyFamilyToGraphFragment,
+  reactiveResourceToKernelNode,
+  reactiveResourceToGraphFragment,
+  reactiveMutationToKernelNode,
+  reactiveMutationToGraphFragment,
+  getKeyFamiliesFromGraph,
+  getReactiveResourcesFromGraph,
+  getReactiveMutationsFromGraph,
+  findKeyFamilyByNameOnGraph,
+} from "./kernel.ts";
 export * from "./targets/effect-atom.ts";
 export * from "./targets/tanstack-query.ts";
 

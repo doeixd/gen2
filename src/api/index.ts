@@ -5,3 +5,4 @@
  * resources, getters, list-getters, and mutators.
  */
 export * from "./api.ts";
+export * from "./kernel.ts";

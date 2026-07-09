@@ -12,8 +12,19 @@
  */
 
 import type { GenContext } from "./context.ts";
+import type { Config } from "./config.ts";
 import { type Diagnostic, diagnostic } from "./diagnostics.ts";
+import {
+  IDENTITY_DIAGNOSTIC_CODES,
+  renameHintSeverity,
+  stableIdSeverity,
+} from "./identity-policy.ts";
 import type { Ref } from "./refs.ts";
+import type { KernelGraph } from "../kernel/index.ts";
+import type { Entity } from "../entity/entity.ts";
+import { getKeyFamiliesFromGraph, getReactiveMutationsFromGraph } from "../reactivity/kernel.ts";
+import { getActionFunctionsFromGraph } from "../function/kernel.ts";
+import { getRefsFromGraph } from "./refs.ts";
 
 /**
  * Categorises strings that the checker considers acceptable.
@@ -41,35 +52,76 @@ export interface MagicStringFinding {
 }
 
 /**
- * Scans a GenContext for likely raw-string references where typed refs are now
- * available. The checker is conservative: it only fires when a typed alternative
- * is unambiguous.
+ * Graph-native magic-string scan. Walks `graph` for key families,
+ * action functions, reactive mutations, and service refs; reads
+ * identity policy from `config`; takes `entities` as an explicit
+ * parameter because duplicate stable-ID detection needs the
+ * source-side array (the graph dedups by node id and would suppress
+ * the duplicate the check is trying to report).
+ *
+ * Conservative: each diagnostic fires only when a typed alternative is
+ * unambiguous. Strings remain valid for external names, display labels,
+ * and explicitly branded stable IDs.
  */
-export const checkMagicStrings = (ctx: GenContext): readonly Diagnostic[] => {
+export const checkMagicStringsOnGraph = (
+  graph: KernelGraph,
+  config: Config,
+  entities: readonly Entity[],
+): readonly Diagnostic[] => {
   const out: Diagnostic[] = [];
+  const stableSeverity = stableIdSeverity(config.identity.stableIds);
+  const renameSeverity = renameHintSeverity(config.identity.renameHints);
 
-  // Entities authored without stable IDs cannot participate in rename lineage.
-  for (const entity of ctx.entities) {
-    if (entity.id === undefined) {
+  if (stableSeverity !== null) {
+    const refsByStableId = new Map<string, Ref[]>();
+    const collectRef = (ref: Ref): void => {
+      if (ref.id === undefined) return;
+      const refs = refsByStableId.get(ref.id) ?? [];
+      refs.push(ref);
+      refsByStableId.set(ref.id, refs);
+    };
+    for (const entity of entities) {
+      collectRef(entity.ref);
+      for (const field of entity.fieldList) collectRef(field.ref);
+    }
+    for (const family of getKeyFamiliesFromGraph(graph)) collectRef(family.ref);
+
+    for (const [id, refs] of refsByStableId.entries()) {
+      if (refs.length <= 1) continue;
       out.push(
         diagnostic({
-          severity: "warning",
-          code: "ref:missing-stable-id",
+          severity: stableSeverity,
+          code: IDENTITY_DIAGNOSTIC_CODES.DUPLICATE_STABLE_ID,
+          message: `Stable ID "${id}" is used by ${refs.map((r) => `${r.kind}:${r.name}`).join(", ")}`,
+          refs,
+          suggestion: "Assign a unique stable ID to each persisted semantic ref.",
+        }),
+      );
+    }
+  }
+
+  // Entities authored without stable IDs cannot participate in rename lineage.
+  for (const entity of entities) {
+    if (entity.id === undefined && stableSeverity !== null) {
+      out.push(
+        diagnostic({
+          severity: stableSeverity,
+          code: IDENTITY_DIAGNOSTIC_CODES.MISSING_STABLE_ID,
           message: `Entity ${entity.name} has no stable ID; renames will look like drop+add to the migration planner`,
           refs: [entity.ref],
-          suggestion: `Pass id: core.entityId("entity.${entity.name.toLowerCase()}") to defineEntity`,
+          suggestion: `Pass id: core.entityId({ name: "${entity.name}" }) to defineEntity`,
         }),
       );
     }
     for (const field of entity.fieldList) {
-      if (field.id === undefined && field.renamed_from.length > 0) {
+      if (field.id === undefined && field.renamed_from.length > 0 && renameSeverity !== null) {
         out.push(
           diagnostic({
-            severity: "error",
-            code: "ref:rename-without-stable-id",
+            severity: renameSeverity,
+            code: IDENTITY_DIAGNOSTIC_CODES.RENAME_WITHOUT_STABLE_ID,
             message: `Field ${entity.name}.${field.name} declares renamedFrom ${JSON.stringify(field.renamed_from)} but has no stable ID; rename lineage cannot be tracked`,
             refs: [field.ref],
-            suggestion: `Add an id: core.fieldId("field.${entity.name.toLowerCase()}.${field.name}") so the rename can be persisted`,
+            suggestion: `Add an id: core.fieldId({ entity: "${entity.name}", name: "${field.name}" }) so the rename can be persisted`,
           }),
         );
       }
@@ -77,15 +129,15 @@ export const checkMagicStrings = (ctx: GenContext): readonly Diagnostic[] => {
   }
 
   // Key families authored without stable IDs.
-  for (const family of ctx.key_families) {
-    if (family.id === undefined) {
+  for (const family of getKeyFamiliesFromGraph(graph)) {
+    if (family.id === undefined && stableSeverity !== null) {
       out.push(
         diagnostic({
-          severity: "warning",
-          code: "ref:missing-stable-id",
+          severity: stableSeverity,
+          code: IDENTITY_DIAGNOSTIC_CODES.MISSING_STABLE_ID,
           message: `Key family ${family.name} has no stable ID; graph nodes derived from it use the family name as a fallback`,
           refs: [family.ref],
-          suggestion: `Pass id: core.keyFamilyId("key.${family.name}") when defining the family`,
+          suggestion: `Pass id: core.keyFamilyId({ name: "${family.name}" }) when defining the family`,
         }),
       );
     }
@@ -94,12 +146,12 @@ export const checkMagicStrings = (ctx: GenContext): readonly Diagnostic[] => {
   // Service requirements: when Requirement.kind is set but no ref is attached
   // and the kind matches a registered service name, suggest the typed form.
   const serviceNamesById = new Map<string, Ref>();
-  for (const ref of ctx.refs) {
+  for (const ref of getRefsFromGraph(graph)) {
     if (ref.kind === "ServiceRef" || ref.kind === "ContextRef") {
       serviceNamesById.set(ref.name, ref);
     }
   }
-  for (const action of ctx.action_functions) {
+  for (const action of getActionFunctionsFromGraph(graph)) {
     for (const requirement of action.requirements ?? []) {
       if (requirement.ref !== undefined) continue;
       const candidate = serviceNamesById.get(requirement.kind);
@@ -118,7 +170,7 @@ export const checkMagicStrings = (ctx: GenContext): readonly Diagnostic[] => {
   }
 
   // Reactive mutations with empty match objects suggest a missing payload typed ref.
-  for (const mutation of ctx.reactive_mutations) {
+  for (const mutation of getReactiveMutationsFromGraph(graph)) {
     for (const pattern of mutation.invalidates.patterns) {
       if (
         typeof pattern.match === "object" &&
@@ -139,6 +191,13 @@ export const checkMagicStrings = (ctx: GenContext): readonly Diagnostic[] => {
 
   return out;
 };
+
+/**
+ * Backwards-compatible alias. New callers should prefer
+ * `checkMagicStringsOnGraph(graph, config)`.
+ */
+export const checkMagicStrings = (ctx: GenContext): readonly Diagnostic[] =>
+  checkMagicStringsOnGraph(ctx.graph, ctx.config, ctx.entities);
 
 /**
  * Classifies a string by its semantic domain. Useful for tooling that wants to

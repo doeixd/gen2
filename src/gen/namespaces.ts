@@ -23,7 +23,9 @@ import * as routerMod from "../router/index.ts";
 import * as hydrationMod from "../hydration/index.ts";
 import * as servicesMod from "../services/index.ts";
 import * as rulesMod from "../rules/index.ts";
+import { attachGraphStep } from "../kernel/bridge.ts";
 import * as reactionMod from "../reaction/index.ts";
+import { diagnostic } from "../core/diagnostics.ts";
 import * as planMod from "../plan/index.ts";
 import * as contextMod from "../context/index.ts";
 import * as locationsMod from "../storage/locations.ts";
@@ -36,6 +38,7 @@ import * as workflowMod from "../workflow/index.ts";
 import * as boundaryMod from "../boundary/index.ts";
 import * as obligationsMod from "../obligations/index.ts";
 import * as targetsMod from "../targets/index.ts";
+import { previewPassPipeline } from "../kernel/pass.ts";
 
 import type { GenContext } from "../core/index.ts";
 import {
@@ -58,6 +61,7 @@ import {
   bindGetter,
   bindMutator,
   bindPolicy,
+  bindDynamicPolicy,
   bindEvent,
   bindEmit,
   bindReducer,
@@ -119,7 +123,14 @@ import type {
   BoundaryNamespace,
   ObligationsNamespace,
   TargetsNamespace,
+  PreviewNamespace,
 } from "./types.ts";
+
+export const createPreviewNamespace = <C extends GenConfig = GenConfig>(
+  ctx: GenContext,
+): PreviewNamespace<C> => ({
+  pipeline: (passes, options) => previewPassPipeline(passes, ctx.graph, ctx.passRegistry, options),
+});
 
 export const createKeyNamespace = <C extends GenConfig = GenConfig>(
   ctx: GenContext,
@@ -127,14 +138,12 @@ export const createKeyNamespace = <C extends GenConfig = GenConfig>(
   family: bindKeyFamily(ctx),
   entity: ((entity) => {
     const family = reactivityMod.entityKeyFamily(entity);
-    ctx.key_families.push(family);
-    ctx.refs.push(family.ref);
+    attachGraphStep(ctx.graph, reactivityMod.keyFamilyToGraphFragment(family));
     return family;
   }) as typeof reactivityMod.entityKeyFamily,
   collection: ((entity) => {
     const family = reactivityMod.collectionKeyFamily(entity);
-    ctx.key_families.push(family);
-    ctx.refs.push(family.ref);
+    attachGraphStep(ctx.graph, reactivityMod.keyFamilyToGraphFragment(family));
     return family;
   }) as typeof reactivityMod.collectionKeyFamily,
   custom: bindKeyFamily(ctx),
@@ -221,14 +230,61 @@ export const createServicesNamespace = <C extends GenConfig = GenConfig>(
 export const createRulesNamespace = <C extends GenConfig = GenConfig>(
   ctx: GenContext,
 ): RulesNamespace<C> => ({
-  define: ((input) => {
-    const rule = rulesMod.defineRule(input as never);
-    ctx.rules.push(rule);
-    return rule;
-  }) as typeof rulesMod.defineRule,
+  define: ((input: unknown) => {
+    type CurriedRuleInput = {
+      readonly vars?: readonly rulesMod.RuleVarDecl[];
+      readonly when: rulesMod.RuleExpr<boolean>;
+    };
+    type RuleObjectInput<Name extends string = string> = CurriedRuleInput & {
+      readonly name: Name;
+    };
+    type RuleBuilderInput<Name extends string = string, Vars = unknown> = (
+      b: rulesMod.RuleBuilder<never, {}>,
+    ) => rulesMod.Rule<Name, Vars>;
+
+    const attachRule = <
+      R extends {
+        readonly name: string;
+        readonly fragment: Parameters<typeof attachGraphStep>[1];
+      },
+    >(
+      rule: R,
+    ): R => {
+      // Duplicate-name guard: the graph deduplicates by node ID, so we must
+      // catch duplicates before registration.
+      const existing = ctx.graph.nodes.get(`node:rule:${rule.name}`);
+      if (existing) {
+        throw new Error(`Rule name "${rule.name}" is already defined`);
+      }
+      attachGraphStep(ctx.graph, rule.fragment);
+      return rule;
+    };
+
+    if (typeof input === "string") {
+      const defineNamedRule = rulesMod.defineRule(input);
+      return (ruleInput: Parameters<typeof defineNamedRule>[0]) =>
+        attachRule(defineNamedRule(ruleInput));
+    }
+
+    const rule =
+      typeof input === "function"
+        ? (
+            rulesMod.defineRule as <Name extends string, Vars = unknown>(
+              builder: RuleBuilderInput<Name, Vars>,
+            ) => rulesMod.Rule<Name, Vars>
+          )(input as RuleBuilderInput)
+        : (
+            rulesMod.defineRule as <Name extends string, Vars = unknown>(
+              object: RuleObjectInput<Name>,
+            ) => rulesMod.Rule<Name, Vars>
+          )(input as RuleObjectInput);
+    return attachRule(rule);
+  }) as unknown as typeof rulesMod.defineRule,
   literal: rulesMod.ruleLiteral,
   var: rulesMod.ruleVar,
   field: rulesMod.ruleField,
+  context: rulesMod.ruleContext,
+  for: rulesMod.ruleFor,
   eq: rulesMod.ruleEq,
   compare: rulesMod.ruleCompare,
   and: rulesMod.ruleAnd,
@@ -243,9 +299,16 @@ export const createRulesNamespace = <C extends GenConfig = GenConfig>(
   evaluate: rulesMod.evaluateRule,
   analyzePlacement: rulesMod.analyzeRulePlacement,
   classifyPlacement: rulesMod.classifyRulePlacement,
+  lowerability: rulesMod.lowerability,
+  formatLowerability: rulesMod.formatLowerability,
   defineView: ((input) => {
     const view = rulesMod.defineDerivedRuleView(input);
-    ctx.derived_rule_views.push(view);
+    const nodeId = `node:ruleView:${view.name}`;
+    if (ctx.graph.nodes.has(nodeId)) {
+      throw new Error(`Derived view name "${view.name}" is already defined`);
+    }
+    const deps = rulesMod.extractRuleViewDependencies(view);
+    attachGraphStep(ctx.graph, rulesMod.derivedRuleViewToGraphFragment(view, deps));
     return view;
   }) as typeof rulesMod.defineDerivedRuleView,
   viewDependencies: rulesMod.extractRuleViewDependencies,
@@ -256,7 +319,16 @@ export const createReactionNamespace = <C extends GenConfig = GenConfig>(
 ): ReactionNamespace<C> => ({
   define: ((input) => {
     const reaction = reactionMod.defineReaction(input as never);
-    ctx.reactions.push(reaction);
+    const nodeId = `reaction:${reaction.name}`;
+    if (ctx.graph.nodes.has(nodeId)) {
+      ctx.diagnostics.push(
+        diagnostic({
+          severity: "error",
+          code: "reaction:duplicate-name",
+          message: `Reaction name "${reaction.name}" is already defined`,
+        }),
+      );
+    } else attachGraphStep(ctx.graph, reactionMod.reactionToGraphFragment(reaction));
     return reaction;
   }) as typeof reactionMod.defineReaction,
 });
@@ -370,6 +442,8 @@ export const createExpressionNamespace = <
 >(): ExpressionNamespace<C> => ({
   literal: exprMod.semanticLiteral,
   field: exprMod.fieldRef,
+  fieldFor: exprMod.fieldRefFor,
+  for: exprMod.exprFor,
   applyUnary: exprMod.applyUnary,
   applyBinary: exprMod.applyBinary,
   applyComparison: exprMod.applyComparison,
@@ -519,10 +593,12 @@ export const createAuthzNamespace = <C extends GenConfig = GenConfig>(
   ctx: GenContext,
 ): AuthzNamespace<C> => ({
   policy: bindPolicy(ctx),
+  dynamicPolicy: bindDynamicPolicy(ctx),
   allowAuthenticated: authzMod.allowAuthenticated,
   allowPublic: authzMod.allowPublic,
   allowRole: authzMod.allowRole,
   allowOwner: authzMod.allowOwner,
+  allowOwnerFor: authzMod.allowOwnerFor,
   allowRelation: authzMod.allowRelation,
   or: authzMod.or,
   surface: createAuthzSurfaceNamespace<C>(ctx),
@@ -592,6 +668,7 @@ export const createFormsNamespace = <C extends GenConfig = GenConfig>(
   }) as typeof formsMod.buildForm,
   auto: formsMod.autoForm,
   field: formsMod.formField,
+  fieldFor: formsMod.formFieldFor,
   defaultWidget: formsMod.defaultWidget,
   inferWidgetKind: formsMod.inferWidgetKind,
   controlFor: formsMod.controlFor,
@@ -650,11 +727,19 @@ export const createLifecycleNamespace = <
  */
 export const createConfigNamespace = <C extends GenConfig = GenConfig>(
   ctx: GenContext,
-): ConfigNamespace<C> => ({
-  entry: bindConfigEntry(ctx),
-  define: bindConfig(ctx),
-  defaultInstance: bindDefaultInstance(ctx),
-});
+): ConfigNamespace<C> => {
+  const configure = ((input) => {
+    ctx.config = core.defineConfig(ctx.config.entries, {
+      identity: { ...ctx.config.identity, ...input.identity },
+    });
+    return ctx.config;
+  }) as (input: core.GenRuntimeConfigInput) => core.Config;
+  return Object.assign(configure, {
+    entry: bindConfigEntry(ctx),
+    define: bindConfig(ctx),
+    defaultInstance: bindDefaultInstance(ctx),
+  }) as ConfigNamespace<C>;
+};
 
 /**
  * Creates the `env` namespace.
@@ -743,16 +828,19 @@ export const createContextNamespace = <C extends GenConfig = GenConfig>(
   define: ((input) => {
     const context = contextMod.defineContext(input);
     ctx.contexts.push(context);
+    attachGraphStep(ctx.graph, contextMod.contextToGraphFragment(context));
     return context;
   }) as typeof contextMod.defineContext,
   provide: ((input) => {
     const provision = contextMod.provideContext(input);
     ctx.context_provisions.push(provision);
+    attachGraphStep(ctx.graph, contextMod.contextProvisionToGraphFragment(provision));
     return provision;
   }) as typeof contextMod.provideContext,
   require: ((input) => {
     const requirement = contextMod.requireContext(input);
     ctx.context_requirements.push(requirement);
+    attachGraphStep(ctx.graph, contextMod.contextRequirementToGraphFragment(requirement));
     return requirement;
   }) as typeof contextMod.requireContext,
 });
@@ -763,6 +851,7 @@ export const createRequirementNamespace = <C extends GenConfig = GenConfig>(
   define: ((input) => {
     const requirement = requirementsMod.defineRequirement(input);
     ctx.requirements.push(requirement);
+    attachGraphStep(ctx.graph, requirementsMod.requirementToGraphFragment(requirement));
     return requirement;
   }) as typeof requirementsMod.defineRequirement,
 });
@@ -773,6 +862,9 @@ export const createProviderNamespace = <C extends GenConfig = GenConfig>(
   define: ((input) => {
     const provider = requirementsMod.defineProvider(input);
     ctx.providers.push(provider);
+    for (const current of ctx.providers) {
+      attachGraphStep(ctx.graph, requirementsMod.providerToGraphFragment(current, ctx.providers));
+    }
     return provider;
   }) as typeof requirementsMod.defineProvider,
   source: requirementsMod.providerSource,

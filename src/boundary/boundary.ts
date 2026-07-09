@@ -9,6 +9,7 @@
 import type { Diagnostic, GenContext } from "../core/index.ts";
 import { diagnostic } from "../core/index.ts";
 import type { ActionFunction, QueryFunction, StaticFunction } from "../function/index.ts";
+import { getActionFunctionsFromGraph, getQueryFunctionsFromGraph } from "../function/kernel.ts";
 import type { RequirementRef } from "../requirements/index.ts";
 import type { SerializationContract } from "../hydration/index.ts";
 import type { KeyPatternExpression } from "../reactivity/index.ts";
@@ -165,7 +166,7 @@ export const deriveBoundaryPlans = (ctx: GenContext): readonly BoundaryCallPlan[
   const client = browserBoundary();
   const server = serverBoundary();
 
-  for (const action of ctx.action_functions) {
+  for (const action of getActionFunctionsFromGraph(ctx.graph)) {
     if (
       action.target_runtimes.length === 0 ||
       action.target_runtimes.some((r) => r.name === "server")
@@ -190,7 +191,7 @@ export const deriveBoundaryPlans = (ctx: GenContext): readonly BoundaryCallPlan[
     }
   }
 
-  for (const query of ctx.query_functions) {
+  for (const query of getQueryFunctionsFromGraph(ctx.graph)) {
     if (
       query.target_runtimes.length === 0 ||
       query.target_runtimes.some((r) => r.name === "server")
@@ -307,7 +308,9 @@ export const checkBoundaryPlans = (ctx: GenContext): readonly Diagnostic[] => {
     ) {
       diagnostics.push(
         diagnostic({
-          severity: "info",
+          // hint: style observation, not a defect — many boundary
+          // calls are intentionally unauthenticated (public APIs).
+          severity: "hint",
           code: "boundary:transport-auth-missing",
           message: `Boundary call "${plan.name}" uses ${plan.transport.transport} without auth requirements`,
           suggestion: "Add auth_requirements to authenticate cross-boundary calls.",

@@ -6,3 +6,12 @@
  */
 
 export * from "./entity.ts";
+export {
+  entityToKernelNode,
+  fieldToKernelNode,
+  entityToFieldNodes,
+  entityToFieldEdges,
+  entityToGraphFragment,
+  getEntitiesFromGraph,
+} from "./kernel.ts";
+export * from "./passes.ts";

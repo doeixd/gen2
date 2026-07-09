@@ -10,7 +10,7 @@
 
 import type { Artifact, GenerateResult } from "./artifacts.ts";
 import type { Config, DefaultInstance } from "./config.ts";
-import type { Actor, Contract } from "./contract.ts";
+import { defaultIdentityPolicy } from "./identity-policy.ts";
 import { type Diagnostic, diagnostic } from "./diagnostics.ts";
 import {
   type Helper,
@@ -19,16 +19,14 @@ import {
   type PluginContributions,
   type TargetContribution,
 } from "./plugin.ts";
-import { refEquals, refIdentity, type Ref, type StableId } from "./refs.ts";
+import { getRefsFromGraph } from "./refs.ts";
 import { makeTarget, type Target } from "./target.ts";
 import type { Entity } from "../entity/index.ts";
 import type { QueryExpression } from "../query/index.ts";
 import type {
-  ActionFunction,
   ExprFunction,
   PatchFunction,
   PredicateFunction,
-  QueryFunction,
   PlanFunction,
   StaticFunction,
 } from "../function/index.ts";
@@ -37,7 +35,6 @@ import type { Policy } from "../authz/index.ts";
 import type { Editor } from "../editor/index.ts";
 import type { Crud } from "../crud/index.ts";
 import type { List } from "../list/index.ts";
-import type { Event, EventEmission, Reducer, Subscription } from "../events/index.ts";
 import type { Graph, Relation, RelationEntity } from "../relation/index.ts";
 import type {
   Behavior,
@@ -55,7 +52,6 @@ import type { CrossStorePlanner } from "../lifecycle/index.ts";
 import type {
   AnyResource,
   DerivedResource,
-  KeyFamily,
   LifecycleRequirement,
   ReactiveMutation,
   ReactiveRegistry,
@@ -68,9 +64,38 @@ import type {
 } from "../reactivity/index.ts";
 import type { AppRoute } from "../router/index.ts";
 import type { ServiceRef } from "../services/index.ts";
-import type { Rule, DerivedRuleView } from "../rules/index.ts";
-import type { Reaction } from "../reaction/index.ts";
-import type { TraitMetadata, StaticNode } from "./node.ts";
+import type { TraitMetadata } from "./node.ts";
+import {
+  createKernelGraph,
+  type KernelGraph,
+  OPERATIONS,
+  defineLowering as defineKernelLowering,
+  DialectRegistry,
+  LoweringRegistry,
+  PIPELINES,
+  PassRegistry,
+  PipelineRegistry,
+} from "../kernel/index.ts";
+import {
+  RefDialect,
+  PlacementDialect,
+  ContextDialect,
+  ClaimDialect,
+  RequirementDialect,
+  ProviderDialect,
+  OwnershipDialect,
+  TypeOperationDialect,
+  ExprRuleDialect,
+  EntityFieldRelationDialect,
+  CallableDialect,
+  ReactivityDialect,
+  AuthDialect,
+  UIDialect,
+  TargetDialect,
+  PostgresDialect,
+} from "../dialects/index.ts";
+import { attachNode, attachEdges } from "../kernel/bridge.ts";
+import { opToKernelNode, opToKernelEdges } from "../kernel/ops-node.ts";
 import type { ContextDef, ContextProvision, ContextRequirement } from "../context/index.ts";
 import type { StorageLocation } from "../storage/locations.ts";
 import type { ComposablePlan } from "../plan/index.ts";
@@ -89,7 +114,6 @@ export type ContextStatus = "idle" | "checking" | "generating" | "ready" | "fail
 export interface GenContext {
   readonly plugins: Plugin[];
   readonly targets: Target[];
-  readonly refs: Ref[];
   readonly diagnostics: Diagnostic[];
   readonly artifacts: Artifact[];
   readonly entities: Entity[];
@@ -106,8 +130,6 @@ export interface GenContext {
   readonly static_functions: StaticFunction[];
   readonly expr_functions: ExprFunction[];
   readonly predicate_functions: PredicateFunction[];
-  readonly query_functions: QueryFunction[];
-  readonly action_functions: ActionFunction[];
   readonly patch_functions: PatchFunction[];
   readonly plan_functions: PlanFunction[];
   readonly resources: Resource[];
@@ -116,10 +138,6 @@ export interface GenContext {
   readonly getters: Getter[];
   readonly mutators: Mutator[];
   readonly policies: Policy[];
-  readonly events: Event[];
-  readonly event_emissions: EventEmission[];
-  readonly reducers: Reducer[];
-  readonly subscriptions: Subscription[];
   readonly forms: Form[];
   readonly views: View[];
   readonly components: Component[];
@@ -132,14 +150,11 @@ export interface GenContext {
   readonly serializers: Serializer[];
   readonly trait_applications: TraitApplication[];
   readonly cross_store_planners: CrossStorePlanner[];
-  readonly contracts: Contract[];
-  readonly actors: Actor[];
   config: Config;
   readonly defaults: DefaultInstance[];
   readonly editors: Editor[];
   readonly cruds: Crud<unknown>[];
   readonly lists: List<unknown>[];
-  readonly key_families: KeyFamily[];
   readonly reactive_resources: AnyResource[];
   readonly reactive_mutations: ReactiveMutation[];
   readonly resource_alls: ResourceAll<Record<string, ReactiveResource<any, any, any>>>[];
@@ -152,11 +167,6 @@ export interface GenContext {
   readonly reactive_registries: ReactiveRegistry[];
   readonly tracking_scopes: import("../reactivity/index.ts").TrackingScope[];
   readonly services: ServiceRef[];
-  readonly rules: Rule[];
-  readonly derived_rule_views: DerivedRuleView[];
-  readonly reactions: Reaction[];
-  /** Plugin-defined and custom application-level static nodes. */
-  readonly nodes: StaticNode[];
   /** Typed context definitions (e.g. AuthSession, TenantContext). */
   readonly contexts: ContextDef[];
   /** Context provisions: which context is provided from which storage location. */
@@ -194,15 +204,35 @@ export interface GenContext {
   readonly contributions: Map<string, PluginContributions>;
   /** Trait metadata registry, indexed by trait name. */
   readonly trait_metadata: Map<string, TraitMetadata>;
-  /** Module-level checkers invoked during the check phase. */
-  readonly moduleCheckers: ((ctx: GenContext) => readonly Diagnostic[])[];
-  /** Whether built-in module checkers have already been registered. */
-  builtInModuleCheckersRegistered: boolean;
+  /**
+   * Kernel graph — the typed-symbol semantic substrate that the kernel rebase
+   * is migrating semantic state into. During the bridge phase, builders
+   * dual-write to legacy arrays above and to this graph. See
+   * `docs/revised-kernel.md` and `docs/revision/revised_phases.md`.
+   */
+  readonly graph: KernelGraph;
+  /**
+   * Dialect registry — maps node kinds, edge kinds, and traits to their
+   * owning dialects. Populated during createGen() with core dialects;
+   * plugins may contribute additional dialects in R11.
+   */
+  readonly dialectRegistry: DialectRegistry;
+  /**
+   * Pass registry — holds registered compiler passes and their runners.
+   * Populated during createGen() with built-in passes; plugins may
+   * contribute additional passes in R11.
+   */
+  readonly passRegistry: PassRegistry;
+  /** Pipeline registry — holds named check, lower, and emit pipelines. */
+  readonly pipelineRegistry: PipelineRegistry;
+  /** Lowering registry — holds dialect and plugin lowering declarations. */
+  readonly loweringRegistry: LoweringRegistry;
 }
 
 /** Input object for `createGen()`. */
 export interface CreateGenInput {
   plugins?: readonly Plugin[];
+  identity?: Partial<import("./identity-policy.ts").IdentityPolicy>;
 }
 
 /**
@@ -220,7 +250,6 @@ export const createGen = (input: CreateGenInput = {}): GenContext => {
   const ctx: GenContext = {
     plugins: [],
     targets: [],
-    refs: [],
     diagnostics: [],
     artifacts: [],
     entities: [],
@@ -237,8 +266,6 @@ export const createGen = (input: CreateGenInput = {}): GenContext => {
     static_functions: [],
     expr_functions: [],
     predicate_functions: [],
-    query_functions: [],
-    action_functions: [],
     patch_functions: [],
     plan_functions: [],
     resources: [],
@@ -247,10 +274,6 @@ export const createGen = (input: CreateGenInput = {}): GenContext => {
     getters: [],
     mutators: [],
     policies: [],
-    events: [],
-    event_emissions: [],
-    reducers: [],
-    subscriptions: [],
     forms: [],
     views: [],
     components: [],
@@ -263,14 +286,11 @@ export const createGen = (input: CreateGenInput = {}): GenContext => {
     serializers: [],
     trait_applications: [],
     cross_store_planners: [],
-    contracts: [],
-    actors: [],
-    config: { entries: [] },
+    config: { entries: [], identity: { ...defaultIdentityPolicy, ...input.identity } },
     defaults: [],
     editors: [],
     cruds: [],
     lists: [],
-    key_families: [],
     reactive_resources: [],
     reactive_mutations: [],
     resource_alls: [],
@@ -283,10 +303,6 @@ export const createGen = (input: CreateGenInput = {}): GenContext => {
     reactive_registries: [],
     tracking_scopes: [],
     services: [],
-    rules: [],
-    derived_rule_views: [],
-    reactions: [],
-    nodes: [],
     contexts: [],
     context_provisions: [],
     context_requirements: [],
@@ -306,9 +322,53 @@ export const createGen = (input: CreateGenInput = {}): GenContext => {
     helpers: new Map(),
     contributions: new Map(),
     trait_metadata: new Map(),
-    moduleCheckers: [],
-    builtInModuleCheckersRegistered: false,
+    graph: createKernelGraph(),
+    dialectRegistry: new DialectRegistry([
+      RefDialect,
+      PlacementDialect,
+      ContextDialect,
+      ClaimDialect,
+      RequirementDialect,
+      ProviderDialect,
+      OwnershipDialect,
+      TypeOperationDialect,
+      ExprRuleDialect,
+      EntityFieldRelationDialect,
+      CallableDialect,
+      ReactivityDialect,
+      AuthDialect,
+      UIDialect,
+      TargetDialect,
+      PostgresDialect,
+    ]),
+    passRegistry: new PassRegistry(),
+    pipelineRegistry: new PipelineRegistry(Object.values(PIPELINES)),
+    loweringRegistry: new LoweringRegistry([
+      ...RefDialect.lowerings,
+      ...PlacementDialect.lowerings,
+      ...ContextDialect.lowerings,
+      ...ClaimDialect.lowerings,
+      ...RequirementDialect.lowerings,
+      ...ProviderDialect.lowerings,
+      ...OwnershipDialect.lowerings,
+      ...TypeOperationDialect.lowerings,
+      ...ExprRuleDialect.lowerings,
+      ...EntityFieldRelationDialect.lowerings,
+      ...CallableDialect.lowerings,
+      ...ReactivityDialect.lowerings,
+      ...AuthDialect.lowerings,
+      ...UIDialect.lowerings,
+      ...TargetDialect.lowerings,
+      ...PostgresDialect.lowerings,
+    ]),
   };
+
+  // Register built-in operation definitions as graph nodes + type edges (R3/R4 bridge).
+  for (const op of Object.values(OPERATIONS)) {
+    const opSig = op as import("../kernel/index.ts").OpSignature;
+    attachNode(ctx.graph, opToKernelNode(opSig));
+    attachEdges(ctx.graph, opToKernelEdges(opSig));
+  }
 
   const plugins = input.plugins ?? [];
   for (const plugin of plugins) {
@@ -388,6 +448,73 @@ const registerPlugin = (ctx: GenContext, plugin: Plugin): void => {
   }
 
   plugin.status = "active";
+
+  // --- R11: register plugin dialects and passes ---
+  for (const dialect of contributions.dialects) {
+    const conflicts = ctx.dialectRegistry.add(dialect);
+    for (const conflict of conflicts) {
+      ctx.diagnostics.push(
+        diagnostic({
+          severity: "error",
+          code: "plugin:duplicate-dialect-symbol",
+          message: `Plugin ${plugin.id} dialect ${dialect.label} conflicts on ${conflict.kind} "${conflict.id}"`,
+        }),
+      );
+    }
+  }
+
+  for (const contribution of contributions.passes) {
+    const pass = "pass" in contribution ? contribution.pass : contribution;
+    const runner = "pass" in contribution ? contribution.runner : () => ({ success: true });
+    if (ctx.passRegistry.has(pass.name)) {
+      ctx.diagnostics.push(
+        diagnostic({
+          severity: "error",
+          code: "plugin:duplicate-pass",
+          message: `Plugin ${plugin.id} pass "${pass.name}" conflicts with an existing pass`,
+        }),
+      );
+      continue;
+    }
+    ctx.passRegistry.register(pass, runner);
+  }
+
+  for (const pipeline of contributions.pipelines) {
+    if (ctx.pipelineRegistry.has(pipeline.name)) {
+      ctx.diagnostics.push(
+        diagnostic({
+          severity: "error",
+          code: "plugin:duplicate-pipeline",
+          message: `Plugin ${plugin.id} pipeline "${pipeline.name}" conflicts with an existing pipeline`,
+        }),
+      );
+      continue;
+    }
+    ctx.pipelineRegistry.register(pipeline);
+  }
+
+  for (const lowering of contributions.lowerings) {
+    const id = `plugin:${plugin.id}:lowering:${lowering.from_kind}:to:${lowering.to_kind}`;
+    if (ctx.loweringRegistry.has(id)) {
+      ctx.diagnostics.push(
+        diagnostic({
+          severity: "error",
+          code: "plugin:duplicate-lowering",
+          message: `Plugin ${plugin.id} lowering "${id}" conflicts with an existing lowering`,
+        }),
+      );
+      continue;
+    }
+    ctx.loweringRegistry.register(
+      defineKernelLowering({
+        id,
+        label: `${lowering.from_kind} to ${lowering.to_kind}`,
+        from: [lowering.from_kind],
+        to: [lowering.to_kind],
+        description: `Plugin ${plugin.id} lowering from ${lowering.from_kind} to ${lowering.to_kind}`,
+      }),
+    );
+  }
 };
 
 const materializeTarget = (plugin: Plugin, tc: TargetContribution): Target =>
@@ -395,6 +522,7 @@ const materializeTarget = (plugin: Plugin, tc: TargetContribution): Target =>
     name: tc.name,
     plugin_id: plugin.id,
     accepts_inputs: tc.accepts_inputs,
+    pipeline: tc.pipeline,
   });
 
 const makePluginContext = (ctx: GenContext): PluginContext => ({
@@ -423,7 +551,7 @@ const makePluginContext = (ctx: GenContext): PluginContext => ({
     "events.emit",
     "definePlugin",
   ],
-  registered_refs: ctx.refs,
+  registered_refs: getRefsFromGraph(ctx.graph),
   registered_metadata: [...ctx.contributions.values()].flatMap(
     (contrib) => contrib.metadata_namespaces,
   ),
@@ -570,45 +698,6 @@ export const getQueries = (ctx: GenContext): readonly QueryExpression[] => ctx.q
  */
 export const getStaticFunctions = (ctx: GenContext): readonly StaticFunction[] =>
   ctx.static_functions;
-
-/** Finds a registered ref by typed ref identity. */
-export const getRef = <R extends Ref>(ctx: GenContext, ref: R): R | undefined =>
-  ctx.refs.find((registered): registered is R => refEquals(registered, ref));
-
-/** True when a ref is present in the context registry. */
-export const hasRef = (ctx: GenContext, ref: Ref): boolean => getRef(ctx, ref) !== undefined;
-
-/** Explicit stable-ID lookup boundary for tooling, imports, and persisted IR. */
-export const lookupById = (ctx: GenContext, id: StableId<string> | string): Ref | undefined =>
-  ctx.refs.find((ref) => ref.id === id);
-
-/** Validates that every referenced ref is registered in the context. */
-export const checkRegisteredRefs = (
-  ctx: GenContext,
-  refs: readonly Ref[],
-): readonly Diagnostic[] => {
-  const out: Diagnostic[] = [];
-  const seenMissing = new Set<string>();
-
-  for (const ref of refs) {
-    if (hasRef(ctx, ref)) continue;
-
-    const identity = refIdentity(ref);
-    if (seenMissing.has(identity)) continue;
-    seenMissing.add(identity);
-
-    out.push(
-      diagnostic({
-        severity: "error",
-        code: "ref:unregistered-ref",
-        message: `Reference ${identity} is not registered in this context`,
-        refs: [ref],
-      }),
-    );
-  }
-
-  return out;
-};
 
 /** Register metadata for a typed trait. Overwrites existing metadata. */
 export const registerTraitMetadata = (

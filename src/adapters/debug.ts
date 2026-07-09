@@ -20,17 +20,20 @@
 import {
   acceptTargetInput,
   definePlugin,
+  defineTargetInputKind,
   type Helper,
   makeArtifact,
-  makeTargetInput,
   type Plugin,
   type GenContext,
   type Artifact,
 } from "../core/index.ts";
+import { nodeKinds } from "../kernel/index.ts";
+import { getRefsFromGraph } from "../core/refs.ts";
+import { getEventsFromGraph } from "../events/kernel.ts";
 
 const TARGET_NAME = "debug:project-snapshot";
-const INPUT_KIND = "context";
 const ARTIFACT_PATH = "debug/project-snapshot.json";
+const CONTEXT_INPUT = defineTargetInputKind<"context", GenContext>("context");
 
 export interface DebugAdapterOptions {
   readonly path?: string;
@@ -41,6 +44,17 @@ export interface DebugAdapterNamespace {
   /** Mark this context for snapshot generation. Returns the registered target input. */
   readonly snapshot: () => void;
 }
+
+const countGraphNodes = (
+  ctx: GenContext,
+  kind: (typeof nodeKinds)[keyof typeof nodeKinds],
+): number => {
+  let count = 0;
+  for (const node of ctx.graph.nodes.values()) {
+    if (node.kind === kind) count++;
+  }
+  return count;
+};
 
 const summarize = (ctx: GenContext): unknown => ({
   status: ctx.status,
@@ -59,19 +73,19 @@ const summarize = (ctx: GenContext): unknown => ({
     static_functions: ctx.static_functions.length,
     expr_functions: ctx.expr_functions.length,
     predicate_functions: ctx.predicate_functions.length,
-    query_functions: ctx.query_functions.length,
-    action_functions: ctx.action_functions.length,
+    query_functions: countGraphNodes(ctx, nodeKinds.QUERY),
+    action_functions: countGraphNodes(ctx, nodeKinds.ACTION),
     patch_functions: ctx.patch_functions.length,
     plan_functions: ctx.plan_functions.length,
     routes: ctx.routes.length,
     getters: ctx.getters.length,
     mutators: ctx.mutators.length,
     policies: ctx.policies.length,
-    events: ctx.events.length,
+    events: getEventsFromGraph(ctx.graph).length,
     forms: ctx.forms.length,
     views: ctx.views.length,
     components: ctx.components.length,
-    refs: ctx.refs.length,
+    refs: getRefsFromGraph(ctx.graph).length,
     diagnostics: ctx.diagnostics.length,
   },
   plugins: ctx.plugins.map((p) => ({ id: p.id, namespace: p.namespace, status: p.status })),
@@ -116,8 +130,8 @@ export const defineDebugAdapter = (
         const c = ctx as GenContext;
         const target = c.targets.find((t) => t.name === TARGET_NAME);
         if (!target) return;
-        if (target.inputs.some((i) => i.kind === INPUT_KIND)) return;
-        acceptTargetInput(target, makeTargetInput({ name: "context", kind: INPUT_KIND, value: c }));
+        if (target.inputs.some(CONTEXT_INPUT.is)) return;
+        acceptTargetInput(target, CONTEXT_INPUT.make({ name: "context", value: c }));
       },
     }),
   };
@@ -130,10 +144,10 @@ export const defineDebugAdapter = (
       targets: [
         {
           name: TARGET_NAME,
-          accepts_inputs: [INPUT_KIND],
+          accepts_inputs: CONTEXT_INPUT.accepts_inputs,
           generate: (input): readonly Artifact[] => {
-            const value = (input as { value?: GenContext }).value;
-            if (!value) return [];
+            if (!CONTEXT_INPUT.is(input)) return [];
+            const value = input.value;
             return [
               makeArtifact({
                 path,

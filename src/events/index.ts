@@ -5,3 +5,17 @@
  * emissions, reducers, and subscriptions.
  */
 export * from "./events.ts";
+export {
+  eventToKernelNode,
+  eventEmissionToKernelEdge,
+  reducerToKernelNode,
+  subscriptionToKernelNode,
+  eventToGraphFragment,
+  eventEmissionToGraphFragment,
+  reducerToGraphFragment,
+  subscriptionToGraphFragment,
+  getEventsFromGraph,
+  getEventEmissionsFromGraph,
+  getReducersFromGraph,
+  getSubscriptionsFromGraph,
+} from "./kernel.ts";

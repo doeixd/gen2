@@ -5,3 +5,4 @@
  */
 export * from "./storage.ts";
 export * from "./locations.ts";
+export { storageLocationToKernelNode, storageLocationToGraphFragment } from "./kernel.ts";

@@ -24,9 +24,10 @@ import {
   type PolicyAction,
   type TraitKind,
 } from "../core/index.ts";
-import type { Entity, Field } from "../entity/index.ts";
+import type { Entity, Field, FieldOf, InferEntity } from "../entity/index.ts";
 import type { Expr, PlanExpr, Predicate } from "../expression/index.ts";
 import type { FallbackPolicy } from "../expression/plan.ts";
+import type { AnyGraphStep } from "../kernel/index.ts";
 import type { QueryExpression } from "../query/index.ts";
 import type {
   KeyExpression,
@@ -46,13 +47,38 @@ import type {
   Runtime,
   SemanticType,
 } from "../types/index.ts";
+import {
+  actionFunctionToGraphFragment,
+  exprFunctionToGraphFragment,
+  patchFunctionToGraphFragment,
+  planFunctionToGraphFragment,
+  predicateFunctionToGraphFragment,
+  queryFunctionToGraphFragment,
+  staticFunctionToGraphFragment,
+} from "./kernel.ts";
 
 /** Describes an error that a function may return. */
-export interface ErrorType {
-  readonly code: string;
-  readonly kind: "conflict" | "validation" | "auth" | "not_found" | "forbidden";
+export type ErrorKind = "conflict" | "validation" | "auth" | "not_found" | "forbidden";
+
+export interface ErrorType<Code extends string = string, Kind extends ErrorKind = ErrorKind> {
+  readonly code: Code;
+  readonly kind: Kind;
   readonly field_name?: string;
 }
+
+export type TypeInputValue<T> = [T] extends [SemanticType<infer Ts>]
+  ? Ts
+  : [T] extends [Entity]
+    ? InferEntity<T>
+    : T;
+
+type TypeWitnessInput<T> =
+  | ([T] extends [SemanticType | Entity] ? T : never)
+  | SemanticType<TypeInputValue<T>>
+  | Entity;
+
+const toSemanticType = <Ts>(value: SemanticType | Entity): SemanticType<Ts> =>
+  entityToSemanticType<Ts>(value as SemanticType<Ts> | Entity);
 
 // ---------------------------------------------------------------------------
 // Body types referenced by ActionFunction and PatchFunction. These mirror
@@ -148,6 +174,7 @@ export interface StaticFunction<
   readonly capabilities: readonly Capability[];
   readonly laws: readonly Law[];
   readonly target_runtimes: readonly Runtime[];
+  readonly fragment?: AnyGraphStep;
   readonly callPlan?: ReturnType<typeof callPlan<In, Out>>;
   readonly symbol?: import("../core/index.ts").SymbolMetadata;
   readonly _input?: In;
@@ -179,6 +206,7 @@ export interface ExprFunction<
   readonly capabilities: readonly Capability[];
   readonly laws: readonly Law[];
   readonly target_runtimes: readonly Runtime[];
+  readonly fragment?: AnyGraphStep;
   readonly callPlan?: ReturnType<typeof callPlan<In, Out>>;
   readonly symbol?: import("../core/index.ts").SymbolMetadata;
   readonly _input?: In;
@@ -206,6 +234,7 @@ export interface PredicateFunction<
   readonly requirements: readonly Requirement[];
   readonly effects: readonly Effect[];
   readonly target_runtimes: readonly Runtime[];
+  readonly fragment?: AnyGraphStep;
   readonly callPlan?: ReturnType<typeof callPlan<In, boolean>>;
   readonly symbol?: import("../core/index.ts").SymbolMetadata;
   readonly _input?: In;
@@ -247,9 +276,10 @@ export interface QueryFunction<
   readonly body: QueryExpression;
   readonly reactivity?: QueryReactivity<In, Payload>;
   readonly auth?: PolicyAction;
-  readonly errors: readonly ErrorType[];
+  readonly errors: readonly Err[];
   readonly requirements: readonly Requirement[];
   readonly target_runtimes: readonly Runtime[];
+  readonly fragment?: AnyGraphStep;
   readonly callPlan?: ReturnType<typeof callPlan<In, Out>>;
   readonly symbol?: import("../core/index.ts").SymbolMetadata;
   readonly _input?: In;
@@ -278,7 +308,7 @@ export interface ActionFunction<
   readonly returns: SemanticType<Out>;
   readonly body: ActionExpr;
   readonly auth?: PolicyAction;
-  readonly errors: readonly ErrorType[];
+  readonly errors: readonly Err[];
   readonly invalidates: readonly QueryFunction[];
   readonly reactivity?: ActionReactivity<In, Out>;
   readonly optimistic?: PatchFunction;
@@ -287,6 +317,7 @@ export interface ActionFunction<
   readonly effects: readonly Effect[];
   readonly requirements: readonly Requirement[];
   readonly target_runtimes: readonly Runtime[];
+  readonly fragment?: AnyGraphStep;
   readonly callPlan?: ReturnType<typeof callPlan<In, Out>>;
   readonly symbol?: import("../core/index.ts").SymbolMetadata;
   readonly _input?: In;
@@ -315,6 +346,7 @@ export interface PatchFunction<
   readonly body: PatchExpr;
   readonly reconcile_field?: Field;
   readonly rollback_strategy?: "inverse" | "custom";
+  readonly fragment?: AnyGraphStep;
   readonly callPlan?: ReturnType<typeof callPlan<In, Out>>;
   readonly symbol?: import("../core/index.ts").SymbolMetadata;
   readonly _input?: In;
@@ -342,6 +374,7 @@ export interface PlanFunction<
   readonly output_type: SemanticType<Out>;
   readonly body: PlanExpr;
   readonly fallback_policy: FallbackPolicy;
+  readonly fragment?: AnyGraphStep;
   readonly callPlan?: ReturnType<typeof callPlan<In, Out>>;
   readonly symbol?: import("../core/index.ts").SymbolMetadata;
   readonly _input?: In;
@@ -708,8 +741,8 @@ export const checkQueryFunctionRuntimes = (cat: FunctionCatalog): readonly Diagn
  * ```
  */
 export const defineExprFunction = <
-  In = unknown,
-  Out = unknown,
+  const Input = unknown,
+  const Output = unknown,
   const Err extends ErrorType = ErrorType,
   const Req extends Requirement = Requirement,
   const Eff extends Effect = Effect,
@@ -717,17 +750,19 @@ export const defineExprFunction = <
 >(input: {
   id?: FunctionId;
   name: string;
-  input_type: SemanticType<In> | Entity;
-  output_type: SemanticType<Out> | Entity;
+  input_type: TypeWitnessInput<Input>;
+  output_type: TypeWitnessInput<Output>;
   body: Expr;
   requirements?: readonly Req[];
   effects?: readonly Eff[];
   capabilities?: readonly Cap[];
   laws?: readonly Law[];
   target_runtimes?: readonly Runtime[];
-}): ExprFunction<In, Out, Err, Req, Eff, Cap> => {
-  const input_type = entityToSemanticType<In>(input.input_type);
-  const output_type = entityToSemanticType<Out>(input.output_type);
+}): ExprFunction<TypeInputValue<Input>, TypeInputValue<Output>, Err, Req, Eff, Cap> => {
+  type In = TypeInputValue<Input>;
+  type Out = TypeInputValue<Output>;
+  const input_type = toSemanticType<In>(input.input_type);
+  const output_type = toSemanticType<Out>(input.output_type);
   const effects = input.effects ?? [];
   return {
     ...baseFunctionNode({
@@ -754,6 +789,9 @@ export const defineExprFunction = <
     capabilities: input.capabilities ?? [],
     laws: input.laws ?? [],
     target_runtimes: input.target_runtimes ?? [],
+    get fragment() {
+      return exprFunctionToGraphFragment(this);
+    },
   };
 };
 
@@ -774,8 +812,8 @@ export const defineExprFunction = <
  * ```
  */
 export const defineQueryFunction = <
-  In = unknown,
-  Out = unknown,
+  const Input = unknown,
+  const Returns = unknown,
   Payload extends KeyPayload = KeyPayload,
   const Err extends ErrorType = ErrorType,
   const Req extends Requirement = Requirement,
@@ -784,12 +822,12 @@ export const defineQueryFunction = <
 >(input: {
   id?: FunctionId;
   name: string;
-  input_type: SemanticType<In> | Entity;
+  input_type: TypeWitnessInput<Input>;
   input_fields?: readonly Field[];
-  returns: SemanticType<Out> | Entity;
+  returns: TypeWitnessInput<Returns>;
   body: QueryExpression;
   reactivity?:
-    | QueryReactivity<In, Payload>
+    | QueryReactivity<any, Payload>
     | { readonly key: KeyFamily<Payload> | import("../reactivity/index.ts").ReactiveKey<Payload> };
   auth?: PolicyAction;
   errors?: readonly Err[];
@@ -797,7 +835,11 @@ export const defineQueryFunction = <
   effects?: readonly Eff[];
   capabilities?: readonly Cap[];
   target_runtimes?: readonly Runtime[];
-}): QueryFunction<In, Out, Payload, Err, Req, Eff, Cap> => {
+}): QueryFunction<TypeInputValue<Input>, TypeInputValue<Returns>, Payload, Err, Req, Eff, Cap> & {
+  readonly fragment: AnyGraphStep;
+} => {
+  type In = TypeInputValue<Input>;
+  type Out = TypeInputValue<Returns>;
   const reactivity: QueryReactivity<In, Payload> | undefined =
     input.reactivity == null
       ? undefined
@@ -812,8 +854,8 @@ export const defineQueryFunction = <
                 : undefined,
             ),
           };
-  const input_type = entityToSemanticType<In>(input.input_type);
-  const returns = entityToSemanticType<Out>(input.returns);
+  const input_type = toSemanticType<In>(input.input_type);
+  const returns = toSemanticType<Out>(input.returns);
   return {
     ...baseFunctionNode({
       id: input.id,
@@ -841,6 +883,9 @@ export const defineQueryFunction = <
     errors: input.errors ?? [],
     requirements: input.requirements ?? [],
     target_runtimes: input.target_runtimes ?? [],
+    get fragment() {
+      return queryFunctionToGraphFragment(this);
+    },
   };
 };
 
@@ -863,8 +908,8 @@ export const defineQueryFunction = <
  * ```
  */
 export const defineActionFunction = <
-  In = unknown,
-  Out = unknown,
+  const Input = unknown,
+  const Returns = unknown,
   const Err extends ErrorType = ErrorType,
   const Req extends Requirement = Requirement,
   const Eff extends Effect = Effect,
@@ -872,20 +917,23 @@ export const defineActionFunction = <
 >(input: {
   id?: FunctionId;
   name: string;
-  input_type: SemanticType<In> | Entity;
+  input_type: TypeWitnessInput<Input>;
   input_fields?: readonly Field[];
-  returns: SemanticType<Out> | Entity;
+  returns: TypeWitnessInput<Returns>;
   body: ActionExpr;
   auth?: PolicyAction;
   errors?: readonly Err[];
   invalidates?: readonly QueryFunction[];
   reactivity?:
-    | ActionReactivity<In, Out>
+    | ActionReactivity<TypeInputValue<Input>, TypeInputValue<Returns>>
     | {
         readonly invalidates: readonly (
           | import("../reactivity/index.ts").ReactiveKeyPattern
           | import("../reactivity/index.ts").KeyPatternExpression<
-              import("../reactivity/index.ts").MutationKeyContext<In, Out>,
+              import("../reactivity/index.ts").MutationKeyContext<
+                TypeInputValue<Input>,
+                TypeInputValue<Returns>
+              >,
               KeyPayload
             >
         )[];
@@ -897,7 +945,11 @@ export const defineActionFunction = <
   requirements?: readonly Req[];
   capabilities?: readonly Cap[];
   target_runtimes?: readonly Runtime[];
-}): ActionFunction<In, Out, Err, Req, Eff, Cap> => {
+}): ActionFunction<TypeInputValue<Input>, TypeInputValue<Returns>, Err, Req, Eff, Cap> & {
+  readonly fragment: AnyGraphStep;
+} => {
+  type In = TypeInputValue<Input>;
+  type Out = TypeInputValue<Returns>;
   const reactivity: ActionReactivity<In, Out> | undefined =
     input.reactivity == null
       ? input.invalidates === undefined
@@ -920,8 +972,8 @@ export const defineActionFunction = <
                 ),
             ),
           };
-  const input_type = entityToSemanticType<In>(input.input_type);
-  const returns = entityToSemanticType<Out>(input.returns);
+  const input_type = toSemanticType<In>(input.input_type);
+  const returns = toSemanticType<Out>(input.returns);
   return {
     ...baseFunctionNode({
       id: input.id,
@@ -955,6 +1007,9 @@ export const defineActionFunction = <
     effects: input.effects ?? [],
     requirements: input.requirements ?? [],
     target_runtimes: input.target_runtimes ?? [],
+    get fragment() {
+      return actionFunctionToGraphFragment(this);
+    },
   };
 };
 
@@ -978,8 +1033,8 @@ export const defineActionFunction = <
  * ```
  */
 export const definePatchFunction = <
-  In = unknown,
-  Out = unknown,
+  const Input = unknown,
+  const Returns = unknown,
   const Err extends ErrorType = ErrorType,
   const Req extends Requirement = Requirement,
   const Eff extends Effect = Effect,
@@ -987,14 +1042,16 @@ export const definePatchFunction = <
 >(input: {
   id?: FunctionId;
   name: string;
-  input_type: SemanticType<In> | Entity;
-  returns: SemanticType<Out> | Entity;
+  input_type: TypeWitnessInput<Input>;
+  returns: TypeWitnessInput<Returns>;
   body: PatchExpr;
   reconcile_field?: Field;
   rollback_strategy?: PatchFunction["rollback_strategy"];
-}): PatchFunction<In, Out, Err, Req, Eff, Cap> => {
-  const input_type = entityToSemanticType<In>(input.input_type);
-  const returns = entityToSemanticType<Out>(input.returns);
+}): PatchFunction<TypeInputValue<Input>, TypeInputValue<Returns>, Err, Req, Eff, Cap> => {
+  type In = TypeInputValue<Input>;
+  type Out = TypeInputValue<Returns>;
+  const input_type = toSemanticType<In>(input.input_type);
+  const returns = toSemanticType<Out>(input.returns);
   return {
     ...baseFunctionNode({
       id: input.id,
@@ -1009,6 +1066,9 @@ export const definePatchFunction = <
     body: input.body,
     reconcile_field: input.reconcile_field,
     rollback_strategy: input.rollback_strategy,
+    get fragment() {
+      return patchFunctionToGraphFragment(this);
+    },
   };
 };
 
@@ -1032,8 +1092,8 @@ export const definePatchFunction = <
  * ```
  */
 export const defineStaticFunction = <
-  In = unknown,
-  Out = unknown,
+  const Input = unknown,
+  const Output = unknown,
   const Err extends ErrorType = ErrorType,
   const Req extends Requirement = Requirement,
   const Eff extends Effect = Effect,
@@ -1041,12 +1101,12 @@ export const defineStaticFunction = <
 >(input: {
   id?: FunctionId;
   name: string;
-  input_type: SemanticType<In> | Entity;
+  input_type: TypeWitnessInput<Input>;
   input_fields?: readonly Field[];
-  output_type: SemanticType<Out> | Entity;
+  output_type: TypeWitnessInput<Output>;
   body: {
     kind: string;
-    output_type: SemanticType<Out>;
+    output_type: SemanticType<TypeInputValue<Output>>;
     requirements: readonly Requirement[];
     effects: readonly Effect[];
   };
@@ -1055,9 +1115,11 @@ export const defineStaticFunction = <
   capabilities?: readonly Cap[];
   laws?: readonly Law[];
   target_runtimes?: readonly Runtime[];
-}): StaticFunction<In, Out, Err, Req, Eff, Cap> => {
-  const input_type = entityToSemanticType<In>(input.input_type);
-  const output_type = entityToSemanticType<Out>(input.output_type);
+}): StaticFunction<TypeInputValue<Input>, TypeInputValue<Output>, Err, Req, Eff, Cap> => {
+  type In = TypeInputValue<Input>;
+  type Out = TypeInputValue<Output>;
+  const input_type = toSemanticType<In>(input.input_type);
+  const output_type = toSemanticType<Out>(input.output_type);
   const effects = input.effects ?? [];
   return {
     ...baseFunctionNode({
@@ -1085,6 +1147,9 @@ export const defineStaticFunction = <
     capabilities: input.capabilities ?? [],
     laws: input.laws ?? [],
     target_runtimes: input.target_runtimes ?? [],
+    get fragment() {
+      return staticFunctionToGraphFragment(this);
+    },
   };
 };
 
@@ -1104,7 +1169,7 @@ export const defineStaticFunction = <
  * ```
  */
 export const definePredicateFunction = <
-  In = unknown,
+  const Input = unknown,
   const Err extends ErrorType = ErrorType,
   const Req extends Requirement = Requirement,
   const Eff extends Effect = Effect,
@@ -1112,13 +1177,14 @@ export const definePredicateFunction = <
 >(input: {
   id?: FunctionId;
   name: string;
-  input_type: SemanticType<In> | Entity;
+  input_type: TypeWitnessInput<Input>;
   body: Predicate;
   requirements?: readonly Req[];
   effects?: readonly Eff[];
   target_runtimes?: readonly Runtime[];
-}): PredicateFunction<In, Err, Req, Eff, Cap> => {
-  const input_type = entityToSemanticType<In>(input.input_type);
+}): PredicateFunction<TypeInputValue<Input>, Err, Req, Eff, Cap> => {
+  type In = TypeInputValue<Input>;
+  const input_type = toSemanticType<In>(input.input_type);
   return {
     ...baseFunctionNode({
       id: input.id,
@@ -1133,6 +1199,9 @@ export const definePredicateFunction = <
     requirements: input.requirements ?? [],
     effects: input.effects ?? [],
     target_runtimes: input.target_runtimes ?? [],
+    get fragment() {
+      return predicateFunctionToGraphFragment(this);
+    },
   };
 };
 
@@ -1154,8 +1223,8 @@ export const definePredicateFunction = <
  * ```
  */
 export const definePlanFunction = <
-  In = unknown,
-  Out = unknown,
+  const Input = unknown,
+  const Output = unknown,
   const Err extends ErrorType = ErrorType,
   const Req extends Requirement = Requirement,
   const Eff extends Effect = Effect,
@@ -1163,13 +1232,15 @@ export const definePlanFunction = <
 >(input: {
   id?: FunctionId;
   name: string;
-  input_type: SemanticType<In> | Entity;
-  output_type: SemanticType<Out> | Entity;
+  input_type: TypeWitnessInput<Input>;
+  output_type: TypeWitnessInput<Output>;
   body: PlanExpr;
   fallback_policy: FallbackPolicy;
-}): PlanFunction<In, Out, Err, Req, Eff, Cap> => {
-  const input_type = entityToSemanticType<In>(input.input_type);
-  const output_type = entityToSemanticType<Out>(input.output_type);
+}): PlanFunction<TypeInputValue<Input>, TypeInputValue<Output>, Err, Req, Eff, Cap> => {
+  type In = TypeInputValue<Input>;
+  type Out = TypeInputValue<Output>;
+  const input_type = toSemanticType<In>(input.input_type);
+  const output_type = toSemanticType<Out>(input.output_type);
   return {
     ...baseFunctionNode({
       id: input.id,
@@ -1183,6 +1254,9 @@ export const definePlanFunction = <
     output_type,
     body: input.body,
     fallback_policy: input.fallback_policy,
+    get fragment() {
+      return planFunctionToGraphFragment(this);
+    },
   };
 };
 
@@ -1191,8 +1265,8 @@ export const definePlanFunction = <
 const normalizeValues = (values: Iterable<readonly [Field, Expr]>): ReadonlyMap<Field, Expr> =>
   values instanceof Map ? values : new Map(values);
 
-export interface ActionInsertBuilder {
-  values(values: Iterable<readonly [Field, Expr]>): ActionInsertBuilderReady;
+export interface ActionInsertBuilder<E extends Entity = Entity> {
+  values(values: Iterable<readonly [FieldOf<E>, Expr]>): ActionInsertBuilderReady;
 }
 
 export interface ActionInsertBuilderReady {
@@ -1202,8 +1276,8 @@ export interface ActionInsertBuilderReady {
   }): ActionExpr;
 }
 
-export interface ActionUpdateBuilder {
-  values(values: Iterable<readonly [Field, Expr]>): ActionUpdateBuilderWithValues;
+export interface ActionUpdateBuilder<E extends Entity = Entity> {
+  values(values: Iterable<readonly [FieldOf<E>, Expr]>): ActionUpdateBuilderWithValues;
 }
 
 export interface ActionUpdateBuilderWithValues {
@@ -1253,12 +1327,12 @@ export interface ActionSequenceBuilder {
 }
 
 export const actionBuilder = {
-  insert: (target: Entity): ActionInsertBuilder => ({
+  insert: <const E extends Entity>(target: E): ActionInsertBuilder<E> => ({
     values: (values) => ({
       build: (options) => buildActionInsert(target, values, options),
     }),
   }),
-  update: (target: Entity): ActionUpdateBuilder => ({
+  update: <const E extends Entity>(target: E): ActionUpdateBuilder<E> => ({
     values: (values) => ({
       where: (condition) => ({
         build: (options) => buildActionUpdate(target, values, condition, options),
@@ -1297,9 +1371,9 @@ export const actionBuilder = {
  * ]);
  * ```
  */
-export const buildActionInsert = (
-  target: Entity,
-  values: Iterable<readonly [Field, Expr]>,
+export const buildActionInsert = <const E extends Entity>(
+  target: E,
+  values: Iterable<readonly [FieldOf<E>, Expr]>,
   options?: { effects?: readonly Effect[]; requirements?: readonly Requirement[] },
 ): ActionExpr => ({
   kind: { kind: "insert" },
@@ -1334,9 +1408,9 @@ export const buildActionInsert = (
  * );
  * ```
  */
-export const buildActionUpdate = (
-  target: Entity,
-  values: Iterable<readonly [Field, Expr]>,
+export const buildActionUpdate = <const E extends Entity>(
+  target: E,
+  values: Iterable<readonly [FieldOf<E>, Expr]>,
   condition?: Predicate,
   options?: { effects?: readonly Effect[]; requirements?: readonly Requirement[] },
 ): ActionExpr => ({
@@ -1563,7 +1637,10 @@ export const buildPatchDelete = (
  * const err = errorConflict("email_already_exists", "email");
  * ```
  */
-export const errorConflict = (code: string, field_name?: string): ErrorType => ({
+export const errorConflict = <const Code extends string>(
+  code: Code,
+  field_name?: string,
+): ErrorType<Code, "conflict"> => ({
   code,
   kind: "conflict",
   field_name,
@@ -1581,7 +1658,10 @@ export const errorConflict = (code: string, field_name?: string): ErrorType => (
  * const err = errorValidation("too_short", "password");
  * ```
  */
-export const errorValidation = (code: string, field_name?: string): ErrorType => ({
+export const errorValidation = <const Code extends string>(
+  code: Code,
+  field_name?: string,
+): ErrorType<Code, "validation"> => ({
   code,
   kind: "validation",
   field_name,
@@ -1598,7 +1678,10 @@ export const errorValidation = (code: string, field_name?: string): ErrorType =>
  * const err = errorAuth("invalid_credentials");
  * ```
  */
-export const errorAuth = (code: string): ErrorType => ({ code, kind: "auth" });
+export const errorAuth = <const Code extends string>(code: Code): ErrorType<Code, "auth"> => ({
+  code,
+  kind: "auth",
+});
 
 /**
  * Creates a not_found {@link ErrorType}.
@@ -1611,7 +1694,9 @@ export const errorAuth = (code: string): ErrorType => ({ code, kind: "auth" });
  * const err = errorNotFound("user_not_found");
  * ```
  */
-export const errorNotFound = (code: string): ErrorType => ({ code, kind: "not_found" });
+export const errorNotFound = <const Code extends string>(
+  code: Code,
+): ErrorType<Code, "not_found"> => ({ code, kind: "not_found" });
 
 /**
  * Creates a forbidden {@link ErrorType}.
@@ -1624,7 +1709,9 @@ export const errorNotFound = (code: string): ErrorType => ({ code, kind: "not_fo
  * const err = errorForbidden("insufficient_permissions");
  * ```
  */
-export const errorForbidden = (code: string): ErrorType => ({ code, kind: "forbidden" });
+export const errorForbidden = <const Code extends string>(
+  code: Code,
+): ErrorType<Code, "forbidden"> => ({ code, kind: "forbidden" });
 
 // --- Consistency constructors ----------------------------------------------
 

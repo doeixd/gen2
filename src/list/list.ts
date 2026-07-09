@@ -24,7 +24,7 @@
  */
 
 import { type Diagnostic, diagnostic } from "../core/index.ts";
-import type { Entity, Field } from "../entity/index.ts";
+import type { Entity, Field, FieldOf } from "../entity/index.ts";
 import type { ActionFunction, QueryFunction } from "../function/index.ts";
 import type { Component } from "../ui/index.ts";
 
@@ -287,6 +287,13 @@ export const listColumn = (
   meta: options?.meta,
 });
 
+export const listColumnFor =
+  <E extends Entity>(entity: E) =>
+  (field: FieldOf<E>, options?: Parameters<typeof listColumn>[1]): ListColumn => {
+    void entity;
+    return listColumn(field, options);
+  };
+
 /**
  * Creates an offset-based pagination configuration.
  *
@@ -318,6 +325,13 @@ export const cursorPagination = (
   defaultLimit,
   maxLimit,
 });
+
+export const cursorPaginationFor =
+  <E extends Entity>(entity: E) =>
+  (cursorField: FieldOf<E>, defaultLimit: number, maxLimit?: number): CursorPagination => {
+    void entity;
+    return cursorPagination(cursorField, defaultLimit, maxLimit);
+  };
 
 /**
  * Creates a {@link ListAction} for a row-level operation.

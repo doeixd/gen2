@@ -44,6 +44,7 @@ import * as orchestrationMod from "../orchestration/index.ts";
 import * as workflowMod from "../workflow/index.ts";
 import * as boundaryMod from "../boundary/index.ts";
 import * as obligationsMod from "../obligations/index.ts";
+import type { PassContext, PassPipelinePreview, PipelineInput } from "../kernel/index.ts";
 
 import type { Plugin } from "../core/index.ts";
 import type { GenContext } from "../core/index.ts";
@@ -82,6 +83,7 @@ export interface GenPluginExtensions extends Record<string, unknown> {
 export interface GenConfig {
   // intentionally empty — backends augment via declaration merging
   ui?: UiNamespaceRuntimeOptions<string>;
+  identity?: Partial<core.IdentityPolicy>;
 }
 
 /**
@@ -364,6 +366,8 @@ export interface RulesNamespace<C extends GenConfig = GenConfig> {
   literal: typeof rulesMod.ruleLiteral;
   var: typeof rulesMod.ruleVar;
   field: typeof rulesMod.ruleField;
+  context: typeof rulesMod.ruleContext;
+  for: typeof rulesMod.ruleFor;
   eq: typeof rulesMod.ruleEq;
   compare: typeof rulesMod.ruleCompare;
   and: typeof rulesMod.ruleAnd;
@@ -378,6 +382,10 @@ export interface RulesNamespace<C extends GenConfig = GenConfig> {
   evaluate: typeof rulesMod.evaluateRule;
   analyzePlacement: typeof rulesMod.analyzeRulePlacement;
   classifyPlacement: typeof rulesMod.classifyRulePlacement;
+  /** Track R §R3 — return the seven-cell lowerability matrix for a rule. */
+  lowerability: typeof rulesMod.lowerability;
+  /** Render a `RuleLowerability` matrix as a printable string. */
+  formatLowerability: typeof rulesMod.formatLowerability;
   defineView: typeof rulesMod.defineDerivedRuleView;
   viewDependencies: typeof rulesMod.extractRuleViewDependencies;
 }
@@ -552,6 +560,11 @@ export interface TargetsNamespace<C extends GenConfig = GenConfig> {
   server: () => import("../targets/index.ts").ServerProviderArtifact;
   client: () => import("../targets/index.ts").ClientProviderArtifact;
   matrix: () => import("../targets/index.ts").TargetIntegrationMatrix;
+}
+
+export interface PreviewNamespace<C extends GenConfig = GenConfig> {
+  readonly _config?: C;
+  pipeline: (passes: PipelineInput, options?: PassContext) => PassPipelinePreview;
 }
 
 export interface UiBackendRegistry {
@@ -785,6 +798,9 @@ export interface Gen<C extends GenConfig = GenConfig> extends GenPluginExtension
   // Target fixtures (docs, tests, devtools)
   targets: TargetsNamespace<C>;
 
+  // Graph-stage preview helpers
+  preview: PreviewNamespace<C>;
+
   // Storage locations
   location: StorageLocationNamespace<C>;
 
@@ -792,6 +808,8 @@ export interface Gen<C extends GenConfig = GenConfig> extends GenPluginExtension
   expr: {
     literal: typeof exprMod.semanticLiteral;
     field: typeof exprMod.fieldRef;
+    fieldFor: typeof exprMod.fieldRefFor;
+    for: typeof exprMod.exprFor;
     applyUnary: typeof exprMod.applyUnary;
     applyBinary: typeof exprMod.applyBinary;
     applyComparison: typeof exprMod.applyComparison;
@@ -924,10 +942,12 @@ export interface Gen<C extends GenConfig = GenConfig> extends GenPluginExtension
   // Authz
   authz: {
     policy: typeof authzMod.definePolicy;
+    dynamicPolicy: typeof authzMod.defineDynamicPolicy;
     allowAuthenticated: typeof authzMod.allowAuthenticated;
     allowPublic: typeof authzMod.allowPublic;
     allowRole: typeof authzMod.allowRole;
     allowOwner: typeof authzMod.allowOwner;
+    allowOwnerFor: typeof authzMod.allowOwnerFor;
     allowRelation: typeof authzMod.allowRelation;
     or: typeof authzMod.or;
     surface: AuthzSurfaceNamespace<C>;
@@ -950,6 +970,7 @@ export interface Gen<C extends GenConfig = GenConfig> extends GenPluginExtension
     build: typeof formsMod.buildForm;
     auto: typeof formsMod.autoForm;
     field: typeof formsMod.formField;
+    fieldFor: typeof formsMod.formFieldFor;
     defaultWidget: typeof formsMod.defaultWidget;
     inferWidgetKind: typeof formsMod.inferWidgetKind;
     controlFor: typeof formsMod.controlFor;
@@ -961,6 +982,7 @@ export interface Gen<C extends GenConfig = GenConfig> extends GenPluginExtension
     define: typeof editorMod.defineEditor;
     auto: typeof editorMod.autoEditor;
     fieldOverride: typeof editorMod.fieldOverride;
+    fieldOverrideFor: typeof editorMod.fieldOverrideFor;
     section: typeof editorMod.editorSection;
     nested: typeof editorMod.nestedEditor;
     command: typeof editorMod.editorCommand;
@@ -976,8 +998,10 @@ export interface Gen<C extends GenConfig = GenConfig> extends GenPluginExtension
     define: typeof listMod.defineList;
     auto: typeof listMod.autoList;
     column: typeof listMod.listColumn;
+    columnFor: typeof listMod.listColumnFor;
     offsetPagination: typeof listMod.offsetPagination;
     cursorPagination: typeof listMod.cursorPagination;
+    cursorPaginationFor: typeof listMod.cursorPaginationFor;
     action: typeof listMod.listAction;
     bulkAction: typeof listMod.listBulkAction;
   };
@@ -1004,7 +1028,7 @@ export interface Gen<C extends GenConfig = GenConfig> extends GenPluginExtension
   // Core
   contract: typeof core.defineContract;
   actor: typeof core.defineActor;
-  config: {
+  config: ((input: core.GenRuntimeConfigInput) => core.Config) & {
     entry: typeof core.defineConfigEntry;
     define: typeof core.defineConfig;
     defaultInstance: typeof core.defineDefaultInstance;

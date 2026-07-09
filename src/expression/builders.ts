@@ -7,7 +7,7 @@
  */
 
 import { makeRef } from "../core/index.ts";
-import type { Field } from "../entity/index.ts";
+import type { Entity, Field, FieldOf, InferField } from "../entity/index.ts";
 import {
   baseSemantic,
   repr,
@@ -165,6 +165,37 @@ export const fieldRef = <Ts>(field: Field<Ts>, phase: ExprPhase = "query"): Expr
     ast: fieldRefNode(field.ref),
     kind: "field_ref",
   });
+
+export type EntityExprFields<E extends Entity> = {
+  readonly [K in keyof E["fields"]]: E["fields"][K] extends Field<any, any, any>
+    ? Expr<InferField<E["fields"][K]>>
+    : never;
+};
+
+export interface EntityExprContext<E extends Entity> {
+  readonly entity: E;
+  readonly field: <F extends FieldOf<E>>(field: F, phase?: ExprPhase) => Expr<InferField<F>>;
+  readonly fields: EntityExprFields<E>;
+}
+
+export const fieldRefFor =
+  <E extends Entity>(entity: E) =>
+  <F extends FieldOf<E>>(field: F, phase?: ExprPhase): Expr<InferField<F>> => {
+    void entity;
+    return fieldRef(field, phase);
+  };
+
+export const exprFor = <E extends Entity, T extends Expr>(
+  entity: E,
+  builder: (ctx: EntityExprContext<E>) => T,
+): T => {
+  const field = fieldRefFor(entity);
+  const fields = Object.fromEntries(
+    Object.entries(entity.fields).map(([name, f]) => [name, field(f as FieldOf<E>)]),
+  ) as EntityExprFields<E>;
+
+  return builder({ entity, field, fields });
+};
 
 /**
  * ApplyUnary: invoke a unary op on a single operand. Operand value_type must

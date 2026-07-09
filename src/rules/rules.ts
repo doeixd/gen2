@@ -9,9 +9,11 @@
  */
 
 import { type Diagnostic, diagnostic } from "../core/index.ts";
-import type { Entity, Field } from "../entity/index.ts";
+import type { Entity, Field, FieldOf, InferField } from "../entity/index.ts";
+import type { GraphFragment } from "../kernel/index.ts";
 import type { Relation } from "../relation/index.ts";
 import type { SemanticType } from "../types/index.ts";
+import { ruleToGraphFragment } from "./kernel.ts";
 
 // --- Rule Expression AST ---------------------------------------------------
 
@@ -91,9 +93,19 @@ export interface Rule<Name extends string = string, Vars = unknown> {
   readonly name: Name;
   readonly vars: readonly RuleVarDecl[];
   readonly body: RuleExpr<boolean>;
+  readonly fragment: GraphFragment;
 
   readonly _vars?: Vars;
 }
+
+export type RuleClass<R extends Rule> = (abstract new () => R) & {
+  readonly rule: R;
+  readonly kind: R["kind"];
+  readonly name: R["name"];
+  readonly vars: R["vars"];
+  readonly body: R["body"];
+  readonly fragment: R["fragment"];
+};
 
 // --- Builder types ---------------------------------------------------------
 
@@ -108,6 +120,18 @@ export type RuleVarContext<Vars extends RuleVarRecord> = {
     [K in keyof Vars]: Vars[K] extends SemanticType<infer Ts> ? RuleVarExpr<Ts> : RuleVarExpr;
   };
 };
+
+export type RuleEntityFields<E extends Entity> = {
+  readonly [K in keyof E["fields"]]: E["fields"][K] extends Field<any, any, any>
+    ? RuleFieldExpr<InferField<E["fields"][K]>>
+    : never;
+};
+
+export interface RuleEntityContext<E extends Entity> {
+  readonly entity: E;
+  readonly field: <F extends FieldOf<E>>(field: F) => RuleFieldExpr<InferField<F>>;
+  readonly fields: RuleEntityFields<E>;
+}
 
 export interface RuleBuilder<Name extends string = never, Vars extends RuleVarRecord = {}> {
   name<N extends string>(n: N): RuleBuilder<N, Vars>;
@@ -243,23 +267,46 @@ export const extractRuleDependencies = (rule: Rule): RuleDependencies => {
 
 // --- Constructors ----------------------------------------------------------
 
-export function defineRule<Name extends string, Vars = unknown>(
-  builder: (b: RuleBuilder<never, {}>) => Rule<Name, Vars>,
-): Rule<Name, Vars>;
-export function defineRule<Name extends string, Vars = unknown>(input: {
-  readonly name: Name;
-  readonly vars?: readonly RuleVarDecl[];
-  readonly when: RuleExpr<boolean>;
-}): Rule<Name, Vars>;
-export function defineRule<Name extends string, Vars = unknown>(
+export interface DefineRule {
+  <const Name extends string>(
+    name: Name,
+  ): <Vars = unknown>(input: {
+    readonly vars?: readonly RuleVarDecl[];
+    readonly when: RuleExpr<boolean>;
+  }) => Rule<Name, Vars>;
+  <Name extends string, Vars = unknown>(
+    builder: (b: RuleBuilder<never, {}>) => Rule<Name, Vars>,
+  ): Rule<Name, Vars>;
+  <Name extends string, Vars = unknown>(input: {
+    readonly name: Name;
+    readonly vars?: readonly RuleVarDecl[];
+    readonly when: RuleExpr<boolean>;
+  }): Rule<Name, Vars>;
+  readonly class: typeof ruleClass;
+}
+
+function defineRuleImpl<Name extends string, Vars = unknown>(
   inputOrBuilder:
     | ((b: RuleBuilder<never, {}>) => Rule<Name, Vars>)
     | {
         readonly name: Name;
         readonly vars?: readonly RuleVarDecl[];
         readonly when: RuleExpr<boolean>;
-      },
-): Rule<Name, Vars> {
+      }
+    | Name,
+):
+  | Rule<Name, Vars>
+  | (<CurriedVars = unknown>(input: {
+      readonly vars?: readonly RuleVarDecl[];
+      readonly when: RuleExpr<boolean>;
+    }) => Rule<Name, CurriedVars>) {
+  if (typeof inputOrBuilder === "string") {
+    const name = inputOrBuilder;
+    return <CurriedVars = unknown>(input: {
+      readonly vars?: readonly RuleVarDecl[];
+      readonly when: RuleExpr<boolean>;
+    }) => defineRule({ name, ...input }) as Rule<Name, CurriedVars>;
+  }
   if (typeof inputOrBuilder === "function") {
     return inputOrBuilder(createRuleBuilder());
   }
@@ -268,8 +315,33 @@ export function defineRule<Name extends string, Vars = unknown>(
     name: inputOrBuilder.name,
     vars: inputOrBuilder.vars ?? [],
     body: inputOrBuilder.when,
+    get fragment() {
+      return ruleToGraphFragment(this, extractRuleDependencies(this));
+    },
   } as Rule<Name, Vars>;
 }
+
+const ruleClass = <const Name extends string, Vars = unknown>(input: {
+  readonly name: Name;
+  readonly vars?: readonly RuleVarDecl[];
+  readonly when: RuleExpr<boolean>;
+}): RuleClass<Rule<Name, Vars>> => {
+  const rule = defineRule<Name, Vars>(input);
+  abstract class RuleFacade {}
+  Object.defineProperties(RuleFacade, {
+    rule: { value: rule },
+    kind: { value: rule.kind },
+    name: { value: rule.name },
+    vars: { value: rule.vars },
+    body: { value: rule.body },
+    fragment: { get: () => rule.fragment },
+  });
+  return RuleFacade as RuleClass<Rule<Name, Vars>>;
+};
+
+export const defineRule = Object.assign(defineRuleImpl, {
+  class: ruleClass,
+}) as DefineRule;
 
 export const ruleLiteral = <T>(value: T, semanticType: SemanticType<T>): RuleLiteralExpr<T> => ({
   kind: "rule.literal",
@@ -283,16 +355,42 @@ export const ruleVar = <T>(name: string, semanticType: SemanticType<T>): RuleVar
   semanticType,
 });
 
-export const ruleField = <T>(
-  source: RuleVarExpr | Entity,
+export function ruleField<E extends Entity, F extends FieldOf<E>>(
+  source: E,
+  field: F,
+  semanticType?: SemanticType<InferField<F>>,
+): RuleFieldExpr<InferField<F>>;
+export function ruleField<T>(
+  source: RuleVarExpr,
   field: Field<T>,
   semanticType: SemanticType<T>,
-): RuleFieldExpr<T> => ({
-  kind: "rule.field",
-  source,
-  field,
-  semanticType,
-});
+): RuleFieldExpr<T>;
+export function ruleField<T>(
+  source: RuleVarExpr | Entity,
+  field: Field<T>,
+  semanticType?: SemanticType<T>,
+): RuleFieldExpr<T> {
+  return {
+    kind: "rule.field",
+    source,
+    field,
+    semanticType: semanticType ?? field.semantic_type,
+  };
+}
+
+export const ruleContext = <E extends Entity>(entity: E): RuleEntityContext<E> => {
+  const field = <F extends FieldOf<E>>(f: F): RuleFieldExpr<InferField<F>> => ruleField(entity, f);
+  const fields = Object.fromEntries(
+    Object.entries(entity.fields).map(([name, f]) => [name, field(f as FieldOf<E>)]),
+  ) as RuleEntityFields<E>;
+
+  return { entity, field, fields };
+};
+
+export const ruleFor = <E extends Entity, T extends RuleExpr>(
+  entity: E,
+  builder: (ctx: RuleEntityContext<E>) => T,
+): T => builder(ruleContext(entity));
 
 export const ruleEq = (left: RuleExpr, right: RuleExpr): RuleEqExpr => ({
   kind: "rule.eq",
@@ -338,6 +436,8 @@ export const rule = {
   literal: ruleLiteral,
   var: ruleVar,
   field: ruleField,
+  context: ruleContext,
+  for: ruleFor,
   eq: ruleEq,
   compare: ruleCompare,
   and: ruleAnd,
@@ -349,7 +449,7 @@ export const rule = {
 
 // --- Checker ---------------------------------------------------------------
 
-const collectVarsInExpr = (expr: RuleExpr, out: Set<string>): void => {
+export const collectVarsInExpr = (expr: RuleExpr, out: Set<string>): void => {
   switch (expr.kind) {
     case "rule.literal":
       break;
@@ -385,7 +485,7 @@ const collectVarsInExpr = (expr: RuleExpr, out: Set<string>): void => {
   }
 };
 
-const isBooleanExpr = (expr: RuleExpr): boolean => {
+export const isBooleanExpr = (expr: RuleExpr): boolean => {
   switch (expr.kind) {
     case "rule.eq":
     case "rule.compare":
@@ -399,7 +499,7 @@ const isBooleanExpr = (expr: RuleExpr): boolean => {
   }
 };
 
-const hasUnsafeNegation = (expr: RuleExpr): boolean => {
+export const hasUnsafeNegation = (expr: RuleExpr): boolean => {
   if (expr.kind === "rule.not") {
     // Simple scalar negation is safe; exists negation is unsafe for MVP
     if (expr.term.kind === "rule.exists") return true;
@@ -439,7 +539,11 @@ const exprSemanticTypeName = (expr: RuleExpr): string | undefined => {
 };
 
 /** Collect type-mismatch diagnostics for eq/compare nodes. */
-const collectTypeMismatches = (expr: RuleExpr, ruleName: string, out: Diagnostic[]): void => {
+export const collectTypeMismatches = (
+  expr: RuleExpr,
+  ruleName: string,
+  out: Diagnostic[],
+): void => {
   switch (expr.kind) {
     case "rule.eq":
     case "rule.compare": {
@@ -477,7 +581,11 @@ const collectTypeMismatches = (expr: RuleExpr, ruleName: string, out: Diagnostic
 };
 
 /** Collect field-not-on-variable diagnostics. */
-const collectFieldOwnershipIssues = (expr: RuleExpr, ruleName: string, out: Diagnostic[]): void => {
+export const collectFieldOwnershipIssues = (
+  expr: RuleExpr,
+  ruleName: string,
+  out: Diagnostic[],
+): void => {
   switch (expr.kind) {
     case "rule.field": {
       const src = expr.source;
@@ -582,12 +690,13 @@ export const checkRules = (rules: readonly Rule[]): Diagnostic[] => {
     // FieldOwnership
     collectFieldOwnershipIssues(rule.body, rule.name, out);
 
-    // UnboundOutputVariable
+    // UnboundOutputVariable — informational (see same-named check in
+    // checks-kernel.ts for the rationale).
     for (const v of rule.vars) {
       if (!usedVars.has(v.name)) {
         out.push(
           diagnostic({
-            severity: "warning",
+            severity: "info",
             code: "rules:unbound-output-variable",
             message: `Rule "${rule.name}" declares variable "${v.name}" but never uses it`,
             suggestion: "Remove the unused variable or reference it in the rule body.",

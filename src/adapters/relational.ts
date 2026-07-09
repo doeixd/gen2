@@ -22,17 +22,32 @@ import {
   definePlugin,
   type Helper,
   makeArtifact,
-  makeTargetInput,
   type Plugin,
   type GenContext,
   type Artifact,
-  type TargetInputRecord,
   type Target,
+  diagnostic,
+  type Diagnostic,
+  defineTargetInputKind,
+  targetInputsOfKind,
 } from "../core/index.ts";
-import type { Store, Table, Column, StoreDialect } from "../storage/index.ts";
+import { attachEdge, attachNode } from "../kernel/index.ts";
+import {
+  definePostgresColumnNode,
+  definePostgresTableColumnEdge,
+  definePostgresTableNode,
+  getPostgresColumns,
+  getPostgresTables,
+  type PostgresColumnPayload,
+  type PostgresTablePayload,
+} from "../dialects/postgres.ts";
+import type { Store, Column, StoreDialect } from "../storage/index.ts";
 
 const TARGET_NAME = "relational:store";
-const INPUT_KIND = "store";
+const PIPELINE_NAME = "gen2-postgres";
+const LOWER_PASS_NAME = "lower.entity.toTable";
+const EMIT_PASS_NAME = "emit.sql";
+const STORE_INPUT = defineTargetInputKind<"store", Store>("store");
 
 export interface RelationalAdapterOptions {
   readonly outDir?: string;
@@ -95,34 +110,76 @@ const physicalType = (col: Column, dialect: StoreDialect): string => {
   }
 };
 
-const renderColumn = (col: Column, dialect: StoreDialect): string => {
-  const parts = [quoteIdent(col.name, dialect), physicalType(col, dialect)];
+const renderColumnIr = (col: PostgresColumnPayload, dialect: StoreDialect): string => {
+  const parts = [quoteIdent(col.columnName, dialect), col.physicalType];
   if (!col.nullable) parts.push("NOT NULL");
-  if (col.default_value) parts.push(`DEFAULT ${escapeSqlLiteral(col.default_value, dialect)}`);
+  if (col.defaultValue) parts.push(`DEFAULT ${escapeSqlLiteral(col.defaultValue, dialect)}`);
   return `  ${parts.join(" ")}`;
 };
 
-const renderTable = (table: Table, dialect: StoreDialect): string => {
-  const colLines = table.columns.map((c) => renderColumn(c, dialect));
-  return `CREATE TABLE ${quoteIdent(table.name, dialect)} (\n${colLines.join(",\n")}\n);`;
+const renderTableIr = (
+  table: PostgresTablePayload,
+  columns: readonly PostgresColumnPayload[],
+): string => {
+  const colLines = columns.map((c) => renderColumnIr(c, table.dialect));
+  return `CREATE TABLE ${quoteIdent(table.tableName, table.dialect)} (\n${colLines.join(",\n")}\n);`;
 };
 
-const renderStore = (store: Store): string => {
-  const header = `-- Schema for store: ${store.name} (dialect: ${store.dialect})`;
-  if (store.tables.length === 0) {
+const renderStoreIr = (
+  input: {
+    readonly storeName: string;
+    readonly dialect: string;
+    readonly tables: readonly PostgresTablePayload[];
+  },
+  columnsForTable: (table: PostgresTablePayload) => readonly PostgresColumnPayload[],
+): string => {
+  const header = `-- Schema for store: ${input.storeName} (dialect: ${input.dialect})`;
+  if (input.tables.length === 0) {
     return `${header}\n-- No tables defined.\n`;
   }
-  const body = store.tables.map((t) => renderTable(t, store.dialect)).join("\n\n");
+  const body = input.tables.map((t) => renderTableIr(t, columnsForTable(t))).join("\n\n");
   return `${header}\n\n${body}\n`;
+};
+
+const lowerStoreToPostgresIr = (ctx: GenContext, store: Store): void => {
+  for (const table of store.tables) {
+    const tablePayload: PostgresTablePayload = {
+      storeName: store.name,
+      dialect: store.dialect,
+      tableName: table.name,
+    };
+    attachNode(ctx.graph, definePostgresTableNode(tablePayload));
+
+    for (const column of table.columns) {
+      const columnPayload: PostgresColumnPayload = {
+        storeName: store.name,
+        tableName: table.name,
+        columnName: column.name,
+        physicalType: physicalType(column, store.dialect),
+        nullable: column.nullable,
+        defaultValue: column.default_value,
+      };
+      attachNode(ctx.graph, definePostgresColumnNode(columnPayload));
+      attachEdge(ctx.graph, definePostgresTableColumnEdge(tablePayload, columnPayload));
+    }
+  }
+};
+
+const renderPostgresIrStore = (ctx: GenContext, store: Store): string => {
+  const tables = getPostgresTables(ctx.graph, store.name);
+  if (tables.length === 0 && store.tables.length > 0) {
+    throw new Error(`Postgres target IR missing for store ${store.name}`);
+  }
+  return renderStoreIr({ storeName: store.name, dialect: store.dialect, tables }, (table) =>
+    getPostgresColumns(ctx.graph, table),
+  );
 };
 
 const findTarget = (ctx: GenContext): Target | undefined =>
   ctx.targets.find((t) => t.name === TARGET_NAME);
 
 const inputAlreadyAttached = (target: Target, store: Store): boolean =>
-  target.inputs.some(
-    (i) => i.kind === INPUT_KIND && (i.value as { store?: Store })?.store === store,
-  );
+  targetInputsOfKind(target.inputs, STORE_INPUT).some((input) => input.value === store);
 
 export const defineRelationalAdapter = (
   options: RelationalAdapterOptions = {},
@@ -137,10 +194,7 @@ export const defineRelationalAdapter = (
         const c = ctx as GenContext;
         const target = findTarget(c);
         if (!target || inputAlreadyAttached(target, store)) return;
-        acceptTargetInput(
-          target,
-          makeTargetInput({ name: store.name, kind: INPUT_KIND, value: { store } }),
-        );
+        acceptTargetInput(target, STORE_INPUT.make({ name: store.name, value: store }));
       };
       return {
         fromStore: attach,
@@ -159,19 +213,61 @@ export const defineRelationalAdapter = (
       targets: [
         {
           name: TARGET_NAME,
-          accepts_inputs: [INPUT_KIND],
-          generate: (input): readonly Artifact[] => {
-            const i = input as TargetInputRecord;
-            const store = (i.value as { store?: Store })?.store;
-            if (!store) return [];
-            return [
-              makeArtifact({
-                path: `${outDir}/${store.name}.sql`,
-                content: renderStore(store),
-                kind: "schema",
-                language: "sql",
-              }),
-            ];
+          accepts_inputs: STORE_INPUT.accepts_inputs,
+          pipeline: PIPELINE_NAME,
+        },
+      ],
+      passes: [
+        {
+          pass: { name: LOWER_PASS_NAME, phase: "lower" },
+          runner: (_graph, passCtx) => {
+            const ctx = passCtx.options?.genContext as GenContext | undefined;
+            const target = passCtx.options?.target as Target | undefined;
+            if (!ctx || !target) return { success: false };
+            for (const input of targetInputsOfKind(target.inputs, STORE_INPUT)) {
+              lowerStoreToPostgresIr(ctx, input.value);
+            }
+            return { success: true };
+          },
+        },
+        {
+          pass: { name: EMIT_PASS_NAME, phase: "emit" },
+          runner: (_graph, passCtx) => {
+            const ctx = passCtx.options?.genContext as GenContext | undefined;
+            const target = passCtx.options?.target as Target | undefined;
+            if (!ctx || !target) return { success: false };
+            const artifacts: Artifact[] = [];
+            const diagnostics: Diagnostic[] = [];
+            for (const input of targetInputsOfKind(target.inputs, STORE_INPUT)) {
+              const store = input.value;
+              try {
+                artifacts.push(
+                  makeArtifact({
+                    path: `${outDir}/${store.name}.sql`,
+                    content: renderPostgresIrStore(ctx, store),
+                    kind: "schema",
+                    language: "sql",
+                  }),
+                );
+              } catch (error) {
+                diagnostics.push(
+                  diagnostic({
+                    severity: "error",
+                    code: "postgres:missing-legalized-ir",
+                    message: error instanceof Error ? error.message : String(error),
+                  }),
+                );
+              }
+            }
+            target.generate_result = {
+              artifacts,
+              diagnostics,
+              status: diagnostics.some((d) => d.severity === "error") ? "failed" : "success",
+            };
+            return {
+              success: !diagnostics.some((d) => d.severity === "error"),
+              diagnostics,
+            };
           },
         },
       ],

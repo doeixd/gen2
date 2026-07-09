@@ -14,7 +14,7 @@
  */
 
 import { type Diagnostic, diagnostic, entityToSemanticType } from "../core/index.ts";
-import type { Entity, Field } from "../entity/index.ts";
+import type { Entity, Field, FieldOf, InferEntity } from "../entity/index.ts";
 import { buildExpr, buildPredicate, fieldRef, paramPlaceholder } from "../expression/index.ts";
 import { opCallNode } from "../expression/ast.ts";
 import {
@@ -31,6 +31,7 @@ import {
   defineQueryFunction,
   type ActionFunction,
   type QueryFunction,
+  type TypeInputValue,
 } from "../function/index.ts";
 import { boolean, int, object } from "../types/semantic.ts";
 import { aggregateOp, comparisonOp } from "../types/operation.ts";
@@ -65,23 +66,31 @@ import type { AccessSurfaceBinding } from "../authz/index.ts";
  * userCrud.create  // ActionFunction<unknown, Out>
  * ```
  */
-export interface Crud<Out = unknown> {
+type CrudProjectionValue<T> = [T] extends [SemanticType<infer Ts>]
+  ? Ts
+  : [T] extends [Entity]
+    ? InferEntity<T>
+    : T;
+
+type CrudProjectionInput<T> = [T] extends [SemanticType | Entity] ? T : never;
+
+export interface Crud<Detail = unknown, E extends Entity = Entity, List = Detail> {
   /** The entity these CRUD functions operate on. */
-  readonly entity: Entity;
+  readonly entity: E;
   /** Retrieve a single record by its identifier. */
-  readonly getById: QueryFunction<unknown, Out>;
+  readonly getById: QueryFunction<unknown, Detail>;
   /** List all records (no filtering by default). */
-  readonly list: QueryFunction<unknown, Out>;
+  readonly list: QueryFunction<unknown, List>;
   /** Count records matching a predicate. */
   readonly count?: QueryFunction<unknown, number>;
   /** Check if any record exists matching a predicate. */
   readonly exists?: QueryFunction<unknown, boolean>;
   /** Insert a new record. */
-  readonly create: ActionFunction<unknown, Out>;
+  readonly create: ActionFunction<unknown, Detail>;
   /** Update an existing record by identifier. */
-  readonly update: ActionFunction<unknown, Out>;
+  readonly update: ActionFunction<unknown, Detail>;
   /** Remove a record by identifier. */
-  readonly delete: ActionFunction<unknown, Out>;
+  readonly delete: ActionFunction<unknown, Detail>;
 }
 
 /**
@@ -89,19 +98,23 @@ export interface Crud<Out = unknown> {
  *
  * @typeParam Out - The projection / return type for list and detail queries.
  */
-export interface DeriveCrudOptions<Out = unknown, E extends Entity = Entity> {
+export interface DeriveCrudOptions<
+  E extends Entity = Entity,
+  DetailProjection extends Entity | SemanticType<any> = E,
+  ListProjection extends Entity | SemanticType<any> = DetailProjection,
+> {
   /** Explicit identifier field (defaults to `entity.fields.id` if present). */
-  readonly idField?: Field;
+  readonly idField?: FieldOf<E>;
   /** Which fields to include in create/update inputs (defaults to all non-read-only). */
-  readonly include?: readonly Field[];
+  readonly include?: readonly FieldOf<E>[];
   /** Which fields to exclude from create/update inputs (applied after `include`). */
-  readonly exclude?: readonly Field[];
+  readonly exclude?: readonly FieldOf<E>[];
   /** Return type/shape for `list` (defaults to the entity itself). */
-  readonly listProjection?: Entity | SemanticType<Out>;
+  readonly listProjection?: CrudProjectionInput<ListProjection>;
   /** Return type/shape for `getById`, `create`, `update` (defaults to entity). */
-  readonly detailProjection?: Entity | SemanticType<Out>;
+  readonly detailProjection?: CrudProjectionInput<DetailProjection>;
   /** Optional mapping to derive writable inputs from (respects hidden/server-only/read-only mapping constraints). */
-  readonly mapping?: Mapping;
+  readonly mapping?: Mapping<E>;
   /** Optional key family for `getById` reactivity. */
   readonly getByIdKey?: KeyFamily;
   /** Optional key family for `list` reactivity. */
@@ -131,11 +144,18 @@ export interface CrudAccessOptions<E extends Entity = Entity> {
  * Picks the identifier field for CRUD operations.
  * Prefers `options.idField`, then `entity.fields.id`, then the first field.
  */
-const pickIdField = <Out = unknown>(entity: Entity, options?: DeriveCrudOptions<Out>): Field => {
+const pickIdField = <
+  E extends Entity,
+  DetailProjection extends Entity | SemanticType<any> = E,
+  ListProjection extends Entity | SemanticType<any> = DetailProjection,
+>(
+  entity: E,
+  options?: DeriveCrudOptions<E, DetailProjection, ListProjection>,
+): FieldOf<E> => {
   if (options?.idField) return options.idField;
   const id = entity.fields["id"];
-  if (id) return id;
-  return entity.fieldList[0]!;
+  if (id) return id as FieldOf<E>;
+  return entity.fieldList[0]! as FieldOf<E>;
 };
 
 /**
@@ -146,12 +166,17 @@ const pickIdField = <Out = unknown>(entity: Entity, options?: DeriveCrudOptions<
  * @param mapping - Optional mapping to respect write constraints from.
  * @returns Fields that are safe to include in create/update inputs.
  */
-export const deriveWritableInput = (entity: Entity, mapping?: Mapping): Field[] => {
+export const deriveWritableInput = <E extends Entity>(
+  entity: E,
+  mapping?: Mapping<E>,
+): FieldOf<E>[] => {
   if (!mapping) {
-    return entity.fieldList.filter((f) => !f.read_only && !f.semantic_type.server_only);
+    return entity.fieldList.filter(
+      (f): f is FieldOf<E> => !f.read_only && !f.semantic_type.server_only,
+    );
   }
   const fieldMap = new Map(mapping.field_mappings.map((fm) => [fm.field.name, fm]));
-  return entity.fieldList.filter((f) => {
+  return entity.fieldList.filter((f): f is FieldOf<E> => {
     const fm = fieldMap.get(f.name);
     if (!fm) return false; // unmapped fields are not writable
     if (fm.read_only) return false;
@@ -165,15 +190,15 @@ export const deriveWritableInput = (entity: Entity, mapping?: Mapping): Field[] 
  * Fields eligible for create/update input: non-read-only, not auto-generated,
  * respecting `include` / `exclude` overrides and optional mapping constraints.
  */
-const pickWritableFields = <Out = unknown>(
-  entity: Entity,
-  options?: DeriveCrudOptions<Out>,
-): Field[] => {
+const pickWritableFields = <E extends Entity>(
+  entity: E,
+  options?: DeriveCrudOptions<E, Entity | SemanticType<any>, Entity | SemanticType<any>>,
+): FieldOf<E>[] => {
   const base = options?.mapping
     ? deriveWritableInput(entity, options.mapping)
     : options?.include
       ? [...options.include]
-      : entity.fieldList.filter((f) => !f.read_only);
+      : entity.fieldList.filter((f): f is FieldOf<E> => !f.read_only);
   const excludeNames = new Set(options?.exclude?.map((f) => f.name) ?? []);
   return base.filter((f) => !excludeNames.has(f.name));
 };
@@ -182,9 +207,9 @@ const pickWritableFields = <Out = unknown>(
  * Builds a typed `eq(field, input.<name>)` predicate for use in query/action
  * conditions.
  */
-const buildEqPredicate = (
-  entity: Entity,
-  field: Field,
+const buildEqPredicate = <E extends Entity>(
+  entity: E,
+  field: FieldOf<E>,
 ): import("../expression/index.ts").Predicate => {
   const eqOp = comparisonOp({
     name: "eq",
@@ -210,7 +235,7 @@ const buildEqPredicate = (
 /**
  * Builds a struct SemanticType from a list of fields.
  */
-const buildInputType = (fields: Field[]): SemanticType =>
+const buildInputType = (fields: readonly Field[]): SemanticType =>
   object(Object.fromEntries(fields.map((f) => [f.name, f.semantic_type])));
 
 /**
@@ -284,14 +309,26 @@ export const expandAccessToSurfaces = <E extends Entity = Entity>(
  * // userCrud.getById, userCrud.list, userCrud.create, userCrud.update, userCrud.delete
  * ```
  */
-export const deriveCrud = <Out = unknown, E extends Entity = Entity>(
+export const deriveCrud = <
+  const E extends Entity,
+  const DetailProjection extends Entity | SemanticType<any> = E,
+  const ListProjection extends Entity | SemanticType<any> = DetailProjection,
+>(
   entity: E,
-  options?: DeriveCrudOptions<Out, E>,
-): Crud<Out> => {
+  options?: DeriveCrudOptions<E, DetailProjection, ListProjection>,
+): Crud<
+  TypeInputValue<CrudProjectionValue<DetailProjection>>,
+  E,
+  TypeInputValue<CrudProjectionValue<ListProjection>>
+> => {
+  type Detail = CrudProjectionValue<DetailProjection>;
+  type List = CrudProjectionValue<ListProjection>;
   const idField = pickIdField(entity, options);
   const writable = pickWritableFields(entity, options);
-  const detailProjection = options?.detailProjection ?? entity;
-  const listProjection = options?.listProjection ?? entity;
+  const detailProjection = (options?.detailProjection ??
+    entity) as CrudProjectionInput<DetailProjection>;
+  const listProjection = (options?.listProjection ??
+    detailProjection) as CrudProjectionInput<ListProjection>;
 
   // --- getById ---
   const getByIdInput = object({ [idField.name]: idField.semantic_type });
@@ -300,7 +337,7 @@ export const deriveCrud = <Out = unknown, E extends Entity = Entity>(
     result_type: entityToSemanticType(listProjection),
     predicate: buildEqPredicate(entity, idField),
   });
-  const getById = defineQueryFunction<unknown, Out>({
+  const getById = defineQueryFunction<unknown, Detail>({
     name: `${entity.name}.getById`,
     input_type: getByIdInput,
     input_fields: [idField],
@@ -314,7 +351,7 @@ export const deriveCrud = <Out = unknown, E extends Entity = Entity>(
     source: { kind: "entity_source", entity },
     result_type: entityToSemanticType(listProjection),
   });
-  const list = defineQueryFunction<unknown, Out>({
+  const list = defineQueryFunction<unknown, List>({
     name: `${entity.name}.list`,
     input_type: entity,
     returns: listProjection,
@@ -357,9 +394,10 @@ export const deriveCrud = <Out = unknown, E extends Entity = Entity>(
 
   // --- create ---
   const createInputType = buildInputType(writable);
-  const createFieldMappings: readonly [Field, import("../expression/index.ts").Expr][] =
-    writable.map((f) => [f, paramPlaceholder(f.semantic_type, f.name, "mutation")]);
-  const create = defineActionFunction<unknown, Out>({
+  const createFieldMappings = writable.map(
+    (f) => [f, paramPlaceholder(f.semantic_type, f.name, "mutation")] as const,
+  );
+  const create = defineActionFunction<unknown, Detail>({
     name: `${entity.name}.create`,
     input_type: createInputType,
     input_fields: writable,
@@ -374,9 +412,10 @@ export const deriveCrud = <Out = unknown, E extends Entity = Entity>(
   const updateFields = writable.filter((f) => f !== idField);
   const updateInputFields = [idField, ...updateFields];
   const updateInputType = buildInputType(updateInputFields);
-  const updateFieldMappings: readonly [Field, import("../expression/index.ts").Expr][] =
-    updateFields.map((f) => [f, paramPlaceholder(f.semantic_type, f.name, "mutation")]);
-  const update = defineActionFunction<unknown, Out>({
+  const updateFieldMappings = updateFields.map(
+    (f) => [f, paramPlaceholder(f.semantic_type, f.name, "mutation")] as const,
+  );
+  const update = defineActionFunction<unknown, Detail>({
     name: `${entity.name}.update`,
     input_type: updateInputType,
     input_fields: updateInputFields,
@@ -389,7 +428,7 @@ export const deriveCrud = <Out = unknown, E extends Entity = Entity>(
 
   // --- delete ---
   const deleteInputType = object({ [idField.name]: idField.semantic_type });
-  const deleteFn = defineActionFunction<unknown, Out>({
+  const deleteFn = defineActionFunction<unknown, Detail>({
     name: `${entity.name}.delete`,
     input_type: deleteInputType,
     input_fields: [idField],

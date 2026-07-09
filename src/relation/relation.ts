@@ -10,7 +10,9 @@
 
 import { type Diagnostic, diagnostic, makeRef } from "../core/index.ts";
 import type { RelationId, RelationRef } from "../core/index.ts";
-import type { Entity, Field } from "../entity/index.ts";
+import type { Entity, Field, FieldOf, InferField } from "../entity/index.ts";
+import type { AnyGraphStep } from "../kernel/index.ts";
+import { relationEntityToGraphFragment, relationToGraphFragment } from "./kernel.ts";
 
 /**
  * Cardinality kind of a relation.
@@ -87,6 +89,8 @@ export interface Relation<
   K extends RelationKind = RelationKind,
   E1 extends Entity = Entity,
   E2 extends Entity = Entity,
+  FromField extends Field<any, any, any> = Field<any, any, any>,
+  ToField extends Field<any, any, any> = Field<any, any, any>,
 > {
   /** Stable persisted identity for this relation, when explicitly declared. */
   readonly id?: RelationId;
@@ -99,9 +103,9 @@ export interface Relation<
   /** Entity on the "to" side of the relation. */
   readonly to_entity: E2;
   /** Field on the from entity that participates in the relation. */
-  readonly from_field: Field<From>;
+  readonly from_field: FromField;
   /** Field on the to entity that participates in the relation. */
-  readonly to_field: Field<To>;
+  readonly to_field: ToField;
   /** Inverse relation, if defined. */
   readonly inverse?: Relation<To, From>;
   /** Whether the relation is required. */
@@ -120,6 +124,8 @@ export interface Relation<
    * Auto-populated RelationRef preserving relation endpoint types.
    */
   readonly ref: RelationRef<From, To>;
+  /** Composable graph fragment for this relation edge. */
+  readonly fragment?: AnyGraphStep;
 }
 
 /**
@@ -150,6 +156,8 @@ export interface RelationEntity {
    * Auto-populated RelationRef for typed citation.
    */
   readonly ref: RelationRef;
+  /** Composable graph fragment for this relation-entity node. */
+  readonly fragment?: AnyGraphStep;
 }
 
 /**
@@ -184,47 +192,71 @@ export interface Graph {
  * ```
  */
 export const defineRelation = <
-  From = unknown,
-  To = unknown,
   K extends RelationKind = RelationKind,
   E1 extends Entity = Entity,
   E2 extends Entity = Entity,
+  FromField extends FieldOf<E1> = FieldOf<E1>,
+  ToField extends FieldOf<E2> = FieldOf<E2>,
 >(input: {
   id?: RelationId;
   name: string;
   kind: K;
   from_entity: E1;
   to_entity: E2;
-  from_field: Field<From>;
-  to_field: Field<To>;
+  from_field: FromField;
+  to_field: ToField;
   required?: boolean;
   integrity?: IntegrityMode;
   foreign_key?: ForeignKey;
   deletion_behavior?: AppDeletionBehavior;
   link_entity?: Entity;
-  inverse?: Relation<To, From>;
-}): Relation<From, To, K, E1, E2> => ({
-  id: input.id,
-  name: input.name,
-  kind: input.kind,
-  from_entity: input.from_entity,
-  to_entity: input.to_entity,
-  from_field: input.from_field,
-  to_field: input.to_field,
-  required: input.required ?? false,
-  integrity: input.integrity ?? { kind: "application_checked" },
-  foreign_key: input.foreign_key,
-  deletion_behavior: input.deletion_behavior,
-  link_entity: input.link_entity,
-  inverse: input.inverse,
-  ref: makeRef({
-    kind: "RelationRef",
+  inverse?: Relation<InferField<ToField>, InferField<FromField>>;
+}): Relation<InferField<FromField>, InferField<ToField>, K, E1, E2, FromField, ToField> & {
+  readonly fragment: AnyGraphStep;
+} => {
+  const relation: Relation<
+    InferField<FromField>,
+    InferField<ToField>,
+    K,
+    E1,
+    E2,
+    FromField,
+    ToField
+  > = {
     id: input.id,
-    owner: { kind: "Relation", name: input.name },
     name: input.name,
-    value_type: `${input.from_entity.name}_${input.to_entity.name}`,
-  }) as RelationRef<From, To>,
-});
+    kind: input.kind,
+    from_entity: input.from_entity,
+    to_entity: input.to_entity,
+    from_field: input.from_field,
+    to_field: input.to_field,
+    required: input.required ?? false,
+    integrity: input.integrity ?? { kind: "application_checked" },
+    foreign_key: input.foreign_key,
+    deletion_behavior: input.deletion_behavior,
+    link_entity: input.link_entity,
+    inverse: input.inverse,
+    ref: makeRef({
+      kind: "RelationRef",
+      id: input.id,
+      owner: { kind: "Relation", name: input.name },
+      name: input.name,
+      value_type: `${input.from_entity.name}_${input.to_entity.name}`,
+    }) as RelationRef<InferField<FromField>, InferField<ToField>>,
+    get fragment() {
+      return relationToGraphFragment(relation);
+    },
+  };
+  return relation as Relation<
+    InferField<FromField>,
+    InferField<ToField>,
+    K,
+    E1,
+    E2,
+    FromField,
+    ToField
+  > & { readonly fragment: AnyGraphStep };
+};
 
 /**
  * Creates a RelationEntity record with a typed ref.
@@ -239,19 +271,25 @@ export const defineRelationEntity = (
   roles: readonly Role[],
   fields: readonly Field[],
   options: { id?: RelationId } = {},
-): RelationEntity => ({
-  id: options.id,
-  name,
-  roles,
-  fields,
-  ref: makeRef({
-    kind: "RelationRef",
+): RelationEntity & { readonly fragment: AnyGraphStep } => {
+  const relationEntity: RelationEntity = {
     id: options.id,
-    owner: { kind: "Relation", name },
     name,
-    value_type: "relation_entity",
-  }) as RelationRef,
-});
+    roles,
+    fields,
+    ref: makeRef({
+      kind: "RelationRef",
+      id: options.id,
+      owner: { kind: "Relation", name },
+      name,
+      value_type: "relation_entity",
+    }) as RelationRef,
+    get fragment() {
+      return relationEntityToGraphFragment(relationEntity);
+    },
+  };
+  return relationEntity as RelationEntity & { readonly fragment: AnyGraphStep };
+};
 
 // --- Invariants and rules --------------------------------------------------
 
@@ -420,25 +458,25 @@ export const checkRelationEntities = (
  * @returns A one-to-one Relation.
  */
 export const oneToOne = <
-  From = unknown,
-  To = unknown,
   E1 extends Entity = Entity,
   E2 extends Entity = Entity,
+  FromField extends FieldOf<E1> = FieldOf<E1>,
+  ToField extends FieldOf<E2> = FieldOf<E2>,
 >(
   from_entity: E1,
   to_entity: E2,
-  from_field: Field<From>,
-  to_field: Field<To>,
+  from_field: FromField,
+  to_field: ToField,
   options?: {
     id?: RelationId;
     required?: boolean;
     integrity?: IntegrityMode;
     foreign_key?: ForeignKey;
     deletion_behavior?: AppDeletionBehavior;
-    inverse?: Relation<To, From>;
+    inverse?: Relation<InferField<ToField>, InferField<FromField>>;
   },
-): Relation<From, To, "one_to_one", E1, E2> =>
-  defineRelation<From, To, "one_to_one", E1, E2>({
+): Relation<InferField<FromField>, InferField<ToField>, "one_to_one", E1, E2, FromField, ToField> =>
+  defineRelation<"one_to_one", E1, E2, FromField, ToField>({
     name: `${from_entity.name}_${to_entity.name}`,
     kind: "one_to_one",
     from_entity,
@@ -459,25 +497,33 @@ export const oneToOne = <
  * @returns A one-to-many Relation.
  */
 export const oneToMany = <
-  From = unknown,
-  To = unknown,
   E1 extends Entity = Entity,
   E2 extends Entity = Entity,
+  FromField extends FieldOf<E2> = FieldOf<E2>,
+  ToField extends FieldOf<E1> = FieldOf<E1>,
 >(
   from_entity: E1,
   to_entity: E2,
-  from_field: Field<From>,
-  to_field: Field<To>,
+  from_field: FromField,
+  to_field: ToField,
   options?: {
     id?: RelationId;
     required?: boolean;
     integrity?: IntegrityMode;
     foreign_key?: ForeignKey;
     deletion_behavior?: AppDeletionBehavior;
-    inverse?: Relation<To, From>;
+    inverse?: Relation<InferField<ToField>, InferField<FromField>>;
   },
-): Relation<From, To, "one_to_many", E1, E2> =>
-  defineRelation<From, To, "one_to_many", E1, E2>({
+): Relation<
+  InferField<FromField>,
+  InferField<ToField>,
+  "one_to_many",
+  E1,
+  E2,
+  FromField,
+  ToField
+> =>
+  defineRelation<"one_to_many", E1, E2, FromField, ToField>({
     name: `${from_entity.name}_${to_entity.name}s`,
     kind: "one_to_many",
     from_entity,
@@ -498,25 +544,33 @@ export const oneToMany = <
  * @returns A many-to-one Relation.
  */
 export const manyToOne = <
-  From = unknown,
-  To = unknown,
   E1 extends Entity = Entity,
   E2 extends Entity = Entity,
+  FromField extends FieldOf<E1> = FieldOf<E1>,
+  ToField extends FieldOf<E2> = FieldOf<E2>,
 >(
   from_entity: E1,
   to_entity: E2,
-  from_field: Field<From>,
-  to_field: Field<To>,
+  from_field: FromField,
+  to_field: ToField,
   options?: {
     id?: RelationId;
     required?: boolean;
     integrity?: IntegrityMode;
     foreign_key?: ForeignKey;
     deletion_behavior?: AppDeletionBehavior;
-    inverse?: Relation<To, From>;
+    inverse?: Relation<InferField<ToField>, InferField<FromField>>;
   },
-): Relation<From, To, "many_to_one", E1, E2> =>
-  defineRelation<From, To, "many_to_one", E1, E2>({
+): Relation<
+  InferField<FromField>,
+  InferField<ToField>,
+  "many_to_one",
+  E1,
+  E2,
+  FromField,
+  ToField
+> =>
+  defineRelation<"many_to_one", E1, E2, FromField, ToField>({
     name: `${from_entity.name}_${to_entity.name}`,
     kind: "many_to_one",
     from_entity,
@@ -538,25 +592,34 @@ export const manyToOne = <
  * @returns A many-to-many Relation.
  */
 export const manyToMany = <
-  From = unknown,
-  To = unknown,
   E1 extends Entity = Entity,
   E2 extends Entity = Entity,
+  Link extends Entity = Entity,
+  FromField extends FieldOf<Link> = FieldOf<Link>,
+  ToField extends FieldOf<Link> = FieldOf<Link>,
 >(
   from_entity: E1,
   to_entity: E2,
-  from_field: Field<From>,
-  to_field: Field<To>,
-  link_entity: Entity,
+  from_field: FromField,
+  to_field: ToField,
+  link_entity: Link,
   options?: {
     id?: RelationId;
     required?: boolean;
     integrity?: IntegrityMode;
     deletion_behavior?: AppDeletionBehavior;
-    inverse?: Relation<To, From>;
+    inverse?: Relation<InferField<ToField>, InferField<FromField>>;
   },
-): Relation<From, To, "many_to_many", E1, E2> =>
-  defineRelation<From, To, "many_to_many", E1, E2>({
+): Relation<
+  InferField<FromField>,
+  InferField<ToField>,
+  "many_to_many",
+  E1,
+  E2,
+  FromField,
+  ToField
+> =>
+  defineRelation<"many_to_many", E1, E2, FromField, ToField>({
     name: `${from_entity.name}_${to_entity.name}`,
     kind: "many_to_many",
     from_entity,

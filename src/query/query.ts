@@ -8,7 +8,7 @@
  */
 
 import { type Diagnostic, diagnostic } from "../core/index.ts";
-import type { Entity, Field } from "../entity/index.ts";
+import type { Entity, Field, FieldOf, InferEntity, InferField } from "../entity/index.ts";
 import type { Expr, Predicate } from "../expression/index.ts";
 import type { FallbackPolicy } from "../expression/plan.ts";
 import type { Relation } from "../relation/index.ts";
@@ -69,6 +69,9 @@ export interface QuerySource {
   /** The expression when kind is "expression_source". */
   readonly source_expression?: Expr;
 }
+
+type SourceField<Source> = Source extends Entity ? FieldOf<Source> : Field;
+type SelectResult<Fields extends readonly Field[]> = readonly InferField<Fields[number]>[];
 
 /**
  * A field selected in a query projection with an optional alias or expression.
@@ -531,13 +534,15 @@ export interface QueryBuilder<Source = unknown, Result = Source> {
   /** Sets or replaces the query predicate. */
   where(predicate: Predicate<Source>): QueryBuilder<Source, Result>;
   /** Sets the projection to a list of fields (no aliases). */
-  select<Ts>(fields: readonly Field<Ts>[]): QueryBuilder<Source, Ts[]>;
+  select<const Fields extends readonly SourceField<Source>[]>(
+    fields: Fields,
+  ): QueryBuilder<Source, SelectResult<Fields>>;
   /** Sets the projection from a QueryProjection record. */
   selectProjection(projection: QueryProjection): QueryBuilder<Source, unknown>;
   /** Adds an ORDER BY clause. */
-  orderBy(field: Field, direction?: OrderDirection): QueryBuilder<Source, Result>;
+  orderBy(field: SourceField<Source>, direction?: OrderDirection): QueryBuilder<Source, Result>;
   /** Adds a GROUP BY field. */
-  groupBy(field: Field): QueryBuilder<Source, Result>;
+  groupBy(field: SourceField<Source>): QueryBuilder<Source, Result>;
   /** Sets LIMIT. */
   limit(expr: Expr): QueryBuilder<Source, Result>;
   /** Sets OFFSET. */
@@ -597,13 +602,15 @@ class QueryBuilderImpl<Source = unknown, Result = Source> implements QueryBuilde
     return this;
   }
 
-  select<Ts>(fields: readonly Field<Ts>[]): QueryBuilder<Source, Ts[]> {
+  select<const Fields extends readonly SourceField<Source>[]>(
+    fields: Fields,
+  ): QueryBuilder<Source, SelectResult<Fields>> {
     this.state.projection = {
       fields: fields.map((f) => ({ field: f })),
       aggregates: [],
     };
     this.state.result_type = fields[0]?.semantic_type ?? this.state.result_type;
-    return this as unknown as QueryBuilder<Source, Ts[]>;
+    return this as unknown as QueryBuilder<Source, SelectResult<Fields>>;
   }
 
   selectProjection(projection: QueryProjection): QueryBuilder<Source, unknown> {
@@ -611,12 +618,15 @@ class QueryBuilderImpl<Source = unknown, Result = Source> implements QueryBuilde
     return this as unknown as QueryBuilder<Source, unknown>;
   }
 
-  orderBy(field: Field, direction: OrderDirection = "asc"): QueryBuilder<Source, Result> {
+  orderBy(
+    field: SourceField<Source>,
+    direction: OrderDirection = "asc",
+  ): QueryBuilder<Source, Result> {
     this.state.order_by.push({ field, direction });
     return this;
   }
 
-  groupBy(field: Field): QueryBuilder<Source, Result> {
+  groupBy(field: SourceField<Source>): QueryBuilder<Source, Result> {
     this.state.group_by.push(field);
     return this;
   }
@@ -672,11 +682,11 @@ const queryBuilder = <Source = unknown, Result = Source>(
  * const q = fromEntity(User).where(eq(User.fields.active, true)).build();
  * ```
  */
-export const fromEntity = <Result = unknown>(
-  entity: Entity,
+export const fromEntity = <const E extends Entity, Result = InferEntity<E>>(
+  entity: E,
   result_type?: SemanticType<Result>,
-): QueryBuilder<unknown, Result> =>
-  queryBuilder<unknown, Result>(
+): QueryBuilder<E, Result> =>
+  queryBuilder<E, Result>(
     { kind: "entity_source", entity },
     result_type ??
       (entity.fieldList[0]?.semantic_type as SemanticType<Result>) ??

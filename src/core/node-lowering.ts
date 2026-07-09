@@ -9,27 +9,46 @@
 
 import type { GenContext } from "./context.ts";
 import type { StaticNode, TraitKind, NodeErrorType } from "./node.ts";
-import { BUILT_IN_TRAITS } from "./node.ts";
+import { BUILT_IN_TRAITS, type TraitMetadata } from "./node.ts";
 import type { Diagnostic } from "./diagnostics.ts";
 import { nodeDiagnostics } from "./diagnostics.ts";
 import type { SemanticType, Effect, Requirement } from "../types/index.ts";
 import type { MetadataEntry } from "./refs.ts";
+import { defineNode as defineKernelNode, nodeKinds } from "../kernel/index.ts";
+import { attachNode } from "../kernel/bridge.ts";
+import type { NodeKindContribution } from "./plugin.ts";
 
-/** Register a custom node in the context, checking for duplicate IDs. */
+/**
+ * Typed payload on a `STATIC` node. Carries the structural
+ * `StaticNode` shape so node-level checks and extraction helpers can
+ * read it without a `_bridge*` side channel (PLAN.md §0.5 #8).
+ */
+export type StaticNodeCustom = {
+  readonly node: StaticNode;
+};
+
+/** Register a custom node in the graph as a STATIC node, checking for duplicate IDs. */
 export const registerNode = (ctx: GenContext, node: StaticNode): void => {
-  if (node.id !== undefined) {
-    const existing = ctx.nodes.find((n) => n.id === node.id);
-    if (existing !== undefined) {
-      ctx.diagnostics.push(
-        nodeDiagnostics.duplicateId({
-          id: node.id,
-          suggestion: "Ensure each node has a unique stable ID.",
-        }),
-      );
-      return;
-    }
+  if (node.id !== undefined && ctx.graph.nodes.has(node.id)) {
+    ctx.diagnostics.push(
+      nodeDiagnostics.duplicateId({
+        id: node.id,
+        suggestion: "Ensure each node has a unique stable ID.",
+      }),
+    );
+    return;
   }
-  ctx.nodes.push(node);
+  const nodeId = node.id ?? `node:static:${node.name ?? node.kind}`;
+  attachNode(
+    ctx.graph,
+    defineKernelNode(nodeKinds.STATIC, nodeId, {
+      name: node.name ?? node.kind,
+      metadata: {
+        title: node.name ?? node.kind,
+        custom: { node } satisfies StaticNodeCustom,
+      },
+    }),
+  );
 };
 
 /** Create a StaticNode from its components. */
@@ -181,26 +200,34 @@ export const lowerNode = <N extends StaticNode = StaticNode>(
   return undefined;
 };
 
-/** Check all registered nodes for missing traits and unknown kinds. Returns new diagnostics. */
-export const checkNodes = (ctx: GenContext): readonly Diagnostic[] => {
+/** Check all registered static nodes for missing traits and unknown kinds. Returns new diagnostics. */
+export const checkNodesOnGraph = (
+  graph: GenContext["graph"],
+  nodeKindContributions: readonly NodeKindContribution[],
+  traitMetadata: ReadonlyMap<string, TraitMetadata>,
+): readonly Diagnostic[] => {
   const diagnostics: Diagnostic[] = [];
-  for (const node of ctx.nodes) {
-    const kindContrib = getNodeKindContribution(ctx, node.kind);
+  for (const graphNode of graph.nodes.values()) {
+    if (graphNode.kind !== nodeKinds.STATIC) continue;
+    const custom = graphNode.metadata?.custom as StaticNodeCustom | undefined;
+    const bridgeNode = custom?.node;
+    if (!bridgeNode) continue;
+    const kindContrib = nodeKindContributions.find((nk) => nk.kind === bridgeNode.kind);
     if (kindContrib === undefined) {
       diagnostics.push(
         nodeDiagnostics.unknownKind({
-          kind: node.kind,
+          kind: bridgeNode.kind,
           suggestion: "Register the node kind via a plugin or use a built-in kind.",
         }),
       );
       continue;
     }
 
-    const missing = kindContrib.traits.filter((trait) => !node.traits.includes(trait));
+    const missing = kindContrib.traits.filter((trait) => !bridgeNode.traits.includes(trait));
     if (missing.length > 0) {
       diagnostics.push(
         nodeDiagnostics.missingTrait({
-          nodeName: node.name,
+          nodeName: bridgeNode.name,
           traits: missing,
           suggestion: `Add the missing traits [${missing.join(", ")}] to the node definition.`,
         }),
@@ -208,8 +235,8 @@ export const checkNodes = (ctx: GenContext): readonly Diagnostic[] => {
     }
 
     // Check for unknown traits
-    for (const trait of node.traits) {
-      if (!BUILT_IN_TRAITS.has(trait) && !ctx.trait_metadata.has(trait)) {
+    for (const trait of bridgeNode.traits) {
+      if (!BUILT_IN_TRAITS.has(trait) && !traitMetadata.has(trait)) {
         diagnostics.push(
           nodeDiagnostics.unknownTrait({
             trait,
@@ -220,4 +247,23 @@ export const checkNodes = (ctx: GenContext): readonly Diagnostic[] => {
     }
   }
   return diagnostics;
+};
+
+/** Check all registered static nodes for missing traits and unknown kinds. Returns new diagnostics. */
+export const checkNodes = (ctx: GenContext): readonly Diagnostic[] =>
+  checkNodesOnGraph(
+    ctx.graph,
+    [...ctx.contributions.values()].flatMap((contrib) => contrib.node_kinds),
+    ctx.trait_metadata,
+  );
+
+/** Extract all bridged StaticNode instances from the graph. */
+export const getStaticNodesFromGraph = (graph: GenContext["graph"]): readonly StaticNode[] => {
+  const nodes: StaticNode[] = [];
+  for (const graphNode of graph.nodes.values()) {
+    if (graphNode.kind !== nodeKinds.STATIC) continue;
+    const custom = graphNode.metadata?.custom as StaticNodeCustom | undefined;
+    if (custom?.node) nodes.push(custom.node);
+  }
+  return nodes;
 };

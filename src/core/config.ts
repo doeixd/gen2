@@ -8,6 +8,7 @@
  */
 
 import { type Diagnostic, diagnostic } from "./diagnostics.ts";
+import { defaultIdentityPolicy, type IdentityPolicy } from "./identity-policy.ts";
 
 /** A single configuration entry with an optional default value. */
 export interface ConfigEntry {
@@ -21,6 +22,12 @@ export interface ConfigEntry {
 /** Aggregated configuration entries for an application. */
 export interface Config {
   readonly entries: readonly ConfigEntry[];
+  readonly identity: IdentityPolicy;
+}
+
+/** Input accepted by the user-facing `gen.config(...)` configurator. */
+export interface GenRuntimeConfigInput {
+  readonly identity?: Partial<IdentityPolicy>;
 }
 
 /** A named default instance of an entity with preset field values. */
@@ -56,7 +63,13 @@ export const defineConfigEntry = (
  * @param entries - Config entries.
  * @returns A Config record.
  */
-export const defineConfig = (entries: readonly ConfigEntry[]): Config => ({ entries });
+export const defineConfig = (
+  entries: readonly ConfigEntry[],
+  options: GenRuntimeConfigInput = {},
+): Config => ({
+  entries,
+  identity: { ...defaultIdentityPolicy, ...options.identity },
+});
 
 /**
  * Creates a DefaultInstance record.

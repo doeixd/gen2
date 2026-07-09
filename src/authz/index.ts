@@ -8,5 +8,14 @@ export * from "./authz.ts";
 export * from "./surface.ts";
 export * from "./placement.ts";
 export * from "./mutation-plan.ts";
+export * from "./passes.ts";
 export * from "./deny.ts";
 export * from "./matrix.ts";
+export {
+  getPoliciesFromGraph,
+  policyToKernelNode,
+  policyToKernelEdges,
+  policyToGraphFragment,
+} from "./kernel.ts";
+export { checkAuthzOnGraph, authzCheckPass } from "./checks-kernel.ts";
+export { authConditionToRuleExpr } from "./expr.ts";

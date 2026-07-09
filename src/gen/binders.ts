@@ -22,17 +22,20 @@ import * as listMod from "../list/index.ts";
 import * as reactivityMod from "../reactivity/index.ts";
 import * as routerMod from "../router/index.ts";
 import * as servicesMod from "../services/index.ts";
+import { attachGraphStep } from "../kernel/bridge.ts";
+import { attachContractToGraph, attachActorToGraph } from "../core/contract-kernel.ts";
 
 import type { GenContext } from "../core/index.ts";
 
 /**
  * Registers an array of refs into the given context so they can be tracked
  * for diagnostics and code generation.
- * @param ctx - The mutable Gen context.
- * @param refs - The refs to register.
+ *
+ * DEPRECATED: refs are now collected from graph node/edge bridge metadata.
+ * This function is a no-op and will be removed once all callers are updated.
  */
-export const registerRefs = (ctx: GenContext, refs: readonly core.Ref[]): void => {
-  ctx.refs.push(...refs);
+export const registerRefs = (_ctx: GenContext, _refs: readonly core.Ref[]): void => {
+  // No-op: refs are derived from ctx.graph via getRefsFromGraph().
 };
 
 /**
@@ -67,7 +70,7 @@ export const bindFactory =
 export const bindKeyFamily = (ctx: GenContext): typeof reactivityMod.defineKeyFamily =>
   ((name, options) => {
     const family = reactivityMod.defineKeyFamily(name, options);
-    ctx.key_families.push(family);
+    attachGraphStep(ctx.graph, reactivityMod.keyFamilyToGraphFragment(family));
     registerRefs(ctx, [family.ref]);
     return family;
   }) as typeof reactivityMod.defineKeyFamily;
@@ -78,6 +81,10 @@ export const bindReactiveResource = (
   ((input) => {
     const resource = reactivityMod.defineReactiveResource(input);
     ctx.reactive_resources.push(resource as reactivityMod.AnyResource);
+    attachGraphStep(
+      ctx.graph,
+      reactivityMod.reactiveResourceToGraphFragment(resource as reactivityMod.AnyResource),
+    );
     return resource;
   }) as typeof reactivityMod.defineReactiveResource;
 
@@ -85,6 +92,10 @@ export const bindStreamResource = (ctx: GenContext): typeof reactivityMod.define
   ((input) => {
     const resource = reactivityMod.defineStreamResource(input);
     ctx.reactive_resources.push(resource as reactivityMod.AnyResource);
+    attachGraphStep(
+      ctx.graph,
+      reactivityMod.reactiveResourceToGraphFragment(resource as reactivityMod.AnyResource),
+    );
     return resource;
   }) as typeof reactivityMod.defineStreamResource;
 
@@ -96,6 +107,10 @@ export const bindReactiveMutation = (
       input.optimistic ?? reactivityMod.deriveDefaultOptimisticPlan(input.action as any, ctx);
     const mutation = reactivityMod.defineReactiveMutation({ ...input, optimistic });
     ctx.reactive_mutations.push(mutation as reactivityMod.ReactiveMutation);
+    attachGraphStep(
+      ctx.graph,
+      reactivityMod.reactiveMutationToGraphFragment(mutation as reactivityMod.ReactiveMutation),
+    );
     return mutation;
   }) as typeof reactivityMod.defineReactiveMutation;
 
@@ -163,6 +178,7 @@ export const bindAppRoute = (ctx: GenContext): typeof routerMod.defineAppRoute =
   ((input) => {
     const route = routerMod.defineAppRoute(input);
     ctx.app_routes.push(route);
+    attachGraphStep(ctx.graph, routerMod.appRouteToGraphFragment(route));
     return route;
   }) as typeof routerMod.defineAppRoute;
 
@@ -170,10 +186,7 @@ export const bindServiceRef = (ctx: GenContext): typeof servicesMod.defineServic
   ((input) => {
     const service = servicesMod.defineServiceRef(input);
     ctx.services.push(service);
-    if (service.ref) registerRefs(ctx, [service.ref]);
-    for (const method of service.methods) {
-      if (method.ref) registerRefs(ctx, [method.ref]);
-    }
+    attachGraphStep(ctx.graph, servicesMod.serviceRefToGraphFragment(service));
     return service;
   }) as typeof servicesMod.defineServiceRef;
 
@@ -185,8 +198,16 @@ export const bindServiceRef = (ctx: GenContext): typeof servicesMod.defineServic
 export const bindEntity = (ctx: GenContext): typeof entityMod.defineEntity =>
   ((name, fields, options) => {
     const entity = entityMod.defineEntity(name, fields, options);
+    if (ctx.entities.some((existing) => existing.name === entity.name)) {
+      recordDiagnostic(ctx, {
+        severity: "error",
+        code: "entity:duplicate-name",
+        message: `Two entities share the name ${entity.name}`,
+      });
+    }
     ctx.entities.push(entity);
     registerRefs(ctx, [entity.ref, ...entity.fieldList.map((field) => field.ref)]);
+    attachGraphStep(ctx.graph, entity.fragment ?? entityMod.entityToGraphFragment(entity));
     return entity;
   }) as typeof entityMod.defineEntity;
 
@@ -229,7 +250,11 @@ export const bindColumn = (ctx: GenContext): typeof storageMod.defineColumn =>
  * @returns A context-bound `defineMapping`.
  */
 export const bindMapping = (ctx: GenContext): typeof storageMod.defineMapping =>
-  bindFactory(ctx.mappings, storageMod.defineMapping);
+  ((target_entity, field_mappings) => {
+    const mapping = storageMod.defineMapping(target_entity, field_mappings);
+    ctx.mappings.push(mapping);
+    return mapping;
+  }) as typeof storageMod.defineMapping;
 
 /**
  * Binds `defineProjection` to a context, validating that every projected field
@@ -250,7 +275,7 @@ export const bindProjection = (ctx: GenContext): typeof storageMod.defineProject
       }
     }
     const projection = storageMod.defineProjection(mapping, fields);
-    ctx.projections.push(projection);
+    ctx.projections.push(projection as storageMod.Projection);
     return projection;
   }) as typeof storageMod.defineProjection;
 
@@ -296,6 +321,7 @@ export const bindRelation = (ctx: GenContext): typeof relationMod.defineRelation
     const relation = relationMod.defineRelation(input);
     ctx.relations.push(relation);
     registerRefs(ctx, [relation.ref]);
+    attachGraphStep(ctx.graph, relation.fragment ?? relationMod.relationToGraphFragment(relation));
     return relation;
   }) as typeof relationMod.defineRelation;
 
@@ -309,6 +335,10 @@ export const bindRelationEntity = (ctx: GenContext): typeof relationMod.defineRe
     const relationEntity = relationMod.defineRelationEntity(name, roles, fields, options);
     ctx.relation_entities.push(relationEntity);
     registerRefs(ctx, [relationEntity.ref]);
+    attachGraphStep(
+      ctx.graph,
+      relationEntity.fragment ?? relationMod.relationEntityToGraphFragment(relationEntity),
+    );
     return relationEntity;
   }) as typeof relationMod.defineRelationEntity;
 
@@ -344,6 +374,7 @@ export const bindOneToOne = (ctx: GenContext): typeof relationMod.oneToOne =>
     const relation = relationMod.oneToOne(...args);
     ctx.relations.push(relation);
     registerRefs(ctx, [relation.ref]);
+    attachGraphStep(ctx.graph, relation.fragment ?? relationMod.relationToGraphFragment(relation));
     return relation;
   }) as typeof relationMod.oneToOne;
 
@@ -357,6 +388,7 @@ export const bindOneToMany = (ctx: GenContext): typeof relationMod.oneToMany =>
     const relation = relationMod.oneToMany(...args);
     ctx.relations.push(relation);
     registerRefs(ctx, [relation.ref]);
+    attachGraphStep(ctx.graph, relation.fragment ?? relationMod.relationToGraphFragment(relation));
     return relation;
   }) as typeof relationMod.oneToMany;
 
@@ -370,6 +402,7 @@ export const bindManyToOne = (ctx: GenContext): typeof relationMod.manyToOne =>
     const relation = relationMod.manyToOne(...args);
     ctx.relations.push(relation);
     registerRefs(ctx, [relation.ref]);
+    attachGraphStep(ctx.graph, relation.fragment ?? relationMod.relationToGraphFragment(relation));
     return relation;
   }) as typeof relationMod.manyToOne;
 
@@ -383,6 +416,7 @@ export const bindManyToMany = (ctx: GenContext): typeof relationMod.manyToMany =
     const relation = relationMod.manyToMany(...args);
     ctx.relations.push(relation);
     registerRefs(ctx, [relation.ref]);
+    attachGraphStep(ctx.graph, relation.fragment ?? relationMod.relationToGraphFragment(relation));
     return relation;
   }) as typeof relationMod.manyToMany;
 
@@ -400,7 +434,12 @@ export const bindRuntime = (ctx: GenContext): typeof runtimeMod.defineRuntime =>
  * @returns A context-bound `buildQuery`.
  */
 export const bindBuildQuery = (ctx: GenContext): typeof queryMod.buildQuery =>
-  bindFactory(ctx.queries, queryMod.buildQuery) as typeof queryMod.buildQuery;
+  ((input) => {
+    const query = queryMod.buildQuery(input);
+    ctx.queries.push(query);
+    attachGraphStep(ctx.graph, queryMod.queryToGraphFragment(query));
+    return query;
+  }) as typeof queryMod.buildQuery;
 
 /**
  * Binds `fromEntity` to a context, returning a fluent query builder that
@@ -418,6 +457,7 @@ export const bindFromEntity = (ctx: GenContext): typeof queryMod.fromEntity =>
     builder.build = () => {
       const query = originalBuild();
       ctx.queries.push(query);
+      attachGraphStep(ctx.graph, queryMod.queryToGraphFragment(query));
       return query;
     };
 
@@ -435,6 +475,7 @@ export const bindExprFunction = (ctx: GenContext): typeof functionMod.defineExpr
     const fn = functionMod.defineExprFunction(input);
     ctx.expr_functions.push(fn);
     if (fn.ref) registerRefs(ctx, [fn.ref]);
+    attachGraphStep(ctx.graph, fn.fragment ?? functionMod.exprFunctionToGraphFragment(fn));
     return fn;
   }) as typeof functionMod.defineExprFunction;
 
@@ -447,8 +488,9 @@ export const bindExprFunction = (ctx: GenContext): typeof functionMod.defineExpr
 export const bindQueryFunction = (ctx: GenContext): typeof functionMod.defineQueryFunction =>
   ((input) => {
     const fn = functionMod.defineQueryFunction(input);
-    ctx.query_functions.push(fn);
     if (fn.ref) registerRefs(ctx, [fn.ref]);
+    // Bridge dual-write: kernel graph mirrors query node + type edges.
+    attachGraphStep(ctx.graph, fn.fragment ?? functionMod.queryFunctionToGraphFragment(fn));
     return fn;
   }) as typeof functionMod.defineQueryFunction;
 
@@ -461,8 +503,9 @@ export const bindQueryFunction = (ctx: GenContext): typeof functionMod.defineQue
 export const bindActionFunction = (ctx: GenContext): typeof functionMod.defineActionFunction =>
   ((input) => {
     const fn = functionMod.defineActionFunction(input);
-    ctx.action_functions.push(fn);
     if (fn.ref) registerRefs(ctx, [fn.ref]);
+    // Bridge dual-write: kernel graph mirrors action node + type/invalidation/patch + writes edges.
+    attachGraphStep(ctx.graph, fn.fragment ?? functionMod.actionFunctionToGraphFragment(fn));
     return fn;
   }) as typeof functionMod.defineActionFunction;
 
@@ -477,6 +520,7 @@ export const bindPatchFunction = (ctx: GenContext): typeof functionMod.definePat
     const fn = functionMod.definePatchFunction(input);
     ctx.patch_functions.push(fn);
     if (fn.ref) registerRefs(ctx, [fn.ref]);
+    attachGraphStep(ctx.graph, fn.fragment ?? functionMod.patchFunctionToGraphFragment(fn));
     return fn;
   }) as typeof functionMod.definePatchFunction;
 
@@ -536,6 +580,7 @@ export const bindRoute = (ctx: GenContext): typeof apiMod.defineRoute =>
     }
     const route = apiMod.defineRoute(input);
     ctx.routes.push(route);
+    attachGraphStep(ctx.graph, apiMod.routeToGraphFragment(route));
     return route;
   }) as typeof apiMod.defineRoute;
 
@@ -564,6 +609,7 @@ export const bindGetter = (ctx: GenContext): typeof apiMod.defineGetter =>
     }
     const getter = apiMod.defineGetter(input);
     ctx.getters.push(getter);
+    attachGraphStep(ctx.graph, apiMod.getterToGraphFragment(getter));
     return getter;
   }) as typeof apiMod.defineGetter;
 
@@ -601,6 +647,7 @@ export const bindMutator = (ctx: GenContext): typeof apiMod.defineMutator =>
     }
     const mutator = apiMod.defineMutator(input);
     ctx.mutators.push(mutator);
+    attachGraphStep(ctx.graph, apiMod.mutatorToGraphFragment(mutator));
     return mutator;
   }) as typeof apiMod.defineMutator;
 
@@ -630,11 +677,21 @@ export const bindResource = (ctx: GenContext): typeof apiMod.defineResource =>
  * @returns A context-bound `definePolicy`.
  */
 export const bindPolicy = (ctx: GenContext): typeof authzMod.definePolicy =>
-  ((input) => {
-    const result = authzMod.definePolicy(input as never);
+  ((input: never) => {
+    const result = authzMod.definePolicy(input);
     ctx.policies.push(result as import("../authz/index.ts").Policy);
+    // Bridge dual-write: kernel graph mirrors policy node + targets/requires edges.
+    attachGraphStep(ctx.graph, result.fragment);
     return result;
   }) as typeof authzMod.definePolicy;
+
+export const bindDynamicPolicy = (ctx: GenContext): typeof authzMod.defineDynamicPolicy =>
+  ((input) => {
+    const result = authzMod.defineDynamicPolicy(input);
+    ctx.policies.push(result as import("../authz/index.ts").Policy);
+    attachGraphStep(ctx.graph, result.fragment);
+    return result;
+  }) as typeof authzMod.defineDynamicPolicy;
 
 /**
  * Binds `defineSerializer` to a context, registering the result into the serializers collection.
@@ -645,20 +702,30 @@ export const bindSerializer = (ctx: GenContext): typeof semantic.defineSerialize
   bindFactory(ctx.serializers, semantic.defineSerializer) as typeof semantic.defineSerializer;
 
 /**
- * Binds `defineContract` to a context, registering the result into the contracts collection.
+ * Binds `defineContract` to a context, registering the result into the contracts collection
+ * and bridging to the kernel graph (R13).
  * @param ctx - The mutable Gen context.
  * @returns A context-bound `defineContract`.
  */
 export const bindContract = (ctx: GenContext): typeof core.defineContract =>
-  bindFactory(ctx.contracts, core.defineContract);
+  ((...args) => {
+    const result = core.defineContract(...args);
+    attachContractToGraph(ctx.graph, result);
+    return result;
+  }) as typeof core.defineContract;
 
 /**
- * Binds `defineActor` to a context, registering the result into the actors collection.
+ * Binds `defineActor` to a context, registering the result into the actors collection
+ * and bridging to the kernel graph (R13).
  * @param ctx - The mutable Gen context.
  * @returns A context-bound `defineActor`.
  */
 export const bindActor = (ctx: GenContext): typeof core.defineActor =>
-  bindFactory(ctx.actors, core.defineActor);
+  ((...args) => {
+    const result = core.defineActor(...args);
+    attachActorToGraph(ctx.graph, result);
+    return result;
+  }) as typeof core.defineActor;
 
 /**
  * Binds `defineConfigEntry` to a context, registering the result into the
@@ -675,7 +742,7 @@ export const bindConfigEntry = (ctx: GenContext): typeof core.defineConfigEntry 
       expression_default,
       config_reference,
     );
-    ctx.config = { entries: [...ctx.config.entries, entry] };
+    ctx.config = { ...ctx.config, entries: [...ctx.config.entries, entry] };
     return entry;
   }) as typeof core.defineConfigEntry;
 
@@ -686,8 +753,10 @@ export const bindConfigEntry = (ctx: GenContext): typeof core.defineConfigEntry 
  * @returns A context-bound `defineConfig`.
  */
 export const bindConfig = (ctx: GenContext): typeof core.defineConfig =>
-  ((entries) => {
-    const config = core.defineConfig(entries);
+  ((entries, options) => {
+    const config = core.defineConfig(entries, {
+      identity: { ...ctx.config.identity, ...options?.identity },
+    });
     ctx.config = config;
     return config;
   }) as typeof core.defineConfig;
@@ -701,41 +770,80 @@ export const bindDefaultInstance = (ctx: GenContext): typeof core.defineDefaultI
   bindFactory(ctx.defaults, core.defineDefaultInstance);
 
 /**
- * Binds `defineEvent` to a context, registering the result into the events collection.
+ * Binds `defineEvent` to a context, registering the result into the events collection and graph.
  * @param ctx - The mutable Gen context.
  * @returns A context-bound `defineEvent`.
  */
 export const bindEvent = (ctx: GenContext): typeof eventsMod.defineEvent =>
-  bindFactory(ctx.events, eventsMod.defineEvent);
+  ((name, payload) => {
+    const event = eventsMod.defineEvent(name, payload);
+    const nodeId = `event:${event.name}`;
+    if (ctx.graph.nodes.has(nodeId)) {
+      ctx.diagnostics.push(
+        core.diagnostic({
+          severity: "error",
+          code: "events:duplicate-name",
+          message: `Event name "${event.name}" is already defined`,
+        }),
+      );
+    } else attachGraphStep(ctx.graph, eventsMod.eventToGraphFragment(event));
+    return event;
+  }) as typeof eventsMod.defineEvent;
 
 /**
  * Binds `emit` to a context, registering the resulting emission into the
- * event_emissions collection.
+ * event_emissions collection and graph.
  * @param ctx - The mutable Gen context.
  * @returns A context-bound `emit`.
  */
 export const bindEmit = (ctx: GenContext): typeof eventsMod.emit =>
   ((event, action, payload_expr) => {
     const emission = eventsMod.emit(event, action, payload_expr);
-    ctx.event_emissions.push(emission);
+    attachGraphStep(ctx.graph, eventsMod.eventEmissionToGraphFragment(emission));
     return emission;
   }) as typeof eventsMod.emit;
 
 /**
- * Binds `defineReducer` to a context, registering the result into the reducers collection.
+ * Binds `defineReducer` to a context, registering the result into the reducers collection and graph.
  * @param ctx - The mutable Gen context.
  * @returns A context-bound `defineReducer`.
  */
 export const bindReducer = (ctx: GenContext): typeof eventsMod.defineReducer =>
-  bindFactory(ctx.reducers, eventsMod.defineReducer);
+  ((name, target_field, events, combine, empty_value) => {
+    const reducer = eventsMod.defineReducer(name, target_field, events, combine, empty_value);
+    const nodeId = `reducer:${reducer.name}`;
+    if (ctx.graph.nodes.has(nodeId)) {
+      ctx.diagnostics.push(
+        core.diagnostic({
+          severity: "error",
+          code: "events:duplicate-reducer-name",
+          message: `Reducer name "${reducer.name}" is already defined`,
+        }),
+      );
+    } else attachGraphStep(ctx.graph, eventsMod.reducerToGraphFragment(reducer));
+    return reducer;
+  }) as typeof eventsMod.defineReducer;
 
 /**
- * Binds `defineSubscription` to a context, registering the result into the subscriptions collection.
+ * Binds `defineSubscription` to a context, registering the result into the subscriptions collection and graph.
  * @param ctx - The mutable Gen context.
  * @returns A context-bound `defineSubscription`.
  */
 export const bindSubscription = (ctx: GenContext): typeof eventsMod.defineSubscription =>
-  bindFactory(ctx.subscriptions, eventsMod.defineSubscription);
+  ((name, event, handler, payload_type) => {
+    const subscription = eventsMod.defineSubscription(name, event, handler, payload_type);
+    const nodeId = `subscription:${subscription.name}`;
+    if (ctx.graph.nodes.has(nodeId)) {
+      ctx.diagnostics.push(
+        core.diagnostic({
+          severity: "error",
+          code: "events:duplicate-subscription-name",
+          message: `Subscription name "${subscription.name}" is already defined`,
+        }),
+      );
+    } else attachGraphStep(ctx.graph, eventsMod.subscriptionToGraphFragment(subscription));
+    return subscription;
+  }) as typeof eventsMod.defineSubscription;
 
 /**
  * Binds `defineStaticFunction` to a context, registering the result into the
@@ -748,6 +856,7 @@ export const bindStaticFunction = (ctx: GenContext): typeof functionMod.defineSt
     const fn = functionMod.defineStaticFunction(input);
     ctx.static_functions.push(fn);
     if (fn.ref) registerRefs(ctx, [fn.ref]);
+    attachGraphStep(ctx.graph, fn.fragment ?? functionMod.staticFunctionToGraphFragment(fn));
     return fn;
   }) as typeof functionMod.defineStaticFunction;
 
@@ -764,6 +873,7 @@ export const bindPredicateFunction = (
     const fn = functionMod.definePredicateFunction(input);
     ctx.predicate_functions.push(fn);
     if (fn.ref) registerRefs(ctx, [fn.ref]);
+    attachGraphStep(ctx.graph, fn.fragment ?? functionMod.predicateFunctionToGraphFragment(fn));
     return fn;
   }) as typeof functionMod.definePredicateFunction;
 
@@ -778,6 +888,7 @@ export const bindPlanFunction = (ctx: GenContext): typeof functionMod.definePlan
     const fn = functionMod.definePlanFunction(input);
     ctx.plan_functions.push(fn);
     if (fn.ref) registerRefs(ctx, [fn.ref]);
+    attachGraphStep(ctx.graph, fn.fragment ?? functionMod.planFunctionToGraphFragment(fn));
     return fn;
   }) as typeof functionMod.definePlanFunction;
 
@@ -875,23 +986,25 @@ export const bindDeriveCrud = (ctx: GenContext): typeof crudMod.deriveCrud =>
     const getByIdKey = options?.getByIdKey ?? reactivityMod.entityKeyFamily(entity);
     const listKey = options?.listKey ?? reactivityMod.collectionKeyFamily(entity);
     if (!options?.getByIdKey) {
-      if (!ctx.key_families.some((kf) => kf.name === getByIdKey.name)) {
-        ctx.key_families.push(getByIdKey);
-      }
+      attachGraphStep(ctx.graph, reactivityMod.keyFamilyToGraphFragment(getByIdKey));
     }
     if (!options?.listKey) {
-      if (!ctx.key_families.some((kf) => kf.name === listKey.name)) {
-        ctx.key_families.push(listKey);
-      }
+      attachGraphStep(ctx.graph, reactivityMod.keyFamilyToGraphFragment(listKey));
     }
     const crud = crudMod.deriveCrud(entity, {
       ...options,
       getByIdKey,
       listKey,
     });
-    ctx.query_functions.push(crud.getById, crud.list);
-    ctx.action_functions.push(crud.create, crud.update, crud.delete);
     ctx.cruds.push(crud);
+
+    // Dual-write CRUD functions to kernel graph.
+    for (const fn of [crud.getById, crud.list]) {
+      attachGraphStep(ctx.graph, fn.fragment ?? functionMod.queryFunctionToGraphFragment(fn));
+    }
+    for (const fn of [crud.create, crud.update, crud.delete]) {
+      attachGraphStep(ctx.graph, fn.fragment ?? functionMod.actionFunctionToGraphFragment(fn));
+    }
 
     // Register access-surface bindings from CRUD access options (AUTHZ2+)
     if (options?.access) {

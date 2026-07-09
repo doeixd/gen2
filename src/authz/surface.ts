@@ -160,7 +160,7 @@ export interface Placement {
 export interface AccessSurfaceBinding<S extends AccessSurface = AccessSurface> {
   readonly kind: "access_surface_binding";
   readonly surface: S;
-  readonly policy: Policy;
+  readonly policy: Policy<any>;
   readonly deny: DenyBehavior;
   readonly placement?: Placement;
 }
@@ -298,7 +298,7 @@ export const deriveDefaultDeny = (surface: AccessSurface): DenyBehavior => {
 
 export const defineAccessSurfaceBinding = <S extends AccessSurface>(input: {
   readonly surface: S;
-  readonly policy: Policy;
+  readonly policy: Policy<any>;
   readonly deny?: DenyBehavior;
   readonly placement?: Placement;
 }): AccessSurfaceBinding<S> => ({

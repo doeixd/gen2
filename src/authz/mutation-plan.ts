@@ -13,10 +13,13 @@ import { type Diagnostic, diagnostic } from "../core/index.ts";
 import type { GenContext } from "../core/index.ts";
 import type { Entity, Field } from "../entity/index.ts";
 import type { ActionFunction } from "../function/index.ts";
+import { getActionFunctionsFromGraph } from "../function/kernel.ts";
+import type { KernelGraph } from "../kernel/index.ts";
 import type { Expr } from "../expression/index.ts";
 import type { Relation } from "../relation/index.ts";
 import type { Policy } from "./authz.ts";
 import type { AccessSurfaceBinding, DenyBehavior } from "./surface.ts";
+import { getPoliciesFromGraph } from "./kernel.ts";
 
 // --- Types ------------------------------------------------------------------
 
@@ -194,9 +197,14 @@ export const deriveMutationAccessPlan = <In = unknown, Out = unknown>(
  * @returns Diagnostics for unsafe or missing access checks.
  */
 export const checkMutationAccessPlans = (ctx: GenContext): readonly Diagnostic[] => {
+  return checkMutationAccessPlansOnGraph(ctx.graph);
+};
+
+export const checkMutationAccessPlansOnGraph = (graph: KernelGraph): readonly Diagnostic[] => {
   const out: Diagnostic[] = [];
-  for (const action of ctx.action_functions) {
-    const plan = deriveMutationAccessPlan(action, ctx.policies);
+  const policies = getPoliciesFromGraph(graph);
+  for (const action of getActionFunctionsFromGraph(graph)) {
+    const plan = deriveMutationAccessPlan(action, policies);
     out.push(...plan.diagnostics);
   }
   return out;

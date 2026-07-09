@@ -46,7 +46,7 @@
  */
 
 import { type Diagnostic, diagnostic } from "../core/index.ts";
-import type { Entity, Field } from "../entity/index.ts";
+import type { Entity, Field, FieldOf } from "../entity/index.ts";
 import type { Expr, Predicate } from "../expression/index.ts";
 import type {
   ActionFunction,
@@ -421,6 +421,16 @@ export const fieldOverride = <E = unknown>(
   field: Field,
   options?: Omit<EditorFieldOverride<E>, "field">,
 ): EditorFieldOverride<E> => ({ field, ...options });
+
+export const fieldOverrideFor =
+  <Ent extends Entity>(entity: Ent) =>
+  <E = unknown>(
+    field: FieldOf<Ent>,
+    options?: Omit<EditorFieldOverride<E>, "field">,
+  ): EditorFieldOverride<E> => {
+    void entity;
+    return fieldOverride(field, options);
+  };
 
 /**
  * Creates an {@link EditorSection}.
