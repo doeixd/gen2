@@ -45,6 +45,7 @@ import { registerPostgresSchemaAssemblyPass } from "../rules/postgres-schema-pas
 import { registerAccessMatrixPass } from "../rules/access-matrix-pass.ts";
 import { registerTestMatrixPass } from "../rules/test-matrix-pass.ts";
 import { registerAuditExplanationPass } from "../rules/audit-explanation-pass.ts";
+import { registerEffectAtomJsxUiPass } from "../dialects/targets/effect-atom-jsx/pass.ts";
 import { registerRelationPasses } from "../relation/passes.ts";
 import { registerEventsPasses } from "../events/passes.ts";
 import { registerReactionPasses } from "../reaction/passes.ts";
@@ -87,6 +88,7 @@ const dialectPassRegistrations: ReadonlyArray<(ctx: GenContext) => void> = [
   registerAccessMatrixPass,
   registerTestMatrixPass,
   registerAuditExplanationPass,
+  registerEffectAtomJsxUiPass,
   registerRelationPasses,
   registerEventsPasses,
   registerReactionPasses,

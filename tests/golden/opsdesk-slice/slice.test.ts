@@ -135,6 +135,10 @@ test("opsdesk slice — lifecycle.check diagnostic codes by severity", () => {
   	    "code": "rules:unbound-output-variable",
   	    "severity": "info",
   	  },
+  	  {
+  	    "code": "ui-target:conservative-invalidation",
+  	    "severity": "info",
+  	  },
   	]
   `);
 });
