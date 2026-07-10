@@ -89,6 +89,10 @@ test("golden: entity with fields — registers and checks clean", () => {
   	  },
   	  "diagnostics": [
   	    {
+  	      "code": "entity:no-store-name",
+  	      "severity": "info",
+  	    },
+  	    {
   	      "code": "ref:missing-stable-id",
   	      "severity": "warning",
   	    },
@@ -124,6 +128,14 @@ test("golden: 1:1 relation — clean check", () => {
   	    "relations": 1,
   	  },
   	  "diagnostics": [
+  	    {
+  	      "code": "entity:no-store-name",
+  	      "severity": "info",
+  	    },
+  	    {
+  	      "code": "entity:no-store-name",
+  	      "severity": "info",
+  	    },
   	    {
   	      "code": "ref:missing-stable-id",
   	      "severity": "warning",
@@ -164,6 +176,14 @@ test("golden: 1:N relation — clean check", () => {
   	    "relations": 1,
   	  },
   	  "diagnostics": [
+  	    {
+  	      "code": "entity:no-store-name",
+  	      "severity": "info",
+  	    },
+  	    {
+  	      "code": "entity:no-store-name",
+  	      "severity": "info",
+  	    },
   	    {
   	      "code": "ref:missing-stable-id",
   	      "severity": "warning",
@@ -207,6 +227,14 @@ test("golden: N:M relation without link entity — m2m-missing-link diagnostic",
   	    "relations": 1,
   	  },
   	  "diagnostics": [
+  	    {
+  	      "code": "entity:no-store-name",
+  	      "severity": "info",
+  	    },
+  	    {
+  	      "code": "entity:no-store-name",
+  	      "severity": "info",
+  	    },
   	    {
   	      "code": "ref:missing-stable-id",
   	      "severity": "warning",
@@ -252,6 +280,10 @@ test("golden: rule + authz policy on entity — clean check", () => {
   	    "policies": 1,
   	  },
   	  "diagnostics": [
+  	    {
+  	      "code": "entity:no-store-name",
+  	      "severity": "info",
+  	    },
   	    {
   	      "code": "obligation:required-pending",
   	      "severity": "info",
@@ -300,6 +332,10 @@ test("golden: query function reads entity — clean check", () => {
   	    {
   	      "code": "boundary:transport-auth-missing",
   	      "severity": "hint",
+  	    },
+  	    {
+  	      "code": "entity:no-store-name",
+  	      "severity": "info",
   	    },
   	    {
   	      "code": "ref:missing-stable-id",

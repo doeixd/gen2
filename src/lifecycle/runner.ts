@@ -40,6 +40,8 @@ import { registerContextPasses } from "../context/passes.ts";
 import { registerRulePasses } from "../rules/passes.ts";
 import { registerReactivityPasses } from "../reactivity/passes.ts";
 import { registerRlsPolicyPass } from "../rules/rls-pass.ts";
+import { registerPostgresTableLoweringPass } from "../rules/postgres-table-pass.ts";
+import { registerPostgresSchemaAssemblyPass } from "../rules/postgres-schema-pass.ts";
 import { registerAccessMatrixPass } from "../rules/access-matrix-pass.ts";
 import { registerTestMatrixPass } from "../rules/test-matrix-pass.ts";
 import { registerAuditExplanationPass } from "../rules/audit-explanation-pass.ts";
@@ -80,6 +82,8 @@ const dialectPassRegistrations: ReadonlyArray<(ctx: GenContext) => void> = [
   registerRulePasses,
   registerReactivityPasses,
   registerRlsPolicyPass,
+  registerPostgresTableLoweringPass,
+  registerPostgresSchemaAssemblyPass,
   registerAccessMatrixPass,
   registerTestMatrixPass,
   registerAuditExplanationPass,

@@ -92,6 +92,10 @@ test("opsdesk slice — lifecycle.check diagnostic codes by severity", () => {
   	    "severity": "hint",
   	  },
   	  {
+  	    "code": "entity:no-store-name",
+  	    "severity": "info",
+  	  },
+  	  {
   	    "code": "obligation:required-pending",
   	    "severity": "info",
   	  },
@@ -208,6 +212,187 @@ test("rule R-2: legalize.rule.toRlsPolicy — emits pg.rls-policy artifact", () 
   expect(rlsArtifact?.content).toContain("CREATE POLICY");
   expect(rlsArtifact?.content).toContain('"incidents"');
 });
+
+/**
+ * Assembled schema conformance gate (mission: end-to-end runnable
+ * Postgres artifact set).
+ *
+ * `legalize.entity.toPostgresTable` derives `CREATE TABLE` IR from
+ * entity/field graph nodes; `legalize.schema.assemblePostgresSchema`
+ * combines that with the RLS policy artifacts (`legalize.rule.toRlsPolicy`)
+ * into one deployable `sql/schema.sql`: every `CREATE TABLE` first, then
+ * `ALTER TABLE ... ENABLE ROW LEVEL SECURITY` for tables with at least
+ * one policy, then every `CREATE POLICY` — a valid dependency order for
+ * `psql -f`.
+ *
+ * `Organization` has no `store_name` (locked by the R-2 fixture / the
+ * `entity:no-store-name` diagnostic above), so it does not get a table;
+ * only `Incident` (`store_name: "incidents"`) does.
+ */
+test("assembled schema — golden snapshot of sql/schema.sql", () => {
+  const slice = buildOpsdeskSlice();
+  const result = lifecycle.check(slice.ctx);
+
+  const schema = result.artifacts.find((a) => a.path === "sql/schema.sql");
+  expect(schema).toBeDefined();
+  expect(schema?.language).toBe("postgres");
+  expect(schema?.content).toMatchInlineSnapshot(`
+  	"CREATE TABLE "incidents" (
+  	  "id" uuid NOT NULL,
+  	  "organizationId" uuid NOT NULL,
+  	  "title" text NOT NULL,
+  	  "status" text NOT NULL,
+  	  "role" text NOT NULL
+  	);
+
+  	ALTER TABLE "incidents" ENABLE ROW LEVEL SECURITY;
+
+  	CREATE POLICY "canViewIncident_policy" ON "incidents" USING ((row.status = 'open'));
+  	"
+  `);
+});
+
+/**
+ * Pure structural validator for the assembled schema — no database
+ * required. Confirms statement ordering (tables before RLS enablement
+ * before policies), balanced quoting, and that every `CREATE POLICY`'s
+ * target table has a preceding `CREATE TABLE` and a preceding
+ * `ENABLE ROW LEVEL SECURITY` for that same table. This is the always-on
+ * half of the conformance gate; the docker round-trip below is the
+ * optional half.
+ */
+const validateAssembledSchemaStructure = (sql: string): string[] => {
+  const problems: string[] = [];
+
+  // Balanced double quotes (every identifier must close).
+  const quoteCount = (sql.match(/"/g) ?? []).length;
+  if (quoteCount % 2 !== 0) {
+    problems.push(`Unbalanced double quotes: ${quoteCount} occurrences.`);
+  }
+
+  const statements = sql
+    .split(";")
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+
+  const createdTables = new Set<string>();
+  const rlsEnabledTables = new Set<string>();
+
+  for (const statement of statements) {
+    const createMatch = /^CREATE TABLE "([^"]+)"/.exec(statement);
+    if (createMatch) {
+      createdTables.add(createMatch[1]!);
+      continue;
+    }
+    const enableMatch = /^ALTER TABLE "([^"]+)" ENABLE ROW LEVEL SECURITY$/.exec(statement);
+    if (enableMatch) {
+      const table = enableMatch[1]!;
+      if (!createdTables.has(table)) {
+        problems.push(`ENABLE RLS on "${table}" has no preceding CREATE TABLE.`);
+      }
+      rlsEnabledTables.add(table);
+      continue;
+    }
+    const policyMatch = /^CREATE POLICY "[^"]+" ON "([^"]+)"/.exec(statement);
+    if (policyMatch) {
+      const table = policyMatch[1]!;
+      if (!createdTables.has(table)) {
+        problems.push(`CREATE POLICY on "${table}" has no preceding CREATE TABLE.`);
+      }
+      if (!rlsEnabledTables.has(table)) {
+        problems.push(`CREATE POLICY on "${table}" has no preceding ENABLE ROW LEVEL SECURITY.`);
+      }
+      continue;
+    }
+  }
+
+  return problems;
+};
+
+test("assembled schema — structural validation (statement order, no docker required)", () => {
+  const slice = buildOpsdeskSlice();
+  const result = lifecycle.check(slice.ctx);
+  const schema = result.artifacts.find((a) => a.path === "sql/schema.sql");
+  expect(schema?.content).toBeDefined();
+
+  const problems = validateAssembledSchemaStructure(schema!.content as string);
+  expect(problems).toEqual([]);
+});
+
+/**
+ * Optional docker-postgres round-trip: actually runs the assembled
+ * artifact through `psql` against a real `postgres:16-alpine` container
+ * and asserts it applies cleanly. Skipped unless both docker is on PATH
+ * and `GEN2_PG_CONFORMANCE=1` is set, so the default `vp test` run never
+ * depends on docker/network availability.
+ */
+const dockerConformanceEnabled = process.env.GEN2_PG_CONFORMANCE === "1";
+
+test.skipIf(!dockerConformanceEnabled)(
+  "assembled schema — docker postgres round-trip (opt-in via GEN2_PG_CONFORMANCE=1)",
+  async () => {
+    const { execFileSync } = await import("node:child_process");
+    const { mkdtempSync, writeFileSync, rmSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+
+    const slice = buildOpsdeskSlice();
+    const result = lifecycle.check(slice.ctx);
+    const schema = result.artifacts.find((a) => a.path === "sql/schema.sql");
+    expect(schema?.content).toBeDefined();
+
+    const dir = mkdtempSync(join(tmpdir(), "gen2-pg-conformance-"));
+    const sqlPath = join(dir, "schema.sql");
+    writeFileSync(sqlPath, schema!.content as string, "utf8");
+
+    const containerName = `gen2-pg-conformance-${Date.now()}`;
+    try {
+      execFileSync("docker", [
+        "run",
+        "-d",
+        "--rm",
+        "--name",
+        containerName,
+        "-e",
+        "POSTGRES_PASSWORD=postgres",
+        "postgres:16-alpine",
+      ]);
+
+      // Wait for postgres to accept connections.
+      let ready = false;
+      for (let attempt = 0; attempt < 30 && !ready; attempt++) {
+        try {
+          execFileSync("docker", ["exec", containerName, "pg_isready", "-U", "postgres"]);
+          ready = true;
+        } catch {
+          await new Promise((resolve) => setTimeout(resolve, 1000));
+        }
+      }
+      expect(ready).toBe(true);
+
+      execFileSync("docker", ["cp", sqlPath, `${containerName}:/schema.sql`]);
+      const output = execFileSync("docker", [
+        "exec",
+        containerName,
+        "psql",
+        "-U",
+        "postgres",
+        "-v",
+        "ON_ERROR_STOP=1",
+        "-f",
+        "/schema.sql",
+      ]).toString();
+      expect(output).not.toMatch(/ERROR/i);
+    } finally {
+      try {
+        execFileSync("docker", ["rm", "-f", containerName]);
+      } catch {
+        // best-effort cleanup
+      }
+      rmSync(dir, { recursive: true, force: true });
+    }
+  },
+);
 
 /**
  * Rule R-3 (PLAN.md §0.2 derivation #3 / Track R §R3) — *active via
