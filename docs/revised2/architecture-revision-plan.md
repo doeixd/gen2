@@ -1,22 +1,18 @@
-# Architecture Revision Plan — Current-State Revision
+# Architecture Revision Plan — Inferred Reactivity + Causal Verification
 
 > Updated against `feat/typed-edge-construction` after the typed graph/compiler work landed.
 >
-> This document is intentionally narrower than the master `PLAN.md`. It describes the
-> **next architectural work from the repo as it exists now**, not the work that was
-> necessary to get here.
+> This document describes the **next architectural work from the repo as it exists now**.
+> It does not re-plan Pattern/Morphism/Patch/Pipeline infrastructure that already ships.
 
 ## 0. Current checkpoint
 
-The previous version of this plan was written as though the general compiler architecture
-still needed to be built. That is no longer true.
-
-The feature branch already has the important spine:
+The branch already has the compiler spine:
 
 ```text
 Authoring APIs
     ↓
-canonical-ish semantic graph
+semantic graph
     ↓
 GraphPattern / GraphMatch
     ↓
@@ -29,7 +25,7 @@ Pipeline / preview
 target lowering and emission
 ```
 
-It also already has a real end-to-end proof slice:
+It also already proves an important vertical slice:
 
 ```text
 action writes field
@@ -42,63 +38,139 @@ compiler derives INVALIDATES_KEY
     ↓
 preview exposes patch + diagnostic + explanation
     ↓
-Effect-Atom JSX target emits reactive invalidation
+Effect-Atom JSX target emits invalidation
+```
 
-and, from the same application graph:
+and, from the same graph:
 
-entity/rule
+```text
+entity + rule
     ↓
 Postgres table + RLS policy
     ↓
 assembled schema.sql
 ```
 
-So the next milestone is **not** "prove the graph compiler architecture is real." It is
-already real.
+The architecture is therefore no longer the question.
 
-The next milestone is:
+The next thesis is stronger:
 
-> **Make change, causality, and reactive obligations first-class semantic facts that the
-> existing graph compiler can derive, explain, check, and lower.**
+> **If Dirived knows the complete semantic schema, the relationships between values, what every computation reads, and exactly how every operation changes state, ordinary reactivity should be inferred completely.**
 
-That is the bridge between the current repo and the "hidden type system of reactive code"
-idea.
+Manual invalidation should be an escape hatch for missing semantics, not the normal authoring model.
 
----
-
-## 1. What is no longer roadmap work
-
-Do not re-plan or rebuild the following as new architecture:
-
-- `GraphPattern` / `GraphMatch`
-- `GraphPatch`
-- `GraphMorphism`
-- derivation passes
-- diagnostics / repairs / explanations
-- `Surface`
-- `Dialect`
-- typed edge-kind witnesses and endpoint roles
-- branded graph IDs / refs
-- typed pipeline witnesses
-- pipeline preview
-- rule-derived reactive invalidation
-- Postgres table/RLS lowering
-- Effect-Atom JSX reactive target emission
-- the OpsDesk golden vertical slice
-
-These should be **hardened and generalized**, not replaced.
-
-Likewise, do not create a parallel "change compiler" beside the graph compiler. Change and
-causal facts must use the same Node / Edge / Pattern / Morphism / Patch machinery that the
-rest of Dirived uses.
+The remaining work is to make the graph the application's **schema of change**.
 
 ---
 
-## 2. Architectural invariant: one semantic source of truth
+# 1. Core design principle: reactivity is a theorem of the graph
 
-The most important unfinished architectural job is still canonicalization.
+Do not design a public API where application authors routinely write:
 
-The intended architecture is:
+```ts
+app.invalidates(UpdateUser, UserList)
+app.dependsOn(UserList, User)
+```
+
+when those facts already follow from the semantic graph.
+
+Authors should state the facts that define the application:
+
+```text
+what values exist
+how values relate
+what expressions/rules/queries read
+what operations write
+what exact transformation an operation performs
+what derived values depend on
+```
+
+Dirived should derive:
+
+```text
+what can become stale
+what must be recomputed
+which runtime resources must be notified
+which target-specific keys must be invalidated
+```
+
+The governing rule is:
+
+> **Within the closed portion of the application represented by the semantic graph, manual reactive wiring indicates missing semantic information.**
+
+This should become an architectural invariant and a documentation principle.
+
+---
+
+# 2. Closed-world completeness must be explicit
+
+The "reactivity is fully inferred" claim depends on Dirived knowing the relevant world.
+
+The compiler should therefore distinguish:
+
+```text
+known semantics
+opaque semantics
+external dependencies
+runtime-resolved identity
+```
+
+Do not silently treat opaque code as dependency-free.
+
+## 2.1 Opaque code
+
+If a callback cannot be inspected, it must declare its semantic footprint:
+
+```text
+reads
+writes
+effects
+external inputs
+possible outputs
+```
+
+The rule remains:
+
+> **Opaque code is allowed. Unknown impact is not.**
+
+Opaque declarations carry lower assurance/provenance than compiler-derived facts.
+
+## 2.2 External state is still data
+
+Time, random values, HTTP APIs, filesystems, environment state, queues, another database,
+feature flags, device state, etc. should be represented as semantic dependencies when they
+can influence a result.
+
+For example:
+
+```text
+CurrentTime
+    READ_BY
+ExpiringSessionRule
+```
+
+means time progression can invalidate the rule even though no local database field changed.
+
+## 2.3 Runtime identity is not missing semantics
+
+The compiler can know statically:
+
+```text
+User.name change invalidates UserProfile(userId)
+```
+
+while the concrete `userId = 42` is resolved at runtime.
+
+Static graph nodes represent **families of change/dependency**. Runtime execution instantiates
+those families with keys/scopes/payloads.
+
+Do not confuse runtime parameterization with an incomplete dependency graph.
+
+---
+
+# 3. Finish the single-source-of-truth migration
+
+The most important unfinished architectural work is still semantic canonicalization.
 
 ```text
 Authoring facade
@@ -112,243 +184,201 @@ target graph facts
 artifacts
 ```
 
-A facade may have a rich TypeScript witness for ergonomics and inference, but it must not
-remain an independently authoritative semantic model.
+Adopt this invariant:
 
-Adopt this as an explicit project invariant:
+> **If a semantic fact exists as graph nodes/edges, another object may expose it as a typed view, but must not independently own a second writable copy.**
 
-> **If a semantic fact is represented by graph nodes or edges, another object may expose it
-> as a typed view, but must not independently own a second writable copy of that fact.**
+## 3.1 Operation model
 
-### Immediate canonicalization targets
+`src/kernel/operations.ts` still exposes `OpSignature` while the Type/Operation dialect has
+first-class operation nodes and edges:
 
-1. **Operation signatures.** `src/kernel/operations.ts` still has `OpSignature`, while the
-   Type/Operation dialect has `OPERATION_DEF_NODE_KIND`, input/output edges, traits, and
-   operation relations. `opToKernelNode` / `opToKernelEdges` is currently an adapter seam.
+```text
+OPERATION_DEF
+HAS_INPUT_TYPE
+HAS_OUTPUT_TYPE
+TYPE_SUPPORTS_OPERATION
+OPERATION_READS
+OPERATION_WRITES
+OPERATION_PRODUCES_PATCH
+ACTION_APPLIES_OPERATION
+```
 
-   Move toward one of these two acceptable end states:
+Move toward:
 
-   ```text
-   OpSignature = authoring witness over an OperationDef graph node
-   ```
+```text
+OpSignature = typed authoring/view witness for operation graph facts
+```
 
-   or:
+or immediate lowering from `OpSignature` construction into canonical graph facts.
 
-   ```text
-   OpSignature authoring → graph fact creation immediately
-   downstream code reads only the graph
-   ```
+Do not maintain a permanent operation model plus a graph copy.
 
-   Do not maintain a long-lived operation model plus a graph copy.
+## 3.2 Reads/writes/reactivity
 
-2. **Action/query/reactivity projections.** Where legacy objects expose `effects`,
-   `requirements`, `invalidates`, `reactivity`, or written/read fields, make those values
-   projections of graph facts wherever practical.
+Legacy action/query/resource properties such as:
 
-3. **Artifact obligations.** The existing `src/obligations/` system concerns test/docs/devtool
-   artifact obligations. Preserve it, but do not reuse it as the representation of causal
-   runtime obligations. They are different concepts.
+```text
+reads
+writes
+invalidates
+reactivity
+effects
+requirements
+```
 
-### Gate
+should increasingly become graph-backed projections.
 
-The OpsDesk fixture should remain behaviorally identical while an increasing percentage of
-its downstream passes can be implemented using only graph facts and typed witnesses.
+Existing convenience authoring can remain, but downstream derivation should read canonical
+edges.
+
+## 3.3 Artifact obligations remain separate
+
+`src/obligations/` currently describes generated test/docs/devtool obligations. Preserve
+that concept.
+
+Do not use it as the representation of runtime causal guarantees. Artifact obligations and
+causal guarantees are related but semantically different.
 
 ---
 
-## 3. Small kernel hardening before more semantics
+# 4. Small kernel hardening
 
-Do not pause the project for another kernel rewrite, but fix the concrete seams that make
-causal reasoning unreliable.
+Do not perform another kernel rewrite. Fix concrete seams that matter for chained inference.
 
-### 3.1 Pass execution semantics
+## 4.1 Sequential phase execution
 
-`runPassPipeline()` is sequential and threads `modifiedGraph` into the next pass.
-`PassRegistry.runPhase()` currently invokes every pass against the same incoming graph and
-combines results afterward.
+`runPassPipeline()` correctly threads `modifiedGraph` through successive passes.
+`PassRegistry.runPhase()` currently runs every pass against the same input graph.
 
-That difference is dangerous once same-phase derivations depend on one another.
-
-Make the default phase semantics sequential:
+Make default phase execution sequential:
 
 ```text
 G0 --P1--> G1 --P2--> G2 --P3--> G3
 ```
 
-If parallel/independent execution is later valuable, make it explicit rather than the
-implicit default.
+Parallel execution may be added later only for passes explicitly proven independent.
 
-### 3.2 Preserve witnesses through stage results
+## 4.2 Preserve typed stage outputs
 
-Continue the already-started generic hardening so:
-
-```ts
-Pipeline<...>
-```
-
-preserves the specific unions of:
+Continue hardening pipeline generics so callers retain specific unions of:
 
 ```text
 patch kinds
 artifact kinds
 diagnostic codes
-surfaces
+surface witnesses
 morphism outputs
 ```
 
-instead of collapsing them to `GraphPatch[]`, `Artifact[]`, and strings at the public
-boundary.
+rather than broad `GraphPatch[]`, `Artifact[]`, and `string[]` at public boundaries.
 
-This matters for causal tooling because the compiler should be able to tell a caller, in
-its TypeScript type, which semantic consequences a pipeline can derive or emit.
+## 4.3 Keep semantic IDs witness-first
 
-### 3.3 Do not add new magic-string seams
-
-The current branch has invested heavily in typed witnesses, kind-bound IDs, refs, and
-endpoint inference. Every new causal API should use those witnesses directly.
-
-A relation may serialize to a string ID. Normal authoring code should never refer to that
-ID as a magic string.
+Every new change/dependency API uses existing typed kind/ref/ID witnesses. Strings remain
+serialization identities, not ordinary application-facing references.
 
 ---
 
-## 4. Add a general causal vocabulary — additively
+# 5. Normalize reads, writes, and derivations into a queryable dependency model
 
-The current reactivity dialect has useful concrete facts such as:
+Before adding more reactive APIs, make the compiler able to ask these questions uniformly:
 
 ```text
-INVALIDATES_KEY
-DERIVES_KEY
-PATCHES_RESOURCE
-PRODUCES_DELTA
-MAINTAINS_VIEW
+What does node X read?
+What can operation A write?
+What is derived from field F?
+Which predicates depend on F?
+Which queries depend on those predicates?
+Which resources/views depend on those queries?
 ```
 
-Keep them.
-
-But `INVALIDATES_KEY` is narrower than the application-wide causal schema described by the
-reactive-type argument. A database write can invalidate a semantic query before any
-particular target decides to represent that query with a key.
-
-Add a **small open causal vocabulary** above target/runtime-specific relations.
+Do not necessarily replace domain-specific edge kinds immediately. Build typed graph views
+or patterns that normalize them.
 
 Conceptually:
 
 ```text
-A --invalidates--> B
-A --mayCause-----> B
-A --mustCause----> B
-P --enables------> A
-P --disables-----> A
-A --establishes--> P
-A --produces-----> ΔX
+Reads(X)       -> semantic subjects read by X
+Writes(A)      -> semantic subjects potentially changed by A
+Derives(Y)     -> semantic subjects Y derives from
+Dependents(X)  -> reverse dependency closure
 ```
 
-Do not force every dependency into a single undifferentiated `A → B` edge. The relation
-kind is part of the semantics.
-
-### Suggested initial relation families
-
-Start with only the ones needed by real examples:
-
-```text
-INVALIDATES
-MAY_CAUSE
-MUST_CAUSE
-ENABLES
-PRODUCES_DELTA
-```
-
-`READS` and `WRITES` already exist in several domain-specific forms. Prefer deriving a
-uniform causal view over those existing typed edges rather than immediately replacing all
-of them with generic edges.
-
-### Layering rule
-
-A target-specific edge should be derivable from semantic facts when possible:
-
-```text
-AcknowledgeIncident
-    WRITES
-Incident.status
-
-        ↓ derive
-
-AcknowledgeIncident
-    PRODUCES_DELTA
-ΔIncident.status
-
-        ↓ derive
-
-AcknowledgeIncident
-    INVALIDATES
-ListOpenIncidents
-
-        ↓ reactivity lowering
-
-AcknowledgeIncident
-    INVALIDATES_KEY
-Incident:entity
-
-        ↓ Effect-Atom JSX emission
-
-invalidates: incidentKey.key
-```
-
-This preserves the existing working target while moving the semantic truth upward.
+The existing rule invalidation pass is the first proof of this model. Generalize that
+reasoning rather than creating a separate reactive graph.
 
 ---
 
-## 5. Derive change witnesses from the existing Type/Operation graph
+# 6. Derive change semantics from Type + Operation
 
-The Type/Operation dialect already contains the right foundation:
+The Type/Operation dialect should become the foundation for precise state change.
+
+The important structure is:
 
 ```text
 Type
-Type --supportsOperation--> OperationDef
-OperationDef --hasInputType--> Type
-OperationDef --hasOutputType--> Type
-OperationDef --producesPatch--> ...
-OperationDef --inverse--> OperationDef
-Action --appliesOperation--> OperationDef
+  │ supports
+  ▼
+Operation
+  │ has exact semantics
+  ▼
+Change / Delta
 ```
 
-Use that instead of inventing a second change hierarchy.
+and:
 
-### Goal
+```text
+Field
+  │ has type
+  ▼
+Type
+```
 
-From a semantic entity definition such as:
+therefore:
+
+```text
+Field admits the lawful operations supported by its semantic type
+```
+
+## 6.1 Derived field operation witnesses
+
+For example:
 
 ```ts
 const User = entity("User", {
   name: string(),
   active: boolean(),
+  loginCount: counter(),
 });
 ```
 
-the compiler should be able to expose or derive stable operation/change witnesses such as:
+can expose/derive witnesses such as:
 
 ```ts
 User.ops.name.set
 User.ops.active.set
 User.ops.active.toggle
+User.ops.loginCount.set
+User.ops.loginCount.increment
+User.ops.loginCount.decrement
 ```
 
-The precise public spelling can evolve. The important thing is that these are **real typed
-witnesses backed by graph facts**, not convenience strings.
+The public spelling may evolve. The invariant is that they are stable typed semantic
+witnesses backed by graph facts.
 
-### Conservative derivation
+## 6.2 Infer operations from semantic capability, not representation
 
-Derive lawful operations from semantic type capabilities, not physical representation.
+Do not infer `increment` merely because a value lowers to SQL `integer`.
 
-For example:
+Examples:
 
 ```text
 boolean
   set
   toggle
 
-counter/int with counter semantics
+counter
   set
   increment
   decrement
@@ -358,513 +388,717 @@ email
 
 money
   set by default
+  credit/debit only when explicitly modeled
 ```
 
-Do not infer `increment` merely because `Money` happens to lower to an integer column.
+## 6.3 Operations should expose exact state transformations
 
-### Coarse-to-precise change facts
+Where possible, an operation should tell the compiler more than "writes field F".
 
-If an action only declares:
+For example:
 
 ```text
-Action WRITES Field
+Set<T>(new)
+  old = x
+  new = new
+  delta = Replace(x, new)
+
+Increment(n)
+  old = x
+  new = x + n
+  delta = +n
+
+SetAdd(v)
+  delta = Add(v)
 ```
 
-then the compiler can still derive a coarse change witness:
+This is what allows reactivity to move from conservative entity invalidation toward exact
+change propagation.
+
+## 6.4 Precision is monotonic
+
+Represent the compiler's knowledge at increasing precision:
 
 ```text
-Action PRODUCES ΔField
+Operation WRITES Entity
+      ↓
+Operation WRITES Field
+      ↓
+Operation APPLIES Field.operation
+      ↓
+Operation PRODUCES exact Delta<Field>
 ```
 
-If the action is expressed using a known operation witness, it can derive a more precise
-change:
+Every stage should improve or preserve precision, never silently discard it.
+
+Attach provenance/confidence to derived facts:
 
 ```text
-Action APPLIES Field.increment
-Action PRODUCES ΔField(+n)
+exact
+matched
+conservative
+opaque-declared
+unknown
 ```
-
-Precision should improve monotonically as more semantics become known.
 
 ---
 
-## 6. Make causal contracts first-class
+# 7. Infer semantic invalidation automatically
 
-This is the main new piece.
+`INVALIDATES` should normally be **derived**, not authored.
 
-The graph currently does a good job describing consequences that are derivable from known
-facts. It should also be able to express consequences that are **required by the semantic
-contract**.
-
-Distinguish:
+Suppose the graph contains:
 
 ```text
-A MAY_CAUSE B
+AcknowledgeIncident
+    WRITES Incident.status
+
+CanViewIncident
+    READS Incident.status
+
+ListOpenIncidents
+    USES CanViewIncident
 ```
 
-from:
+Dirived should derive:
 
 ```text
-A MUST_CAUSE B
+AcknowledgeIncident
+    PRODUCES ΔIncident.status
+
+ΔIncident.status
+    INVALIDATES CanViewIncident
+
+CanViewIncident
+    INVALIDATES ListOpenIncidents
 ```
 
-This is the difference between an effect set and an obligation.
+or an equivalent normalized dependency representation.
 
-### Use witnesses, not names
+The transitive dependency closure is compiler output.
 
-The API should compose existing operation/action/resource witnesses directly.
+## 7.1 Basic rule
 
-Conceptually:
+At the coarse level:
+
+```text
+Writes(A) ∩ Reads(B) ≠ ∅
+```
+
+implies B may become stale after A.
+
+Then recursively propagate staleness through derived values, predicates, queries, resources,
+views, and other semantic computations.
+
+## 7.2 Do not confuse invalidation with value change
+
+Define precisely:
+
+```text
+A INVALIDATES B
+```
+
+as:
+
+> After A, B can no longer be assumed fresh without further reasoning/recomputation.
+
+It does **not** mean B's semantic value definitely changed.
+
+Example:
+
+```text
+count: 2 → 4
+parity = count % 2
+```
+
+`Parity` is invalidated by the count change, but recomputation can discover the value is
+still `0`.
+
+This distinction must remain visible in the IR:
+
+```text
+INVALIDATED
+RECOMPUTED
+CHANGED
+```
+
+are different events/facts.
+
+## 7.3 Manual invalidation is an escape hatch
+
+Keep an explicit form for:
 
 ```ts
-const AppCausality = causal(
-  UpdateUser,
-  PermissionsInvalidated,
-  MemberListInvalidated,
-)
-  .requires(
-    UpdateUser,
-    PermissionsInvalidated,
-    ({ userId }) => ({ userId }),
-  )
-  .requires(
-    PermissionsInvalidated,
-    MemberListInvalidated,
-    ({ userId }) => ({ userId }),
-  );
+app.reactivity.invalidates(A, B, { reason: ... })
 ```
 
-The mapper is type-checked from the source witness payload to the target witness payload.
-No relation after declaration uses a magic string.
+only for cases where semantics are intentionally outside the inspectable model.
 
-The graph representation should still be ordinary typed edges/predicates; the fluent API
-is only an authoring surface.
-
-### Parameterized causality
-
-Causal contracts must refer to related instances, not only operation kinds:
+Require provenance/reason and surface it in diagnostics/explanations:
 
 ```text
-UserChanged(user=42)
-    MUST_CAUSE
-PermissionsInvalidated(user=42)
+manual-invalidates
+reason: "third-party SDK mutates hidden native cache"
 ```
 
-The payload mapping/projection is therefore part of the edge contract.
-
-Do not model this as "every UserChanged invalidates every Permissions cache."
-
-### Alternatives and conjunctions
-
-The eventual algebra should be able to express at least:
+A manual invalidation with no opaque/external justification should ideally trigger a hint:
 
 ```text
-A must cause B
-A must cause B AND C
-A must cause B OR C
-A must cause B IF P
+reactivity:manual-edge-may-be-derivable
 ```
-
-Do not implement the full algebra before the simple `A MUST_CAUSE B` slice works.
-
-### Naming
-
-Avoid conflating these with the existing generated-artifact `SemanticObligation` system.
-Prefer vocabulary such as:
-
-```text
-CausalContract
-CausalRequirement
-MustCause
-Guarantee
-```
-
-unless/until the two systems are deliberately unified under a more general concept.
 
 ---
 
-## 7. Verify implementations with an inspectable program/effect IR
+# 8. Infer target-specific reactivity from semantic invalidation
 
-A declaration that `A MUST_CAUSE B` is only valuable if the implementation can be checked.
+The current `INVALIDATES_KEY` edge remains useful, but it should increasingly be a lowering
+of more general semantic dependency facts.
 
-Do not expect TypeScript's ordinary control-flow type checker to prove arbitrary async
-liveness. Put the proof boundary where Dirived is already strongest: **inspectable IR**.
+Preferred chain:
 
-### Authoring surface
+```text
+AcknowledgeIncident
+    WRITES
+Incident.status
 
-A generator / Effect-like implementation syntax can be ergonomic:
+      ↓ derive
 
-```ts
-app.implement(IssueInvoice, function* (input) {
-  const invoice = yield* Invoice.update(...);
-  yield* Audit.record(...);
-  yield* InvoiceIssued.emit(...);
-  return invoice;
-});
+AcknowledgeIncident
+    PRODUCES
+ΔIncident.status
+
+      ↓ dependency closure
+
+AcknowledgeIncident
+    INVALIDATES
+ListOpenIncidents
+
+      ↓ reactivity target planning
+
+AcknowledgeIncident
+    INVALIDATES_KEY
+Incident:entity
+
+      ↓ Effect-Atom JSX
+
+invalidates: incidentKey.key
 ```
 
-But `yield*` is not the semantic foundation. Lower it to a small program IR.
+Another target can lower the same semantic graph differently:
 
-### Minimal program IR
+```text
+TanStack Query       -> invalidateQueries(...)
+Effect-Atom JSX      -> invalidates: key
+small reactive core -> source.invalidate()
+server cache         -> evict/mark stale
+materialized view    -> incremental maintenance/recompute
+event stream         -> emit change event
+```
+
+The semantic graph does not care which mechanism is chosen.
+
+A new target should not require changing domain authoring.
+
+---
+
+# 9. Add delta-aware and value-sensitive propagation
+
+Once operations produce structured deltas, go beyond "may be stale."
+
+The ideal pipeline is:
+
+```text
+schema knowledge
+    ↓
+dependency inference
+    ↓
+field-level invalidation
+    ↓
+exact operation semantics
+    ↓
+delta inference
+    ↓
+delta propagation through derivations
+    ↓
+no-op detection / incremental maintenance
+```
+
+## 9.1 Derivative/incremental interfaces
+
+Allow an operation or derivation to expose how input deltas transform into output deltas:
+
+```text
+ΔA -> ΔB
+```
+
+This can be authored once for reusable semantic operations and inherited wherever those
+operations appear.
+
+For example:
+
+```text
+Count.increment(+2)
+    ↓
+ΔCount = +2
+    ↓
+Parity derivative/recompute
+    ↓
+ΔParity = no-change
+```
+
+The runtime can stop propagation there.
+
+## 9.2 Do not require delta sophistication for correctness
+
+Delta support is an optimization/precision layer.
+
+Fallback remains:
+
+```text
+known dependency -> invalidate -> recompute
+```
+
+Correctness must not depend on every derivation having an incremental implementation.
+
+## 9.3 Reuse existing reactivity/IVM traits
+
+The current reactivity dialect already contains concepts such as:
+
+```text
+PRODUCES_DELTA
+IVM
+MAINTAINS_VIEW
+PATCHABLE
+INCREMENTALIZABLE
+```
+
+Extend and connect these rather than inventing a parallel incremental-computation subsystem.
+
+---
+
+# 10. Separate inferred reactivity from authored causal obligations
+
+This is the most important correction to the previous plan.
+
+There are **two different things**:
+
+### A. Derived causal/dependency facts
+
+These follow from application semantics:
+
+```text
+A writes F
+B reads F
+therefore A may invalidate B
+```
+
+The author should not declare these manually.
+
+### B. Domain causal guarantees
+
+These are requirements that do not necessarily follow from read/write structure:
+
+```text
+PlaceOrder MUST_CAUSE SendReceipt
+PlaceOrder MUST_CAUSE ReserveInventory
+UserDeleted MUST_CAUSE AuditRetentionRecord
+PaymentCaptured MUST_CAUSE LedgerEntry
+```
+
+These are genuine domain semantics and may need explicit declaration.
+
+Do not build a large public "causal schema" API for ordinary reactivity. Build causal
+contracts for **non-derivable guarantees**.
+
+## 10.1 Minimal causal vocabulary
 
 Start with:
 
 ```text
-Request(OperationWitness, Payload)
+MAY_CAUSE   — optional domain effect/capability when useful
+MUST_CAUSE  — required semantic consequence
+ENABLES     — state/predicate admits operation
+```
+
+`INVALIDATES` is primarily compiler-derived.
+
+`PRODUCES_DELTA` is primarily derived from operation semantics.
+
+## 10.2 Witness-first causal contracts
+
+Use typed operation/action/event witnesses directly:
+
+```ts
+app.causal.requires(
+  PlaceOrder,
+  ReserveInventory,
+  ({ cartId }) => ({ cartId }),
+)
+```
+
+The payload projection is type checked.
+
+No magic strings after witness declaration.
+
+## 10.3 Parameterized causality
+
+Contracts are about related runtime instances:
+
+```text
+UserChanged(user=42)
+    MUST_CAUSE
+PermissionsRecomputed(user=42)
+```
+
+The static graph represents the family; runtime execution supplies the scope/key values.
+
+---
+
+# 11. Verify causal guarantees with inspectable effect/program IR
+
+Ordinary reactive invalidation does not need authors to write effect contracts because the
+compiler derives it.
+
+Explicit `MUST_CAUSE` guarantees do need implementation verification.
+
+A generator/Effect-style authoring surface can be ergonomic:
+
+```ts
+app.implement(PlaceOrder, function* (input) {
+  const order = yield* Orders.insert(...)
+  yield* ReserveInventory({ cartId: input.cartId })
+  yield* SendReceipt({ orderId: order.id })
+  return order
+})
+```
+
+But lower it into inspectable Plan IR.
+
+## 11.1 Minimal Plan IR
+
+```text
+Request(OperationWitness, payload)
 Sequence([...])
 Branch(predicate, then, else)
 Parallel([...])
 Return(value)
 ```
 
-Add `Try`, loops, cancellation, compensation, etc. only when a real target requires them.
+Add loops, `Try`, compensation, cancellation, etc. only when required by real target
+semantics.
 
-### Compute two effect sets
+## 11.2 Compute MayEffects and MustEffects
 
-For every inspectable program `P` derive:
+For program `P`:
 
 ```text
 MayEffects(P)
 MustEffects(P)
 ```
 
-Examples:
+For a branch:
 
 ```text
-Sequence:
-  May  = union(children)
-  Must = union(children that necessarily execute)
-
-Branch:
-  May  = union(branch effects)
-  Must = intersection(branch effects)
+May  = union(branch effects)
+Must = intersection(branch effects)
 ```
 
-Then verify:
+Verify:
 
 ```text
 MayEffects(implementation)
     ⊆
 AllowedEffects(operation)
 
-RequiredEffects(operation)
+RequiredDomainEffects(operation)
     ⊆
 MustEffects(implementation)
 ```
 
-The first rejects undeclared effects.
-The second rejects implementations that can complete without satisfying a declared causal
-requirement.
+This is where a missing domain consequence becomes a real type/effect error.
 
-### Opaque implementation rule
+## 11.3 Do not require this machinery for compiler-generated reactive effects
 
-Opaque JS remains legal, but follows this rule:
+If Dirived itself lowers inferred `INVALIDATES` facts to target-specific invalidation code,
+that implementation is generated from compiler facts and already has by-construction
+provenance.
 
-> **Opaque code is allowed. Unknown impact is not.**
-
-An opaque implementation must declare an effect/causal footprint. Such declarations carry
-lower assurance than a compiler-derived proof and should be visible in explanations.
+The strongest verification problem applies to hand-authored/opaque behavior and explicit
+domain causal guarantees.
 
 ---
 
-## 8. Add runtime verification only where static verification stops
+# 12. Runtime verification only at distributed boundaries
 
-Some causal requirements cannot be discharged entirely in one process.
-
-Examples:
+Some `MUST_CAUSE` contracts span execution systems:
 
 ```text
-HTTP request
-  → outbox write
+request
+  → outbox
   → queue
   → worker
-  → cache invalidation
-  → client refresh
+  → remote state
 ```
 
-For these, extend causal contracts with execution semantics:
+Static proof can often establish durable handoff but not eventual completion.
+
+Support execution semantics such as:
 
 ```text
 synchronous
-transactional
+same_transaction
 eventual
 within(duration)
 ```
 
-Example:
+Generated boundary adapters can propagate a causal trace/scope ID.
+
+A runtime verifier can compare observed execution against the static contract:
 
 ```text
-UserChanged
-    --mustCause,eventual<5s>-->
-MemberListFresh
-```
-
-### Runtime model
-
-Generated adapters can propagate a causal/trace identifier across boundaries. A verifier
-can then compare observed traces against declared contracts.
-
-Conceptually:
-
-```text
-trace 8274
-
-UserChanged(user=42)
+PlaceOrder(order=123)
     ↓
-PermissionsInvalidated(user=42)
+InventoryReserved(order=123)
     ↓
-MemberListInvalidated(team=7)
-    ↓
-MemberListRecomputed(team=7)
+ReceiptSent(order=123)
 ```
 
-This should be a lowering/runtime facility, not canonical semantic truth. OpenTelemetry or
-another tracing implementation may be a target; the graph should not depend on it.
+This is target/runtime instrumentation, not canonical domain storage.
 
-### Failure semantics
-
-Before claiming distributed causal verification is complete, model:
-
-- retry
-- idempotency
-- duplicate delivery
-- cancellation
-- timeout
-- compensation
-- durable handoff
-
-A successful durable enqueue may discharge one synchronous obligation while creating a new
-eventual obligation for a downstream consumer.
+Before making strong distributed guarantees, model retry, idempotency, duplicates, timeout,
+cancellation, compensation, and durable handoff.
 
 ---
 
-## 9. Make targets consume the causal graph; do not let them become sources of truth
+# 13. Preview/explain should make inferred reactivity legible
 
-The Effect-Atom JSX target is already the first proof.
+Do not merely generate correct invalidation. Make the derivation understandable.
 
-Expand by making several targets consume the **same** causal facts:
-
-```text
-semantic INVALIDATES / MUST_CAUSE
-       ↓
-       ├─ Effect-Atom JSX invalidation
-       ├─ TanStack Query invalidation
-       ├─ small generic reactive runtime
-       ├─ server cache eviction
-       ├─ event/queue emission
-       └─ materialized-view maintenance
-```
-
-This is the test of whether the abstraction is at the right level.
-
-If adding a target requires changing the domain authoring API, the semantic layer is still
-leaking target concerns.
-
-### Preserve precision-loss diagnostics
-
-The current Effect-Atom target already reports when it must emit conservative family-root
-invalidation. Keep this pattern.
-
-Target legalization should say not merely "supported / unsupported," but also:
+`app.explain(...)` should answer:
 
 ```text
-exact
-matched
-conservative
-unknown
+Why does acknowledgeIncident invalidate listOpenIncidents?
+
+1. acknowledgeIncident writes Incident.status
+2. canViewIncident reads Incident.status
+3. listOpenIncidents uses canViewIncident
+4. therefore listOpenIncidents may be stale after acknowledgeIncident
+5. the Effect-Atom target represents listOpenIncidents with Incident:entity
+6. therefore the emitted mutation invalidates incidentKey
 ```
 
-with provenance explaining why precision was lost.
+For delta-aware cases:
+
+```text
+Why was UserAgeQuery not invalidated?
+
+UpdateUserName applies User.name.set.
+Its exact delta changes only User.name.
+UserAgeQuery reads User.age.
+No dependency path intersects the changed region.
+```
+
+For explicit causal guarantees:
+
+```text
+Why is PlaceOrder implementation invalid?
+
+PlaceOrder MUST_CAUSE ReserveInventory.
+One reachable successful branch returns without ReserveInventory.
+```
+
+These explanations are part of the product, not debugging garnish.
 
 ---
 
-## 10. Harden `preview → verify → emit`; do not rebuild it
+# 14. Updated execution order
 
-The previous plan said to make this workflow real. It is already partially real.
+## Phase 0 — sync reality and harden chaining
 
-The work now is to make it the primary typed product surface:
+- Update stale `PLAN.md` / `CURRENT.md` statements about already-landed Pattern/Morphism work.
+- Make `runPhase()` thread graph changes sequentially.
+- Keep OpsDesk and all existing target golden tests green.
 
-```ts
-const preview = app.preview(pipeline);
+## Phase 1 — canonical semantic facts
 
-preview.semanticDiff;
-preview.patches;
-preview.diagnostics;
-preview.repairs;
-preview.explanations;
-preview.artifacts;
+- Finish graph-backed operation/action/query projections.
+- Make Type/Operation graph facts authoritative.
+- Add architecture tests preventing new duplicate writable semantic models.
 
-app.verify(preview);
-app.emit(preview);
-```
+## Phase 2 — normalized dependency queries
 
-### Add causal explanations
+- Generalize graph queries for reads, writes, derivations, reverse dependents.
+- Port existing reactive derivations to those queries where useful.
+- Preserve typed provenance and precision.
 
-`app.explain(...)` should eventually answer questions like:
+## Phase 3 — type-derived operation/change semantics
 
-```text
-Why does AcknowledgeIncident invalidate Incident:entity?
+- Define lawful type-supported operations through `TYPE_SUPPORTS_OPERATION`.
+- Expose field-specific typed operation witnesses.
+- Attach exact write/patch/delta semantics to reusable operations.
+- Derive coarse deltas from existing writes when exact operation information is absent.
 
-Because:
-  AcknowledgeIncident WRITES Incident.status
-  ListOpenIncidents USES canViewIncident
-  canViewIncident READS Incident.status
-  therefore AcknowledgeIncident INVALIDATES ListOpenIncidents
-  EffectAtomJsx lowers ListOpenIncidents to Incident:entity key family
-```
+## Phase 4 — generic inferred reactivity
 
-And:
+- Add semantic `INVALIDATES` as derived graph fact.
+- Compute dependency closure across fields → expressions/rules → queries → resources/views.
+- Derive existing `INVALIDATES_KEY` from the generic semantic relation.
+- Make manual invalidation an explicit low-assurance escape hatch.
 
-```text
-Why is this implementation invalid?
+## Phase 5 — precision improvements
 
-UpdateUser MUST_CAUSE PermissionsInvalidated
-but one reachable return path has:
+- Key/scope-aware runtime instantiation.
+- Field/predicate/value-sensitive invalidation.
+- Delta propagation.
+- No-op detection.
+- Incremental/IVM lowering where supported.
 
-MustEffects(path) = { DatabaseWrite }
+## Phase 6 — target convergence
 
-Missing:
-  PermissionsInvalidated
-```
-
-That is the reactive "type error" from the essay made concrete.
-
----
-
-## 11. Performance and scheduling come after semantic correctness
-
-GraphView/memoization/shaking still matter, but they are no longer prerequisites for proving
-the architecture.
-
-Once causal derivations create larger graph workloads:
-
-1. wire pass `reads` / `writes` / trait requirements into scheduling;
-2. memoize pattern/morphism results by semantic inputs;
-3. add graph shaking from explicit entrypoints;
-4. incrementally invalidate compiler derivations using the same dependency ideas the
-   application compiler models.
-
-There is a pleasing eventual symmetry here:
+Make at least two substantially different reactive targets consume the same semantic
+invalidation graph:
 
 ```text
-Dirived reasons about incremental application change
-while Dirived itself incrementally recompiles semantic change
+Effect-Atom JSX
+TanStack Query or the tiny invalidation runtime
 ```
 
-But do not let compiler-performance work delay the causal semantics slice.
+No target-specific change to domain authoring is allowed.
 
----
+## Phase 7 — explicit domain causal guarantees
 
-## 12. Updated execution order
+- Add witness-first `MUST_CAUSE` / optional `MAY_CAUSE` contracts.
+- Add typed payload/scope projections.
+- Keep these separate from automatically inferred reactivity.
 
-### Phase 0 — synchronize reality
-
-- Update `PLAN.md` / `CURRENT.md` claims that still describe Pattern/Morphism/Surface work as
-  unimplemented.
-- Fix `runPhase()` sequential graph threading.
-- Keep all existing golden tests green.
-
-### Phase 1 — finish semantic canonicalization
-
-- Turn remaining operation/action/reactivity duplicate fields into graph-backed projections.
-- Make the Type/Operation graph the canonical operation semantic model.
-- Add architecture tests preventing new parallel semantic sources of truth.
-
-### Phase 2 — causal/change vocabulary
-
-- Add generic causal relation witnesses.
-- Derive coarse `ΔField` facts from writes.
-- Derive generic semantic invalidation before key-specific invalidation.
-- Preserve provenance and precision.
-
-### Phase 3 — type-derived operation algebra
-
-- Drive field operation witnesses from `TYPE_SUPPORTS_OPERATION` and semantic traits.
-- Expose typed derived witnesses (`set`, `toggle`, `increment`, etc.) where lawful.
-- Connect action bodies to precise `APPLIES_OPERATION` / `PRODUCES_DELTA` facts.
-
-### Phase 4 — causal contracts
-
-- Add witness-based `MAY_CAUSE` / `MUST_CAUSE` authoring.
-- Add typed payload projections between source and target operations.
-- Support the simple `A MUST_CAUSE B` case end-to-end first.
-
-### Phase 5 — inspectable implementation plans
+## Phase 8 — implementation effect verification
 
 - Add minimal Plan IR.
-- Lower Effect-like/generator authoring to Plan.
-- Compute `MayEffects` and `MustEffects`.
-- Verify allowed and required causal effects.
+- Add Effect-like / `yield*` authoring if ergonomic.
+- Compute `MayEffects` / `MustEffects`.
+- Verify explicit domain causal guarantees.
 
-### Phase 6 — distributed/runtime assurance
+## Phase 9 — distributed assurance
 
-- Add synchronous/transactional/eventual contract modes.
-- Add causal IDs to generated boundary adapters.
-- Verify eventual obligations in tests/dev runtime.
-- Model retry/idempotency/durable handoff.
+- Transactional/eventual semantics.
+- Durable handoff modeling.
+- Runtime causal traces.
+- Retry/idempotency/timeout/compensation semantics.
 
-### Phase 7 — target expansion
+## Phase 10 — compiler/product hardening
 
-- Rebase existing Effect-Atom lowering on the generic causal layer.
-- Add another contrasting target (TanStack Query or the tiny reactive runtime).
-- Ensure both consume the same semantic facts without domain API changes.
-
-### Phase 8 — product hardening
-
-- Typed pipeline outputs.
-- Semantic diff.
-- Better causal `explain`.
-- Repair suggestions for missing causal edges/effects.
-- GraphView/memoization/shaking when profiling justifies it.
+- Typed pipeline result unions.
+- Better semantic diff.
+- Rich causal/reactive explanations.
+- Repair suggestions.
+- GraphView/memoization/shaking when profiling justifies them.
 
 ---
 
-## 13. The next actual milestone
+# 15. The next actual milestone
 
-Do **not** create a new Invoice proof app. Extend the existing OpsDesk golden slice.
+Extend the existing OpsDesk golden slice. Do not create another showcase app.
 
-Make this chain explicit and locked by tests:
+The same authoring definition should prove this chain **without manually declaring reactive
+invalidation**:
 
 ```text
 acknowledgeIncident
     ↓ WRITES
 Incident.status
-    ↓ derives
+    ↓ operation/change semantics
 ΔIncident.status
-    ↓ INVALIDATES
-listOpenIncidents
-    ↓ derives/lower
-Incident:entity KeyFamily
-    ↓ INVALIDATES_KEY
-Effect-Atom mutation invalidation
+    ↓ dependency closure
+canViewIncident stale
+    ↓
+listOpenIncidents stale
+    ↓ target planning
+Incident:entity KeyFamily stale
+    ↓ target lowering
+Effect-Atom invalidation emitted
 ```
 
-Then add one causal requirement:
+Required assertions:
+
+1. `acknowledgeIncident`'s write is a canonical graph fact.
+2. The compiler derives a change/delta fact for `Incident.status`.
+3. The compiler derives the rule/query dependency chain.
+4. Generic semantic invalidation is derived automatically.
+5. `INVALIDATES_KEY` is derived from semantic invalidation + target/key facts.
+6. Effect-Atom output remains byte-for-byte correct where expected.
+7. `app.explain(...)` shows the complete inference chain.
+8. Postgres table/RLS output remains unchanged.
+9. No application-authored `invalidates` declaration is needed for this chain.
+
+Then add a **separate** explicit domain guarantee to the same fixture, for example:
 
 ```text
-AcknowledgeIncident
-    MUST_CAUSE
-IncidentListFresh
+AcknowledgeIncident MUST_CAUSE AuditEntry
 ```
 
-and one inspectable implementation that satisfies it.
+and verify it with an inspectable implementation.
 
-The golden slice should prove all of these from one application definition:
+That pairing proves the important distinction:
 
-1. typed field/write facts;
-2. derived change witness;
-3. generic causal invalidation;
-4. existing key invalidation;
-5. target emission;
-6. causal explanation;
-7. required-effect verification;
-8. unchanged Postgres schema/RLS lowering.
+```text
+reactivity
+  = inferred from the complete semantic graph
 
-That is the new thesis test.
+domain causal obligation
+  = explicitly declared only when it is additional semantic intent
+```
 
-The architecture is no longer being tested by whether Dirived can build a compiler graph.
-It can.
+---
 
-It is being tested by whether the same graph can become the application's **schema of
-change** — rich enough to derive consequences, distinguish allowed from required effects,
-and reject implementations whose causal behavior violates the declared semantics.
+# 16. Final intended model
+
+The architecture should converge on:
+
+```text
+                    SEMANTIC TYPES
+                         │
+                  admit operations
+                         ▼
+                     OPERATIONS
+                         │
+                exact state transforms
+                         ▼
+                       DELTAS
+                         │
+                         │ intersect dependency reads
+                         ▼
+                 DEPENDENCY CLOSURE
+                         │
+                         ▼
+               INFERRED INVALIDATION
+                         │
+             ┌───────────┼────────────┐
+             ▼           ▼            ▼
+        query keys   reactive core    IVM/views
+             │           │            │
+             └───────────┼────────────┘
+                         ▼
+                    TARGET LOWERING
+
+Separately:
+
+                DOMAIN CAUSAL INTENT
+                         │
+                    MUST_CAUSE
+                         │
+                         ▼
+                IMPLEMENTATION PLAN
+                         │
+                 May/Must effect check
+                         │
+                         ▼
+               runtime assurance where
+                  static proof stops
+```
+
+The key design principle is now:
+
+> **Dirived users describe the world and the lawful ways it can change. The compiler derives reactivity. Users declare causal edges only when they express additional domain intent that cannot be inferred from data dependency semantics.**
+
+If the application is fully represented, Dirived should know what can become stale because
+it already knows what changed and everything that depends on it.
