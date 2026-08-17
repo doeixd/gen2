@@ -8,7 +8,27 @@
       "Bash(node_modules/.bin/tsgo --noEmit)",
       "Bash(git stash *)",
       "Bash(vp check *)",
-      "Bash(vp test *)"
+      "Bash(vp test *)",
+      "Bash(awk '{print $NF}')",
+      "Bash(git -C \"C:\\\\Users\\\\Patrick\\\\gen2\" branch --show-current)",
+      "Bash(git -C \"C:\\\\Users\\\\Patrick\\\\gen2\" log --oneline -5)",
+      "Bash(git -C \"C:\\\\Users\\\\Patrick\\\\gen2\" status --short)",
+      "Bash(git *)",
+      "Bash(sort -k5 -n)",
+      "Bash(grep -n \"^### Track O\\\\|^## 3.5\\\\|^---$\" \"C:\\\\Users\\\\Patrick\\\\gen2\\\\docs\\\\revised2\\\\PLAN.md\")",
+      "Bash(grep *)",
+      "Bash(vp lint *)",
+      "Bash(timeout 60 npx tsc --noEmit -p tsconfig.json)",
+      "Bash(timeout 90 npx tsc --noEmit -p tsconfig.json)",
+      "Bash(timeout 60 npx vitest run tests/kernel-typed-witnesses.test-d.ts tests/dialects.test.ts)",
+      "Bash(timeout 60 npx vp test tests/kernel-typed-witnesses.test-d.ts)",
+      "Bash(timeout 60 npx vp test tests/dialects.test.ts)",
+      "Bash(timeout 300 npx vp test tests/dialects.test.ts tests/kernel-typed-witnesses.test-d.ts tests/golden/opsdesk-slice/)",
+      "Bash(timeout 300 npx vp test)",
+      "Bash(timeout 120 npx tsc --noEmit -p tsconfig.json)",
+      "Bash(timeout 60 npx vp test tests/kernel-relations.test.ts)",
+      "Bash(timeout 60 vp fmt src/kernel/relation-accessors.ts)",
+      "Bash(timeout 60 vp fmt docs/revised2/CURRENT.md)"
     ]
   }
 }
